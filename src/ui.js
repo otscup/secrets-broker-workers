@@ -1,7 +1,8 @@
 export const uiHtml = String.raw`<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="icon" type="image/x-icon" href="/favicon.ico">
-<link rel="apple-touch-icon" href="/logo.png">
+<link rel="icon" type="image/x-icon" href="/favicon.ico?v=2">
+<link rel="icon" type="image/png" sizes="192x192" href="/logo.png?v=2">
+<link rel="apple-touch-icon" href="/logo.png?v=2">
 <title>Secrets Broker · Cloudflare Workers</title>
 <style>
 :root{--bg:#f3f6fb;--card:#fff;--line:#e3e9f2;--text:#152033;--muted:#6b7890;--ok:#0f9d8a;--warn:#f2994a;--danger:#c0392b;--btn:#eef1f6}
@@ -59,7 +60,10 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th{color:var(--muted)
 .recent .rowline{display:flex;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12px}.recent .rowline:last-child{border-bottom:0}.recent .ev{color:var(--muted);white-space:nowrap}
 ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}ul.items li:last-child{border-bottom:0}ul.items .name{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}ul.items .type{color:var(--muted);font-size:11px}
 .secret{background:#0f172a;color:#d1fae5;border-radius:10px;padding:12px;margin-top:8px;word-break:break-all;font-family:ui-monospace,monospace;font-size:12px}
-.modal{position:fixed;inset:0;background:rgba(15,23,42,.4);display:grid;place-items:center;padding:20px;z-index:20;overflow-y:auto}.modal .card{position:relative;max-width:620px;width:100%;margin:0;max-height:calc(100vh - 40px);overflow-y:auto;overscroll-behavior:contain}.modal-x{position:sticky;top:0;float:right;margin:-6px -6px 0 8px;border:0;background:transparent;font-size:20px;line-height:1;padding:2px 6px;cursor:pointer;color:var(--muted);z-index:2}.modal .secret{max-height:120px;overflow:auto}
+.modal{position:fixed;inset:0;background:rgba(15,23,42,.4);display:grid;place-items:center;padding:20px;z-index:20;overflow-y:auto}.modal .card{position:relative;max-width:620px;width:100%;margin:0;max-height:calc(100vh - 40px);overflow-y:auto;overscroll-behavior:contain}.modal-x{position:sticky;top:0;float:right;margin:-6px -6px 0 8px;border:0;background:transparent;font-size:20px;line-height:1;padding:2px 6px;cursor:pointer;color:var(--muted);z-index:2}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);background:#152033;color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;z-index:60;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;max-width:calc(100vw - 32px);box-shadow:0 10px 30px rgba(15,23,42,.25)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.error{background:#c0392b}.modal .secret{max-height:120px;overflow:auto}
 @media(max-width:860px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}@media(max-width:620px){.user .email{display:none}}
 @media(max-width:720px){.wrap{padding:14px 12px}header{gap:8px}h1{font-size:18px}nav{order:3;width:100%;overflow-x:auto;margin-left:0;padding-bottom:2px}nav button{flex:0 0 auto}.user-wrap{margin-left:0}.theme-switch{margin-left:auto}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:14px}.row>*{min-width:100%}.row button{width:100%}.modal{padding:8px}.modal .card{max-height:calc(100vh - 16px);padding:16px}.chart{overflow-x:auto}table{font-size:12px}th,td{padding:6px}}
 </style></head><body><div class="wrap">
@@ -159,6 +163,7 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
 </section>
 
 </div>
+<div id="toast" class="toast"></div>
 <div id="modal" class="modal hidden"><div class="card"><button class="modal-x" id="modal-close-x" title="关闭">×</button><h2 id="modal-title"></h2><div id="modal-body"></div><div style="margin-top:12px"><button id="modal-close">关闭</button></div></div></div>
 <script>
 const $ = (id) => document.getElementById(id)
@@ -177,7 +182,19 @@ const selectedItems = new Set()
 const esc = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const status = (id, text, cls = '') => { const el = $(id); if (el) { el.textContent = text; el.className = 'status ' + cls } }
 function show(id, visible) { $(id).classList.toggle('hidden', !visible) }
-function toast(text, error = false) { status('item-status', text, error ? 'error' : 'ok') }
+let toastTimer = null
+function toast(text, error = false) {
+  const el = $('toast')
+  if (el) {
+    el.textContent = text
+    el.classList.toggle('error', Boolean(error))
+    el.classList.add('show')
+    clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => el.classList.remove('show'), 3200)
+  }
+  const statusEl = $('item-status')
+  if (statusEl && !$('view-items').classList.contains('hidden')) status(statusEl.id, text, error ? 'error' : 'ok')
+}
 
 function renderAvatar(name, avatarUrl) { const el = $('avatar'); if (!el) return; const url = avatarUrl || DEFAULT_LOGO; if (url) { el.innerHTML = '<img src="' + esc(url) + '" alt="">'; el.firstChild.onerror = () => { el.textContent = String(name || 'SB').slice(0, 2).toUpperCase() } } else el.textContent = String(name || 'SB').slice(0, 2).toUpperCase() }
 async function boot() { try { app.me = await api('/api/me'); show('login-card', false); $('who').textContent = app.me.email || ''; $('site-title').textContent = app.me.siteName || 'Secrets Broker'; renderAvatar(app.me.name || app.me.email, app.me.avatarUrl); show('lock', true); if (app.me.unlocked) { show('dashboard', true); show('unlock-card', false); await loadAll(); if (new URLSearchParams(location.search).get('view') === 'profile') { document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-profile')); document.querySelectorAll('#nav button').forEach((button) => button.classList.remove('active')); await loadProfile(); history.replaceState({}, '', '/') } } else { show('dashboard', false); show('unlock-card', true) } } catch { show('login-card', true); show('dashboard', false); show('unlock-card', false); loadOidcLogin() } }

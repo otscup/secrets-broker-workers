@@ -59,6 +59,20 @@ export function apply(ctx) {
     ctx.effect(() => {
       const dispose = ctx.webServer.register({
         kind: 'exact',
+        path: `${PREFIX}/credential-requests`,
+        handler: async (req, res) => {
+          if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method-not-allowed' })
+          try {
+            const result = await broker('/api/plugin/credential-requests')
+            json(res, result.status, result.body ?? { ok: false })
+          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
+        },
+      })
+      return () => dispose()
+    }, 'ui-secrets-broker: credential route')
+    ctx.effect(() => {
+      const dispose = ctx.webServer.register({
+        kind: 'exact',
         path: `${PREFIX}/decide`,
         handler: async (req, res) => {
           if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method-not-allowed' })

@@ -58,13 +58,18 @@ window.__ModuleLoader__.load({
     };
 
     function View({ t }) {
-      const [state, setState] = react.useState({ status: "loading", pending: [] });
+      const [state, setState] = react.useState({ status: "loading", pending: [], requests: [] });
       const load = () => {
         setState((current) => ({ ...current, status: "loading" }));
-        fetch("/api/secrets-broker/pending").then((response) => response.json()).then((payload) => {
-          if (!payload || payload.ok === false) throw new Error((payload && payload.error) || "broker error");
-          setState({ status: "ready", pending: Array.isArray(payload.pending) ? payload.pending : [] });
-        }).catch((error) => setState({ status: "error", error: String(error.message || error), pending: [] }));
+        Promise.allSettled([
+          fetch("/api/secrets-broker/pending").then((response) => response.json()),
+          fetch("/api/secrets-broker/credential-requests").then((response) => response.json())
+        ]).then(([pendingResult, requestResult]) => {
+          const pendingPayload = pendingResult.status === "fulfilled" ? pendingResult.value : null;
+          if (!pendingPayload || pendingPayload.ok === false) throw new Error((pendingPayload && pendingPayload.error) || "broker error");
+          const requestPayload = requestResult.status === "fulfilled" ? requestResult.value : null;
+          setState({ status: "ready", pending: Array.isArray(pendingPayload.pending) ? pendingPayload.pending : [], requests: Array.isArray(requestPayload?.requests) ? requestPayload.requests : [] });
+        }).catch((error) => setState({ status: "error", error: String(error.message || error), pending: [], requests: [] }));
       };
       react.useEffect(() => {
         load();
@@ -96,6 +101,15 @@ window.__ModuleLoader__.load({
             react.createElement("button", { type: "button", style: s.button, onClick: () => decide(entry.id, "24h") }, t("approve24")),
             react.createElement("button", { type: "button", style: s.button, onClick: () => decide(entry.id, "always") }, t("approveAlways")),
             react.createElement("button", { type: "button", style: s.danger, onClick: () => decide(entry.id, "deny") }, t("deny"))
+          )
+        ));
+      }
+      for (const entry of state.requests || []) {
+        children.push(react.createElement("div", { key: "req-" + entry.id, style: s.card },
+          react.createElement("p", { style: s.title }, "需要补充密钥：" + (entry.name || "")),
+          react.createElement("p", { style: s.meta }, (entry.agent || "Agent") + (entry.description ? " · " + entry.description : "")),
+          react.createElement("div", { style: s.buttons },
+            react.createElement("a", { style: s.primary, href: "https://sb.otscup.com/connect?id=" + encodeURIComponent(entry.id), target: "_blank", rel: "noreferrer" }, "打开连接器填写")
           )
         ));
       }

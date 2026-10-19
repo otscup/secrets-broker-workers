@@ -140,6 +140,7 @@ async function loadState(env) {
   state.adminSessions ??= {}
   state.grants ??= {}
   state.transfers ??= []
+  state.credentialRequests ??= {}
   const defaultAgentAccount = state.settings?.vaultEmail || env.VAULT_EMAIL || ''
   for (const agent of Object.values(state.agents ?? {})) if (!agent.account && defaultAgentAccount) agent.account = defaultAgentAccount
   state.pending ??= {}
@@ -791,20 +792,89 @@ function oauthConsentPage(origin, params, client) {
   return '<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCP 授权</title><style>body{font:14px/1.6 system-ui;background:#f3f6fb;margin:0;padding:40px;color:#152033}.card{max-width:560px;margin:0 auto;background:#fff;border:1px solid #e3e9f2;border-radius:16px;padding:24px}button{border:0;border-radius:9px;padding:10px 16px;font:inherit;cursor:pointer;margin-right:8px}.primary{background:#0f9d8a;color:#fff}.muted{color:#6b7890;font-size:12px}code{background:#eef1f6;padding:2px 5px;border-radius:5px}</style><div class="card"><h2>Secrets Broker · MCP 授权</h2><p>客户端 <code>' + escape(client?.clientName ?? params.get('client_id')) + '</code> 请求访问你的密钥库。</p><p class="muted">Scope: ' + escape(params.get('scope') ?? 'secrets.read') + '</p><form method="post" action="/oauth/authorize">' + field('client_id') + field('redirect_uri') + field('state') + field('code_challenge') + field('code_challenge_method') + field('scope') + '<button class="primary" name="decision" value="allow">允许</button><button name="decision" value="deny">拒绝</button></form></div></html>'
 }
 
+function standaloneLoginPage(next) {
+  const target = next.startsWith('/') ? next : '/'
+  return String.raw`<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>登录 · Secrets Broker</title><style>body{font:14px/1.6 system-ui;background:#f3f6fb;color:#152033;margin:0;padding:40px 16px}.card{max-width:420px;margin:0 auto;background:#fff;border:1px solid #e3e9f2;border-radius:16px;padding:24px}h1{font-size:20px;margin:0 0 4px}.hint{color:#6b7890;font-size:12px;margin-bottom:18px}label{display:block;font-size:12px;color:#6b7890;margin:12px 0 4px}input{width:100%;box-sizing:border-box;border:1px solid #d8e0ec;border-radius:9px;padding:10px;font:inherit}button{width:100%;margin-top:16px;border:0;border-radius:9px;padding:10px;font:inherit;background:#0f9d8a;color:#fff;cursor:pointer}.status{font-size:12px;min-height:18px;margin-top:8px;color:#c0392b}.oidc{display:block;text-align:center;margin-top:12px;font-size:12px;color:#0f9d8a}</style></head><body><div class="card"><h1>Secrets Broker</h1><div class="hint">管理登录（不是 Bitwarden 主密码）</div><label>管理密码</label><input id="password" type="password" autocomplete="current-password"><div id="totp" style="display:none"><label>两步验证码</label><input id="code" inputmode="numeric" placeholder="6 位验证码"></div><button id="go">登录</button><div id="status" class="status"></div><a class="oidc" href="/oidc/login?next=${encodeURIComponent(target)}">使用 OIDC 登录</a></div><script>const next=${JSON.stringify(target)};const go=document.getElementById('go');async function submit(){const status=document.getElementById('status');status.textContent='';try{const response=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('password').value,code:document.getElementById('code').value})});const data=await response.json();if(!response.ok){if(data.totpRequired){document.getElementById('totp').style.display='block';status.textContent=data.error||'请输入验证码'}else status.textContent=data.error||'登录失败';return}location.href=next}catch(error){status.textContent=String(error.message||error)}}go.onclick=submit;document.getElementById('code').addEventListener('keydown',e=>{if(e.key==='Enter')submit()})</script></body></html>`
+}
+
+function connectPage(request) {
+  const item = request
+  return String.raw`<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>连接密钥 · Secrets Broker</title><style>body{font:14px/1.6 system-ui;background:#f3f6fb;color:#152033;margin:0;padding:40px 16px}.card{max-width:520px;margin:0 auto;background:#fff;border:1px solid #e3e9f2;border-radius:16px;padding:24px}h1{font-size:20px;margin:0 0 4px}.hint{color:#6b7890;font-size:12px;margin-bottom:14px}.agent{background:#eef6f4;border:1px solid #cfe8e2;border-radius:10px;padding:10px;font-size:12px;margin-bottom:12px}label{display:block;font-size:12px;color:#6b7890;margin:12px 0 4px}input{width:100%;box-sizing:border-box;border:1px solid #d8e0ec;border-radius:9px;padding:10px;font:inherit}button{width:100%;margin-top:16px;border:0;border-radius:9px;padding:10px;font:inherit;background:#0f9d8a;color:#fff;cursor:pointer}.status{font-size:12px;min-height:18px;margin-top:8px;color:#c0392b}</style></head><body><div class="card"><h1>连接密钥</h1><div class="hint">这个密钥会保存到当前解锁的 vault，并授权给请求的 Agent。</div><div class="agent"><b>${escapeHtml(item.agent || 'Agent')}</b> 需要：<code>${escapeHtml(item.name || '')}</code>${item.description ? '<br><span class="hint">' + escapeHtml(item.description) + '</span>' : ''}</div><label>名称</label><input id="name" value="${escapeHtml(item.name || '')}"><label>密钥值</label><input id="value" type="password" autocomplete="off" placeholder="粘贴 API key / 密码"><label>分组（可选）</label><input id="group" placeholder="例如 api/prod"><button id="save">保存并授权</button><div id="status" class="status"></div></div><script>const id=${JSON.stringify(item.id)};document.getElementById('save').onclick=async()=>{const status=document.getElementById('status');const value=document.getElementById('value').value;if(!value){status.textContent='请填写密钥值';return}status.textContent='保存中…';try{const response=await fetch('/api/connect/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id,name:document.getElementById('name').value,value,group:document.getElementById('group').value})});const data=await response.json();if(!response.ok)throw new Error(data.error||'保存失败');status.style.color='#0f9d8a';status.textContent='已保存并授权，可以关闭此页面';setTimeout(()=>location.href='/',1200)}catch(error){status.style.color='#c0392b';status.textContent=String(error.message||error)}}</script></body></html>`
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
+
+
+    if (url.pathname === '/login' && request.method === 'GET') {
+      if (await adminAuthorized(request, env)) return Response.redirect(new URL('/', url).toString(), 302)
+      return new Response(standaloneLoginPage(String(url.searchParams.get('next') ?? '/')), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
+    }
+    if (url.pathname === '/connect' && request.method === 'GET') {
+      if (!(await adminAuthorized(request, env))) return Response.redirect(new URL('/login?next=' + encodeURIComponent(url.pathname + url.search), url).toString(), 302)
+      const state = await loadState(env)
+      const id = url.searchParams.get('id') ?? ''
+      const item = state.credentialRequests?.[id]
+      if (!item) return new Response('连接请求不存在或已完成', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+      const session = await getSession(env)
+      if (!session) return Response.redirect(new URL('/?login=1', url).toString(), 302)
+      if (item.account && String(item.account).toLowerCase() !== String(session.email).toLowerCase()) return new Response('请先切换到请求对应的 vault 账户并解锁', { status: 409, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+      return new Response(connectPage(item), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
+    }
+    if (url.pathname === '/api/credential-requests/cancel' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const id = String(body.id ?? '')
+      await updateState(env, (state) => { if (state.credentialRequests?.[id]) delete state.credentialRequests[id]; return state })
+      await addAudit(env, { event: 'credential.cancel', id })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/connect/save' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('vault locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const state = await loadState(env)
+      const item = state.credentialRequests?.[String(body.id ?? '')]
+      if (!item) return fail('request not found', 404)
+      if (item.account && String(item.account).toLowerCase() !== String(session.email).toLowerCase()) return fail('wrong vault account', 409)
+      const name = String(body.name ?? item.name).trim()
+      if (!name || !body.value) return fail('name and value required', 400)
+      try {
+        await createCipher(env, env.NODEWARDEN_DB, session, { name, value: String(body.value), url: '', notes: item.description ?? '', group: String(body.group ?? '') }, state.settings?.vaultFolder ?? '')
+        await updateState(env, (next) => {
+          delete next.credentialRequests[String(body.id)]
+          next.grants[grantKey(item.agent, name)] = { agent: item.agent, name, mode: 'credential-request', createdAt: nowIso(), expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, account: session.email }
+          next.itemGroups ??= {}
+          if (String(body.group ?? '').trim()) next.itemGroups[name] = String(body.group).trim()
+          return next
+        })
+        await addAudit(env, { event: 'credential.connect', agent: item.agent, name, via: 'connect-page' })
+        return json({ ok: true, name })
+      } catch (error) { return fail(String(error.message ?? error), 500) }
+    }
     if (url.pathname === '/logo.png' || url.pathname === '/favicon.ico') {
       const bytes = b64ToBytes(url.pathname === '/logo.png' ? LOGO_PNG_B64 : FAVICON_ICO_B64)
       return new Response(bytes, { headers: { 'content-type': url.pathname === '/logo.png' ? 'image/png' : 'image/x-icon', 'cache-control': 'public, max-age=86400' } })
     }
     if (url.pathname === '/' || url.pathname === '/index.html') {
+      if (!(await adminAuthorized(request, env))) return Response.redirect(new URL('/login?next=' + encodeURIComponent(url.pathname + url.search), url).toString(), 302)
       return new Response(uiHtml, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
     }
     if (url.pathname === '/api/plugin/pending' && request.method === 'GET') {
       if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
       const state = await loadState(env)
       return json({ pending: Object.values(state.pending ?? {}).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, createdAt: entry.createdAt })), count: Object.keys(state.pending ?? {}).length })
+    }
+    if (url.pathname === '/api/plugin/credential-requests' && request.method === 'GET') {
+      if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      return json({ requests: Object.values(state.credentialRequests ?? {}).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, description: entry.description ?? '', createdAt: entry.createdAt })) })
     }
     if (url.pathname === '/api/plugin/decide' && request.method === 'POST') {
       if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
@@ -1705,6 +1775,7 @@ export default {
           { name: 'list_secrets', description: 'List secret item names available to this agent (no values).', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
           { name: 'request_access', description: 'Request approval to read a secret by name. Returns an approval URL if pending.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'get_secret', description: 'Read a secret value after approval. Disabled unless MCP_ALLOW_READ=1.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
+          { name: 'request_credential', description: 'Create a secure one-time link for a human to fill in a missing credential; the broker stores it and grants this agent access.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Suggested item name' }, description: { type: 'string', description: 'What the credential is for' } }, required: ['name'] } },
           { name: 'http_request', description: 'Make an HTTPS request with a secret injected server-side. The secret is never returned to the caller.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' }, url: { type: 'string', description: 'HTTPS target URL' }, method: { type: 'string', description: 'HTTP method (default GET)' }, headers: { type: 'object', description: 'Extra headers' }, body: { type: 'string', description: 'Request body' }, headerName: { type: 'string', description: 'Header to inject the secret into (default Authorization)' }, authPrefix: { type: 'string', description: 'Prefix before the secret (default "Bearer ")' } }, required: ['name', 'url'] } },
         ] })
       }
@@ -1737,6 +1808,15 @@ export default {
             if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
             if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
             return result(text(access.value))
+          }
+          if (name === 'request_credential') {
+            const secretName = String(args.name ?? '').trim()
+            if (!secretName) return result(text('name is required', true))
+            const id = crypto.randomUUID()
+            const entry = { id, agent: resolved.name, account: session.email, name: secretName, description: String(args.description ?? '').slice(0, 500), createdAt: nowIso() }
+            await updateState(env, (next) => { next.credentialRequests ??= {}; next.credentialRequests[id] = entry; return next })
+            await addAudit(env, { event: 'credential.request', agent: resolved.name, name: secretName })
+            return result(text(`credential request created: ${url.origin}/connect?id=${id}`))
           }
           if (name === 'http_request') {
             const secretName = String(args.name ?? '')
