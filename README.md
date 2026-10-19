@@ -8,6 +8,9 @@ narrow agent API.
 The Docker/Node broker remains the reference implementation; this project is a
 separate, Workers-only port so NodeWarden upgrades don't affect it.
 
+See [docs/parity.md](docs/parity.md) for the feature-by-feature comparison with
+the Docker version.
+
 ## Current status (working PoC)
 
 - ✅ 1 Worker + 1 Durable Object; **0 new D1 databases**
@@ -148,7 +151,7 @@ recording audit events.
 Set these vars/secrets (or change `wrangler.jsonc`):
 
 ```jsonc
-"OIDC_ISSUER": "https://auth.otscup.com",
+"OIDC_ISSUER": "https://auth.example.com",
 "OIDC_CLIENT_ID": "your-client-id",
 "OIDC_REDIRECT_URI": "https://your-worker.example/oidc/callback"
 ```

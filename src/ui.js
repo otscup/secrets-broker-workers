@@ -11,9 +11,13 @@ h1{font-size:20px;margin:0;letter-spacing:-.2px}
 nav{display:flex;gap:2px;margin-left:12px;flex-wrap:wrap}
 nav button{border:0;background:transparent;color:var(--muted);border-radius:9px;padding:7px 13px;font:inherit;font-size:13px;cursor:pointer}
 nav button.active{background:#fff;color:var(--text);box-shadow:0 2px 8px rgba(20,40,80,.07)}
-.user{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
+.user{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
+.user-wrap{position:relative;margin-left:auto}
 .avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#5b6cff,#0f9d8a);color:#fff;display:grid;place-items:center;font-size:11px;border:0;cursor:pointer}
-.account-menu{position:absolute;right:24px;top:58px;z-index:30;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px;min-width:160px;box-shadow:0 12px 30px rgba(15,23,42,.16)}
+.theme-switch{display:flex;gap:2px;background:var(--card);border:1px solid var(--line);border-radius:9px;padding:2px;margin-left:auto}
+.theme-switch button{border:0;background:transparent;border-radius:7px;padding:4px 7px;font-size:13px;cursor:pointer;opacity:.65}
+.theme-switch button.on{background:var(--btn);opacity:1}
+.account-menu{position:absolute;right:0;top:38px;z-index:30;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px;min-width:160px;box-shadow:0 12px 30px rgba(15,23,42,.16)}
 .account-menu button{display:block;width:100%;text-align:left;background:transparent;border-radius:8px;padding:8px 10px;font-size:13px}
 .account-menu button:hover{background:var(--btn)}
 html[data-theme="dark"]{--bg:#0b1220;--card:#111a2b;--line:#24324a;--text:#e6edf7;--muted:#8fa1bd;--btn:#1b2940;--ok:#20b8a6}
@@ -50,8 +54,9 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
 </style></head><body><div class="wrap">
 <header><h1>Secrets Broker</h1><span class="badge">Cloudflare Workers</span>
 <nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button></nav>
-<span class="user"><span class="email" id="who"></span><button id="avatar" class="avatar" title="账户">SB</button></span>
-<div id="account-menu" class="account-menu hidden"><button data-view="profile">个人资料</button><button data-view="settings">通知设置</button><button id="theme-toggle">夜间模式</button><button id="account-logout" class="danger">退出登录</button></div>
+<span class="theme-switch" id="theme-switch"><button data-theme-mode="light" title="白天">☀️</button><button data-theme-mode="dark" title="夜间">🌙</button><button data-theme-mode="auto" title="跟随系统">💻</button></span>
+<div class="user-wrap"><span class="user"><span class="email" id="who"></span><button id="avatar" class="avatar" title="账户">SB</button></span>
+<div id="account-menu" class="account-menu hidden"><button data-view="profile">个人资料</button><button data-view="settings">通知设置</button><button id="account-logout" class="danger">退出登录</button></div></div>
 <button id="lock" class="hidden danger">锁定</button></header>
 
 <section id="login-card" class="card hidden">
@@ -118,6 +123,15 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
       </div>
       <div style="margin-top:12px"><button class="primary" id="settings-save">保存通知设置</button></div><div class="status" id="settings-status"></div>
     </div>
+    <div class="card"><h2>OIDC / xid 登录</h2><div class="hint">这里填的配置会保存到 Durable Object，不需要重新部署；留空的 secret 表示保留原值。</div>
+      <label class="field">Issuer</label><input id="oidc-issuer" placeholder="https://auth.example.com">
+      <label class="field">Client ID</label><input id="oidc-client-id" placeholder="client_xxx">
+      <label class="field">Client Secret（public client 可留空）</label><input id="oidc-client-secret" type="password" placeholder="留空保留原值">
+      <label class="field">Redirect URI</label><input id="oidc-redirect" placeholder="https://your-worker/oidc/callback">
+      <label class="field">Scope</label><input id="oidc-scope" placeholder="openid profile email">
+      <div class="hint" id="oidc-config-status" style="margin-top:8px"></div>
+    </div>
+    <div class="card"><h2>浏览器通知</h2><div class="hint" id="browser-notify-status"></div><div style="margin-top:10px"><button id="enable-browser-notify">启用浏览器通知</button><button id="test-browser-notify">发送测试通知</button></div></div>
     <div class="card"><h2>MCP 接入</h2><div class="hint">HTTP MCP 地址（用 Agent Bearer token）：</div><div class="secret" id="mcp-url"></div><div class="hint" style="margin-top:8px">工具：list_secrets / request_access / get_secret。Codex、Hermes 可直接配置 HTTP MCP。</div></div>
   </section>
 </section>
@@ -148,8 +162,9 @@ $('avatar').onclick = (event) => { event.stopPropagation(); show('account-menu',
 document.addEventListener('click', (event) => { if (!$('account-menu').classList.contains('hidden') && !event.target.closest('#account-menu') && !event.target.closest('#avatar')) show('account-menu', false) })
 $('account-logout').onclick = async () => { try { await api('/api/logout', { method: 'POST' }) } catch {} location.reload() }
 document.querySelectorAll('#account-menu [data-view]').forEach((button) => { button.onclick = () => { show('account-menu', false); document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', false)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + button.dataset.view)); if (button.dataset.view === 'settings') loadSettings(); if (button.dataset.view === 'profile') loadProfile() } })
-function applyTheme(theme) { const next = theme || localStorage.getItem('theme') || 'light'; document.documentElement.dataset.theme = next === 'dark' ? 'dark' : 'light'; $('theme-toggle').textContent = next === 'dark' ? '☀️ 白天模式' : '🌙 夜间模式' }
-$('theme-toggle').onclick = () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; localStorage.setItem('theme', next); applyTheme(next) }
+function applyTheme(mode) { const next = mode || localStorage.getItem('theme') || 'auto'; const effective = next === 'auto' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : (next === 'dark' ? 'dark' : 'light'); document.documentElement.dataset.theme = effective; localStorage.setItem('theme', next); document.querySelectorAll('#theme-switch button').forEach((button) => button.classList.toggle('on', button.dataset.themeMode === next)) }
+document.querySelectorAll('#theme-switch button').forEach((button) => { button.onclick = () => applyTheme(button.dataset.themeMode) })
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if ((localStorage.getItem('theme') || 'auto') === 'auto') applyTheme('auto') })
 applyTheme()
 $('unlock').onclick = async () => {
   const password = $('master-password').value; if (!password) return
@@ -167,7 +182,7 @@ async function lock() { try { await api('/api/lock', { method: 'POST' }) } catch
 $('lock').onclick = lock; $('lock2').onclick = lock
 document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings(); if (view === 'profile') loadProfile() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常')
 $('mcp-url').textContent = location.origin + '/mcp'
 $('copy-token').onclick = async () => { try { await navigator.clipboard.writeText(app.token); toast('已复制 token') } catch { toast('复制失败', true) } }
 $('modal-close').onclick = () => show('modal', false)
@@ -176,7 +191,23 @@ $('agents-box').addEventListener('click', (event) => { const menu = event.target
 $('pending-box').addEventListener('click', async (event) => { const button = event.target.closest('[data-decide]'); if (!button) return; try { await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.decide }) }); await Promise.all([loadState(), loadStats(), loadItems()]); toast('已处理') } catch (error) { toast(error.message, true) } })
 $('grants-box').addEventListener('click', (event) => { const menu = event.target.closest('[data-grant-menu]'); if (menu) openGrantMenu(menu.dataset.agent, menu.dataset.name) })
 
-async function loadAll() { await Promise.all([loadState(), loadItems(), loadStats()]) }
+async function loadAll() { await Promise.all([loadState(), loadItems(), loadStats()]); startPendingPolling(); updateBrowserNotifyStatus() }
+let pendingTimer = null
+let knownPending = new Set()
+let pendingInitialized = false
+function updateBrowserNotifyStatus() { const el = $('browser-notify-status'); if (!el) return; el.textContent = typeof Notification === 'undefined' ? '此浏览器不支持通知' : '当前权限：' + Notification.permission }
+function showBrowserNotification(title, body, tag) { if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return; try { const notification = new Notification(title, { body, tag }); notification.onclick = () => { window.focus(); document.querySelector('#nav [data-view=grants]').click(); notification.close() } } catch {} }
+async function enableBrowserNotifications() { if (typeof Notification === 'undefined') return status('settings-status', '此浏览器不支持通知', 'error'); const permission = await Notification.requestPermission(); updateBrowserNotifyStatus(); if (permission === 'granted') { status('settings-status', '浏览器通知已启用', 'ok'); startPendingPolling() } else status('settings-status', '未获得通知权限', 'error') }
+async function checkPendingNotifications() {
+  try {
+    const data = await api('/api/state'); const ids = new Set((data.pending || []).map((entry) => entry.id))
+    if (pendingInitialized) {
+      for (const entry of data.pending || []) if (!knownPending.has(entry.id)) showBrowserNotification('Secrets Broker 授权请求', (entry.agent || 'Agent') + ' 请求读取「' + entry.name + '」', entry.id)
+    }
+    knownPending = ids; pendingInitialized = true
+  } catch {}
+}
+function startPendingPolling() { updateBrowserNotifyStatus(); if (pendingTimer) return; checkPendingNotifications(); pendingTimer = setInterval(checkPendingNotifications, 15000) }
 async function loadState() { try { app.data = await api('/api/state'); renderAgents(); renderPending(); renderGrants(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
 async function loadItems() { status('item-status', '加载中…'); try { app.items = (await api('/api/items')).items || []; renderItems(); status('item-status', '共 ' + app.items.length + ' 个条目') } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } else status('item-status', error.message, 'error') } }
 async function loadStats() { try { app.stats = await api('/api/stats?range=' + app.range); renderStats() } catch {} }
@@ -191,6 +222,9 @@ async function loadSettings() {
     $('gotify-status').textContent = n.gotify?.configured ? '已配置（token 已保存）' : '未配置'
     $('wxpush-url').value = n.wxpush?.url || ''
     $('wxpush-status').textContent = n.wxpush?.configured ? '已配置（token 已保存）' : '未配置'
+    const oidc = data.oidc || {}
+    $('oidc-issuer').value = oidc.issuer || ''; $('oidc-client-id').value = oidc.clientId || ''; $('oidc-redirect').value = oidc.redirectUri || ''; $('oidc-scope').value = oidc.scope || ''
+    $('oidc-config-status').textContent = oidc.configured ? '已配置' + (oidc.secretConfigured ? '（client secret 已保存）' : '') : '未配置'
     $('mcp-url').textContent = location.origin + '/mcp'
   } catch (error) { status('settings-status', error.message, 'error') }
 }
@@ -201,8 +235,11 @@ async function saveSettings() {
       ntfy: { url: $('ntfy-url').value, topic: $('ntfy-topic').value },
       gotify: { url: $('gotify-url').value, token: $('gotify-token').value },
       wxpush: { url: $('wxpush-url').value, token: $('wxpush-token').value },
+    }, oidc: {
+      issuer: $('oidc-issuer').value, clientId: $('oidc-client-id').value, clientSecret: $('oidc-client-secret').value,
+      redirectUri: $('oidc-redirect').value, scope: $('oidc-scope').value,
     } }) })
-    $('tg-token').value = ''; $('gotify-token').value = ''; $('wxpush-token').value = ''
+    $('tg-token').value = ''; $('gotify-token').value = ''; $('wxpush-token').value = ''; $('oidc-client-secret').value = ''
     status('settings-status', '已保存', 'ok'); await loadSettings()
   } catch (error) { status('settings-status', error.message, 'error') }
 }

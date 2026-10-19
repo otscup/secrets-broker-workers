@@ -132,13 +132,14 @@ async function addAudit(env, entry) {
   })
 }
 
-function oidcConfig(env, request) {
-  const issuer = String(env.OIDC_ISSUER ?? '').replace(/\/$/, '')
-  const clientId = String(env.OIDC_CLIENT_ID ?? '')
-  const clientSecret = String(env.OIDC_CLIENT_SECRET ?? '')
-  const redirectUri = String(env.OIDC_REDIRECT_URI ?? `${new URL(request.url).origin}/oidc/callback`)
+async function oidcConfig(env, request, state) {
+  const stored = state?.settings?.oidc ?? {}
+  const issuer = String(stored.issuer || env.OIDC_ISSUER || '').replace(/\/$/, '')
+  const clientId = String(stored.clientId || env.OIDC_CLIENT_ID || '')
+  const clientSecret = String(stored.clientSecret || env.OIDC_CLIENT_SECRET || '')
+  const redirectUri = String(stored.redirectUri || env.OIDC_REDIRECT_URI || `${new URL(request.url).origin}/oidc/callback`)
   if (!issuer || !clientId) return null
-  return { issuer, clientId, clientSecret, redirectUri, scope: env.OIDC_SCOPE || 'openid profile email' }
+  return { issuer, clientId, clientSecret, redirectUri, scope: stored.scope || env.OIDC_SCOPE || 'openid profile email' }
 }
 
 async function oidcDiscovery(issuer) {
@@ -570,7 +571,7 @@ export default {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       if (request.method === 'GET') {
         const state = await loadState(env)
-        const oidc = oidcConfig(env, request)
+        const oidc = await oidcConfig(env, request, state)
         return json({ profile: state.profile ?? {}, oidcEnabled: Boolean(oidc), oidcIssuer: oidc?.issuer ?? '', oidcLoginUrl: oidc ? '/oidc/login' : '' })
       }
       if (request.method === 'POST') {
@@ -634,11 +635,13 @@ export default {
       return json({ ok: true })
     }
     if (url.pathname === '/api/oidc/status') {
-      const oidc = oidcConfig(env, request)
+      const state = await loadState(env)
+      const oidc = await oidcConfig(env, request, state)
       return json({ enabled: Boolean(oidc), issuer: oidc?.issuer ?? '' })
     }
     if (url.pathname === '/oidc/login') {
-      const oidc = oidcConfig(env, request)
+      const state = await loadState(env)
+      const oidc = await oidcConfig(env, request, state)
       if (!oidc) return fail('OIDC is not configured (OIDC_ISSUER / OIDC_CLIENT_ID)', 503)
       try {
         const discovery = await oidcDiscovery(oidc.issuer)
@@ -658,7 +661,8 @@ export default {
       } catch (error) { return fail(String(error.message ?? error), 502) }
     }
     if (url.pathname === '/oidc/callback') {
-      const oidc = oidcConfig(env, request)
+      const state = await loadState(env)
+      const oidc = await oidcConfig(env, request, state)
       if (!oidc) return fail('OIDC is not configured', 503)
       const stateData = await verifyOidcState(env, readCookie(request, 'oidc_state'))
       const returned = url.searchParams.get('state') ?? ''
@@ -951,11 +955,19 @@ export default {
       if (request.method === 'GET') {
         const state = await loadState(env)
         const n = state.settings?.notifications ?? {}
+        const effectiveOidc = await oidcConfig(env, request, state)
         return json({ notifications: {
           telegram: { chatId: n.telegram?.chatId ?? '', configured: Boolean(n.telegram?.botToken && n.telegram?.chatId) },
           ntfy: { url: n.ntfy?.url ?? '', topic: n.ntfy?.topic ?? '', configured: Boolean(n.ntfy?.url && n.ntfy?.topic) },
           gotify: { url: n.gotify?.url ?? '', configured: Boolean(n.gotify?.url && n.gotify?.token) },
           wxpush: { url: n.wxpush?.url ?? '', configured: Boolean(n.wxpush?.url && n.wxpush?.token) },
+        }, oidc: {
+          issuer: effectiveOidc?.issuer ?? '',
+          clientId: effectiveOidc?.clientId ?? '',
+          redirectUri: effectiveOidc?.redirectUri ?? '',
+          scope: effectiveOidc?.scope ?? '',
+          configured: Boolean(effectiveOidc),
+          secretConfigured: Boolean(state.settings?.oidc?.clientSecret || env.OIDC_CLIENT_SECRET),
         } })
       }
       if (request.method === 'POST') {
@@ -978,9 +990,19 @@ export default {
             }
             state.settings.notifications[channel] = next
           }
+          if (body.oidc && typeof body.oidc === 'object') {
+            const current = state.settings.oidc ?? {}
+            const next = { ...current }
+            for (const key of ['issuer', 'clientId', 'redirectUri', 'scope']) {
+              if (typeof body.oidc[key] === 'string') next[key] = body.oidc[key].trim()
+            }
+            if (typeof body.oidc.clientSecret === 'string' && body.oidc.clientSecret.length > 0) next.clientSecret = body.oidc.clientSecret
+            if (body.oidc.clear === true) { delete next.issuer; delete next.clientId; delete next.clientSecret; delete next.redirectUri; delete next.scope }
+            state.settings.oidc = next
+          }
           return state
         })
-        await addAudit(env, { event: 'settings.update', scope: 'notifications' })
+        await addAudit(env, { event: 'settings.update', scope: 'notifications-oidc' })
         return json({ ok: true })
       }
     }
