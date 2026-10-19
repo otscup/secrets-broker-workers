@@ -55,6 +55,13 @@ The Worker also exposes an MCP OAuth 2.1 authorization server:
 MCP clients that support OAuth can discover and use it; the old static Bearer
 token still works.
 
+## Agent skill
+
+A portable skill is included at [`skills/secrets-broker`](skills/secrets-broker).
+It teaches agents to use the MCP tools automatically, never ask for the secret,
+handle approval URLs, and avoid printing credentials. It also includes Codex and
+Hermes configuration examples.
+
 Tools:
 
 - `list_secrets` — item names/URLs, no values;

@@ -1,0 +1,7 @@
+# Add this to Codex config.toml.
+# OAuth-capable clients: keep only url and let the client discover OAuth.
+[mcp_servers.secrets]
+url = "https://sb.otscup.com/mcp"
+
+# Fallback for clients that do not support OAuth discovery:
+# headers = { Authorization = "Bearer <agent token>" }
