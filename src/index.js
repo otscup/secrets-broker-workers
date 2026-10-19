@@ -100,11 +100,13 @@ async function loadState(env) {
   state.oauthCodes ??= {}
   state.oauthTokens ??= {}
   state.grants ??= {}
+  const defaultAgentAccount = state.settings?.vaultEmail || env.VAULT_EMAIL || ''
+  for (const agent of Object.values(state.agents ?? {})) if (!agent.account && defaultAgentAccount) agent.account = defaultAgentAccount
   state.pending ??= {}
   state.audit ??= []
   if (!state.agents || Object.keys(state.agents).length === 0) {
     if (env.AGENT_TOKEN) {
-      state.agents['dsh'] = { hash: await sha256Base64(env.AGENT_TOKEN), tokenWrapped: await wrapWithKek(encoder.encode(env.AGENT_TOKEN), await kekBytes(env)), alias: '', allow: [], groups: [], write: false, createdAt: nowIso() }
+      state.agents['dsh'] = { hash: await sha256Base64(env.AGENT_TOKEN), tokenWrapped: await wrapWithKek(encoder.encode(env.AGENT_TOKEN), await kekBytes(env)), alias: '', allow: [], groups: [], write: false, account: defaultAgentAccount, createdAt: nowIso() }
     }
     await saveState(env, state)
   } else if (env.AGENT_TOKEN && state.agents.dsh && !state.agents.dsh.tokenWrapped) {
@@ -310,7 +312,7 @@ async function resolveAgent(request, env) {
   for (const tokenEntry of Object.values(state.oauthTokens ?? {})) {
     if (tokenEntry.expiresAt && tokenEntry.expiresAt < Date.now()) continue
     if (constantTimeEqual(encoder.encode(tokenEntry.hash ?? ''), encoder.encode(hash))) {
-      return { name: tokenEntry.agent, agent: { allow: [], groups: [], write: false, oauth: true }, state }
+      return { name: tokenEntry.agent, agent: { allow: [], groups: [], write: false, oauth: true, account: tokenEntry.account ?? '' }, state }
     }
   }
   return null
@@ -364,6 +366,7 @@ async function listCiphers(env, db, session) {
   const folderName = state.settings?.vaultFolder ?? ''
   let folderId = null
   if (folderName) folderId = (await listFolders(env, db, session)).find((entry) => entry.name === folderName)?.id ?? null
+  if (folderName && !folderId) return []
   const items = []
   for (const row of result.results ?? []) {
     if (folderId && row.folder_id !== folderId) continue
@@ -385,6 +388,7 @@ async function readSecretFromRows(env, db, session, name) {
   const state = await loadState(env)
   let folderId = null
   if (state.settings?.vaultFolder) folderId = (await listFolders(env, db, session)).find((entry) => entry.name === state.settings.vaultFolder)?.id ?? null
+  if (state.settings?.vaultFolder && !folderId) return null
   const rows = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
   for (const candidate of rows.results ?? []) {
     if (folderId && candidate.folder_id !== folderId) continue
@@ -400,6 +404,7 @@ async function findCipherRow(env, db, session, name) {
   const state = await loadState(env)
   let folderId = null
   if (state.settings?.vaultFolder) folderId = (await listFolders(env, db, session)).find((entry) => entry.name === state.settings.vaultFolder)?.id ?? null
+  if (state.settings?.vaultFolder && !folderId) return null
   const rows = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
   for (const candidate of rows.results ?? []) {
     if (folderId && candidate.folder_id !== folderId) continue
@@ -488,6 +493,7 @@ async function createCipher(env, db, session, fields) {
     const folder = (await listFolders(env, db, session)).find((entry) => entry.name === state.settings.vaultFolder)
     folderId = folder?.id ?? null
   }
+  if (state.settings?.vaultFolder && !folderId) throw new Error('configured Bitwarden folder not found for this account')
   const enc = b64ToBytes(session.symEncKey)
   const mac = b64ToBytes(session.symMacKey)
   const data = { login: { username: '', password: fields.value ? await encryptStr(String(fields.value), enc, mac) : '', uris: [] }, fields: [] }
@@ -510,7 +516,7 @@ async function createCipher(env, db, session, fields) {
 
 function publicState(state) {
   return {
-    agents: Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], write: agent.write === true, createdAt: agent.createdAt ?? '' })),
+    agents: Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], write: agent.write === true, account: agent.account ?? '', createdAt: agent.createdAt ?? '' })),
     policies: state.policies ?? {},
     itemGroups: state.itemGroups ?? {},
     profile: state.profile ?? {},
@@ -589,6 +595,7 @@ async function notifyPending(env, origin, entry, ctx) {
 }
 
 async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx }) {
+  if (agent.account && session.email && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) return { status: 'forbidden', error: 'agent is bound to another vault account' }
   const group = state.itemGroups?.[name] ?? ''
   const allow = agent.allow ?? []
   const groups = agent.groups ?? []
@@ -981,10 +988,12 @@ export default {
       const name = String(body.name ?? '').trim()
       if (!/^[a-zA-Z0-9._-]{1,48}$/.test(name)) return fail('invalid agent name', 400)
       const token = randomToken()
+      const session = await getSession(env)
+      const account = session?.email || await vaultEmail(env, env.NODEWARDEN_DB, await loadState(env))
       let error = ''
       await updateState(env, (state) => {
         if (state.agents[name]) { error = 'agent already exists'; return state }
-        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], write: body.write === true, createdAt: nowIso() }
+        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], write: body.write === true, account, createdAt: nowIso() }
         return state
       })
       if (error) return fail(error, 409)
@@ -1372,9 +1381,11 @@ export default {
       const hash = await sha256Base64(accessToken)
       const agentName = 'oauth:' + entry.clientId
       const expiresAt = Date.now() + 24 * 3600 * 1000
+      const session = await getSession(env)
+      const account = session?.email || await vaultEmail(env, env.NODEWARDEN_DB, state)
       await updateState(env, (next) => {
         delete next.oauthCodes[code]
-        next.oauthTokens[hash] = { hash, agent: agentName, clientId: entry.clientId, createdAt: nowIso(), expiresAt }
+        next.oauthTokens[hash] = { hash, agent: agentName, clientId: entry.clientId, account, createdAt: nowIso(), expiresAt }
         return next
       })
       await addAudit(env, { event: 'oauth.token-issue', agent: agentName, clientId: entry.clientId })
@@ -1406,6 +1417,7 @@ export default {
         if (!session) return result(text('vault locked; open the broker page or run unlock.mjs', true))
         try {
           if (name === 'list_secrets') {
+            if (resolved.agent.account && String(resolved.agent.account).toLowerCase() !== String(session.email).toLowerCase()) return result(text('agent is bound to another vault account', true))
             const items = await listCiphers(env, env.NODEWARDEN_DB, session)
             return result(text(items.map((item) => ({ name: item.name, url: item.url, noApproval: item.noApproval }))))
           }
@@ -1440,6 +1452,7 @@ export default {
       if (resolved.agent.write !== true) return fail('agent is not allowed to write', 403)
       const session = await getSession(env)
       if (!session) return fail('vault locked', 423)
+      if (resolved.agent.account && String(resolved.agent.account).toLowerCase() !== String(session.email).toLowerCase()) return fail('agent is bound to another vault account', 403)
       const body = await request.json().catch(() => ({}))
       const name = String(body.name ?? '').trim()
       if (!name) return fail('name required', 400)
