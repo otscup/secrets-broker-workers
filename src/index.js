@@ -334,6 +334,13 @@ async function putSession(env, session) {
 
 async function adminAuthorized(request, env) { return validCookie(request, env) }
 
+function pluginAuthorized(request, env) {
+  const token = String(env.DSH_PLUGIN_TOKEN ?? '')
+  if (!token) return false
+  const provided = request.headers.get('x-broker-plugin-token') ?? ''
+  return constantTimeEqual(encoder.encode(provided), encoder.encode(token))
+}
+
 function randomToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(24))
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
@@ -793,6 +800,18 @@ export default {
     }
     if (url.pathname === '/' || url.pathname === '/index.html') {
       return new Response(uiHtml, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
+    }
+    if (url.pathname === '/api/plugin/pending' && request.method === 'GET') {
+      if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      return json({ pending: Object.values(state.pending ?? {}).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, createdAt: entry.createdAt })), count: Object.keys(state.pending ?? {}).length })
+    }
+    if (url.pathname === '/api/plugin/decide' && request.method === 'POST') {
+      if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      if (!body.id) return fail('id required', 400)
+      const outcome = await decidePending(env, String(body.id), String(body.decision ?? 'once'), 'dsh-plugin')
+      return json({ ok: true, outcome })
     }
     if (url.pathname === '/api/status') {
       return json({ ok: true, name: 'secrets-broker-workers', bindings: { d1: Boolean(env.NODEWARDEN_DB), durableObject: Boolean(env.BROKER_STATE) } })

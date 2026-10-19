@@ -2,6 +2,18 @@
 
 ![Secrets Broker logo](assets/logo.png)
 
+## 中文说明
+
+这是 Secrets Broker 的 **Cloudflare Workers 原生版本**：直接读取 NodeWarden
+的 D1 密文，浏览器端完成主密码 KDF，Durable Object 保存会话，Agent 通过
+MCP/OAuth 或 Agent token 读取密钥。
+
+相关仓库：
+
+- Docker / Node 参考实现：<https://github.com/otscup/secrets-broker>
+- Agent Skill（MCP + stdio 桥接器）：<https://github.com/otscup/secrets-broker-skill>
+- DSH 插件（设置页内处理待审批）：[`dsh-plugin/`](dsh-plugin/)
+
 Cloudflare Workers-native implementation of Secrets Broker. It reads a
 Bitwarden-compatible vault from **NodeWarden's D1 database**, decrypts items in
 the Worker only while a browser/CLI unlock session is active, and exposes a

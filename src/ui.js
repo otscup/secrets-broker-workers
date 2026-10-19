@@ -15,7 +15,7 @@ nav button{border:0;background:transparent;color:var(--muted);border-radius:9px;
 nav button.active{background:#fff;color:var(--text);box-shadow:0 2px 8px rgba(20,40,80,.07)}
 .user{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
 .user-wrap{position:relative;margin-left:auto}
-.avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#5b6cff,#0f9d8a);color:#fff;display:grid;place-items:center;font-size:11px;border:0;padding:0;line-height:0;cursor:pointer;overflow:hidden}
+.avatar{width:30px;height:30px;border-radius:50%;background:var(--card);color:var(--text);display:grid;place-items:center;font-size:11px;border:1px solid var(--line);padding:0;line-height:0;cursor:pointer;overflow:hidden;flex:0 0 auto}
 .avatar img{display:block;width:100%;height:100%;object-fit:cover;border-radius:50%}
 .theme-switch{display:flex;gap:2px;background:transparent;border:0;padding:0;margin-left:auto}
 .icon-btn{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;color:var(--muted);border:0;background:transparent;text-decoration:none}
@@ -461,6 +461,12 @@ async function exportItems() {
   } catch (error) { toast(error.message, true) }
 }
 function openModal(title, body) { $('modal-title').textContent = title; $('modal-body').innerHTML = body; show('modal', true) }
+function uaLabel(ua) {
+  const text = String(ua || '')
+  const browser = /Edg\/([\d.]+)/.test(text) ? 'Edge ' + text.match(/Edg\/([\d.]+)/)[1] : /Chrome\/([\d.]+)/.test(text) ? 'Chrome ' + text.match(/Chrome\/([\d.]+)/)[1] : /Firefox\/([\d.]+)/.test(text) ? 'Firefox ' + text.match(/Firefox\/([\d.]+)/)[1] : /Version\/([\d.]+).*Safari/.test(text) ? 'Safari ' + text.match(/Version\/([\d.]+)/)[1] : 'Unknown'
+  const os = /Windows NT 10/.test(text) ? 'Windows' : /Mac OS X/.test(text) ? 'macOS' : /Android/.test(text) ? 'Android' : /iPhone|iPad/.test(text) ? 'iOS' : /Linux/.test(text) ? 'Linux' : ''
+  return browser + (os ? ' · ' + os : '')
+}
 function agentLabel(name) { const agent = (app.data.agents || []).find((entry) => entry.name === name); return agent?.alias || agent?.name || name || '系统' }
 function describeEvent(entry) { return ({ 'secret.read': '读取密钥', 'grant.share': '分享授权', 'grant.approve': '批准授权', 'grant.revoke': '撤销授权', 'transfer.complete': '跨账户复制完成', 'item.create': '创建条目', 'item.update': '修改条目', 'vault.unlock': '解锁' })[entry.event] || entry.event || '' }
 function itemInfoHtml(item) {
@@ -526,7 +532,7 @@ async function loadProfile() {
     try {
       const data = await api('/api/sessions')
       const sessions = data.sessions || []
-      $('sessions-box').innerHTML = sessions.length ? '<table><tr><th>客户端</th><th>IP</th><th>创建</th><th>最后活跃</th><th>操作</th></tr>' + sessions.map((session) => '<tr><td class="hint" style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(session.ua || 'unknown') + (session.current ? ' <b>(当前)</b>' : '') + '</td><td class="hint">' + esc(session.ip || '-') + '</td><td class="hint">' + esc(session.createdAt ? new Date(session.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-') + '</td><td class="hint">' + esc(session.lastSeen ? new Date(session.lastSeen).toLocaleString('zh-CN', { hour12: false }) : '-') + '</td><td>' + (session.current ? '' : '<button class="small danger" data-revoke-session="' + esc(session.id) + '">下线</button>') + '</td></tr>').join('') + '</table>' : '<div class="hint">没有可管理的会话（旧版登录或服务端未记录）</div>'
+      $('sessions-box').innerHTML = sessions.length ? '<table><tr><th>客户端</th><th>IP</th><th>创建</th><th>最后活跃</th><th>操作</th></tr>' + sessions.map((session) => '<tr><td class="hint" title="' + esc(session.ua || '') + '">' + esc(uaLabel(session.ua)) + (session.current ? ' <b>(当前)</b>' : '') + '</td><td class="hint">' + esc(session.ip || '-') + '</td><td class="hint">' + esc(session.createdAt ? new Date(session.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-') + '</td><td class="hint">' + esc(session.lastSeen ? new Date(session.lastSeen).toLocaleString('zh-CN', { hour12: false }) : '-') + '</td><td>' + (session.current ? '' : '<button class="small danger" data-revoke-session="' + esc(session.id) + '">下线</button>') + '</td></tr>').join('') + '</table>' : '<div class="hint">没有可管理的会话（旧版登录或服务端未记录）</div>'
     } catch {} 
     renderAvatar(profile.name || profile.email || profile.oidcEmail, profile.avatarUrl)
     $('who').textContent = profile.email || profile.oidcEmail || $('who').textContent
