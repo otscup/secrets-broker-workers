@@ -23,6 +23,7 @@ separate, Workers-only port so NodeWarden upgrades don't affect it.
 - ✅ Per-item no-approval policy (reads are still audited)
 - ✅ Audit log and dashboard: KPIs, bar trend, agent share, top items, recent activity
 - ✅ Profile page + OIDC (xid) login/binding with PKCE
+- ✅ Account menu from avatar, dark mode, password change, TOTP 2FA
 - ✅ HTTP MCP endpoint (`/mcp`) with tools: `list_secrets`, `request_access`, `get_secret`
 - ✅ Notification settings: Telegram / ntfy / Gotify / wxpush (sent on pending request)
 - ✅ Headless `unlock.mjs`

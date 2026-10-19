@@ -12,7 +12,16 @@ nav{display:flex;gap:2px;margin-left:12px;flex-wrap:wrap}
 nav button{border:0;background:transparent;color:var(--muted);border-radius:9px;padding:7px 13px;font:inherit;font-size:13px;cursor:pointer}
 nav button.active{background:#fff;color:var(--text);box-shadow:0 2px 8px rgba(20,40,80,.07)}
 .user{margin-left:auto;display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
-.avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#5b6cff,#0f9d8a);color:#fff;display:grid;place-items:center;font-size:11px}
+.avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#5b6cff,#0f9d8a);color:#fff;display:grid;place-items:center;font-size:11px;border:0;cursor:pointer}
+.account-menu{position:absolute;right:24px;top:58px;z-index:30;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px;min-width:160px;box-shadow:0 12px 30px rgba(15,23,42,.16)}
+.account-menu button{display:block;width:100%;text-align:left;background:transparent;border-radius:8px;padding:8px 10px;font-size:13px}
+.account-menu button:hover{background:var(--btn)}
+html[data-theme="dark"]{--bg:#0b1220;--card:#111a2b;--line:#24324a;--text:#e6edf7;--muted:#8fa1bd;--btn:#1b2940;--ok:#20b8a6}
+html[data-theme="dark"] body{background:var(--bg);color:var(--text)}
+html[data-theme="dark"] .kpi,html[data-theme="dark"] .seg,html[data-theme="dark"] input,html[data-theme="dark"] select,html[data-theme="dark"] .account-menu,html[data-theme="dark"] .donut-center{background:var(--card);color:var(--text)}
+html[data-theme="dark"] nav button.active{background:#1b2940;color:var(--text)}
+html[data-theme="dark"] tbody tr:hover td{background:#172338}
+html[data-theme="dark"] .modal{background:rgba(0,0,0,.6)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;margin-bottom:14px;box-shadow:0 8px 24px rgba(20,40,80,.04)}
 h2{font-size:14px;margin:0 0 5px}.hint{color:var(--muted);font-size:12px}
 label.field{display:block;font-size:12px;color:var(--muted);margin:9px 0 4px}
@@ -40,13 +49,15 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
 @media(max-width:860px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}@media(max-width:620px){.user .email{display:none}}
 </style></head><body><div class="wrap">
 <header><h1>Secrets Broker</h1><span class="badge">Cloudflare Workers</span>
-<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button><button data-view="profile">个人</button><button data-view="settings">设置</button></nav>
-<span class="user"><span class="email" id="who"></span><span class="avatar" id="avatar">SB</span></span>
-<button id="logout" class="hidden danger">退出登录</button><button id="lock" class="hidden danger">锁定</button></header>
+<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button></nav>
+<span class="user"><span class="email" id="who"></span><button id="avatar" class="avatar" title="账户">SB</button></span>
+<div id="account-menu" class="account-menu hidden"><button data-view="profile">个人资料</button><button data-view="settings">通知设置</button><button id="theme-toggle">夜间模式</button><button id="account-logout" class="danger">退出登录</button></div>
+<button id="lock" class="hidden danger">锁定</button></header>
 
 <section id="login-card" class="card hidden">
   <h2>管理登录</h2><div class="hint">管理登录密码（不是 Agent token，也不是 Bitwarden 主密码）。</div>
   <label class="field">管理登录密码</label><input id="admin-password" type="password" autocomplete="current-password">
+  <div id="totp-row" class="hidden"><label class="field">两步验证码</label><input id="totp-code" inputmode="numeric" placeholder="6 位验证码"></div>
   <div style="margin-top:12px"><button class="primary" id="login">登录</button></div><div class="status" id="login-status"></div><div id="login-oidc" style="margin-top:10px"></div>
 </section>
 
@@ -93,6 +104,8 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
       <div class="row" style="margin-top:10px"><button class="primary" id="profile-save">保存资料</button></div><div class="status" id="profile-status"></div>
     </div>
     <div class="card"><h2>登录与账号绑定</h2><div class="hint">OIDC（xid）登录会作为管理登录方式；配置后可直接点下方按钮。</div><div id="oidc-box" style="margin-top:10px"></div><div class="status" id="oidc-status"></div></div>
+    <div class="card"><h2>修改密码</h2><div class="hint" id="password-source"></div><label class="field">当前密码</label><input id="current-password" type="password" autocomplete="current-password"><label class="field">新密码（至少 8 位）</label><input id="new-password" type="password" autocomplete="new-password"><div style="margin-top:10px"><button class="primary" id="password-save">修改密码</button></div><div class="status" id="password-status"></div></div>
+    <div class="card"><h2>两步验证（TOTP）</h2><div id="totp-status" class="hint"></div><div id="totp-setup-box" class="hidden"><div class="hint">用验证器扫码/手动输入下面的密钥，然后输入 6 位验证码启用。</div><div class="secret" id="totp-secret"></div><label class="field">验证码</label><input id="totp-enable-code" inputmode="numeric" placeholder="6 位验证码"><div style="margin-top:10px"><button class="primary" id="totp-enable">启用两步验证</button></div></div><div class="row" style="margin-top:10px"><button id="totp-setup">生成/重新生成密钥</button><button class="danger hidden" id="totp-disable">关闭两步验证</button></div><div class="status" id="totp-message"></div></div>
   </section>
 
   <section id="view-settings" class="view hidden">
@@ -121,17 +134,23 @@ async function hmac(keyBytes, data) { const key = await crypto.subtle.importKey(
 async function pbkdf2(password, salt, iterations) { const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']); return new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(salt), iterations }, key, 256)) }
 async function hkdf(prk, info, length) { const key = await crypto.subtle.importKey('raw', prk, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const infoBytes = enc.encode(info); const out = new Uint8Array(length); let prev = new Uint8Array(0), offset = 0, counter = 1; while (offset < length) { const input = new Uint8Array(prev.length + infoBytes.length + 1); input.set(prev); input.set(infoBytes, prev.length); input[input.length - 1] = counter; prev = new Uint8Array(await crypto.subtle.sign('HMAC', key, input)); const n = Math.min(prev.length, length - offset); out.set(prev.slice(0, n), offset); offset += n; counter++ } return out }
 async function decryptBw(text, encKey, macKey) { const dot = text.indexOf('.'); const type = Number(text.slice(0, dot)); const parts = text.slice(dot + 1).split('|'); const iv = unb64(parts[0]), ct = unb64(parts[1]); if (type === 2) { const expected = await hmac(macKey, cat(iv, ct)); const mac = unb64(parts[2]); if (!expected.every((b, i) => b === mac[i])) throw new Error('MAC 校验失败') } const key = await crypto.subtle.importKey('raw', encKey, { name: 'AES-CBC' }, false, ['decrypt']); return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, key, ct)) }
-async function api(path, options = {}) { const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } }); const body = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(body.error || ('HTTP ' + response.status)); error.status = response.status; throw error } return body }
+async function api(path, options = {}) { const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } }); const body = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(body.error || ('HTTP ' + response.status)); error.status = response.status; error.data = body; throw error } return body }
 let app = { me: null, data: { agents: [], policies: {}, grants: [], pending: [], audit: [] }, items: [], stats: null, range: '24h', token: '' }
 const esc = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const status = (id, text, cls = '') => { const el = $(id); if (el) { el.textContent = text; el.className = 'status ' + cls } }
 function show(id, visible) { $(id).classList.toggle('hidden', !visible) }
 function toast(text, error = false) { status('item-status', text, error ? 'error' : 'ok') }
 
-async function boot() { try { app.me = await api('/api/me'); show('login-card', false); $('who').textContent = app.me.email || ''; $('avatar').textContent = (app.me.email || 'SB').slice(0, 2).toUpperCase(); show('lock', true); show('logout', true); if (app.me.unlocked) { show('dashboard', true); show('unlock-card', false); await loadAll() } else { show('dashboard', false); show('unlock-card', true) } } catch { show('login-card', true); show('dashboard', false); show('unlock-card', false); loadOidcLogin() } }
+async function boot() { try { app.me = await api('/api/me'); show('login-card', false); $('who').textContent = app.me.email || ''; $('avatar').textContent = (app.me.email || 'SB').slice(0, 2).toUpperCase(); show('lock', true); if (app.me.unlocked) { show('dashboard', true); show('unlock-card', false); await loadAll() } else { show('dashboard', false); show('unlock-card', true) } } catch { show('login-card', true); show('dashboard', false); show('unlock-card', false); loadOidcLogin() } }
 async function loadOidcLogin() { try { const data = await api('/api/oidc/status'); if (data.enabled) $('login-oidc').innerHTML = '<a href="/oidc/login"><button class="primary">使用 OIDC（xid）登录</button></a><span class="hint" style="margin-left:8px">' + esc(data.issuer) + '</span>'; else $('login-oidc').innerHTML = '<span class="hint">未配置 OIDC</span>' } catch {} }
-$('login').onclick = async () => { try { status('login-status', '登录中…'); await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('admin-password').value }) }); $('admin-password').value = ''; await boot() } catch (error) { status('login-status', error.message, 'error') } }
-$('logout').onclick = async () => { try { await api('/api/logout', { method: 'POST' }) } catch {} location.reload() }
+$('login').onclick = async () => { try { status('login-status', '登录中…'); await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('admin-password').value, code: $('totp-code').value }) }); $('admin-password').value = ''; $('totp-code').value = ''; show('totp-row', false); await boot() } catch (error) { if (error.status === 401 && error.data?.totpRequired) { show('totp-row', true); status('login-status', error.data.error || '请输入两步验证码', 'error') } else status('login-status', error.message, 'error') } }
+$('avatar').onclick = (event) => { event.stopPropagation(); show('account-menu', $('account-menu').classList.contains('hidden')) }
+document.addEventListener('click', (event) => { if (!$('account-menu').classList.contains('hidden') && !event.target.closest('#account-menu') && !event.target.closest('#avatar')) show('account-menu', false) })
+$('account-logout').onclick = async () => { try { await api('/api/logout', { method: 'POST' }) } catch {} location.reload() }
+document.querySelectorAll('#account-menu [data-view]').forEach((button) => { button.onclick = () => { show('account-menu', false); document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', false)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + button.dataset.view)); if (button.dataset.view === 'settings') loadSettings(); if (button.dataset.view === 'profile') loadProfile() } })
+function applyTheme(theme) { const next = theme || localStorage.getItem('theme') || 'light'; document.documentElement.dataset.theme = next === 'dark' ? 'dark' : 'light'; $('theme-toggle').textContent = next === 'dark' ? '☀️ 白天模式' : '🌙 夜间模式' }
+$('theme-toggle').onclick = () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; localStorage.setItem('theme', next); applyTheme(next) }
+applyTheme()
 $('unlock').onclick = async () => {
   const password = $('master-password').value; if (!password) return
   status('unlock-status', '正在浏览器本地派生密钥…（约 0.3–1 秒）')
@@ -148,7 +167,7 @@ async function lock() { try { await api('/api/lock', { method: 'POST' }) } catch
 $('lock').onclick = lock; $('lock2').onclick = lock
 document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings(); if (view === 'profile') loadProfile() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('profile-save').onclick = saveProfile
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa
 $('mcp-url').textContent = location.origin + '/mcp'
 $('copy-token').onclick = async () => { try { await navigator.clipboard.writeText(app.token); toast('已复制 token') } catch { toast('复制失败', true) } }
 $('modal-close').onclick = () => show('modal', false)
@@ -281,9 +300,21 @@ async function loadProfile() {
     $('profile-name').value = profile.name || ''; $('profile-email').value = profile.email || profile.oidcEmail || ''; $('profile-avatar').value = profile.avatarUrl || ''
     const oidc = data.oidcEnabled ? '<div class="hint">OIDC issuer：<code>' + esc(data.oidcIssuer) + '</code>' + (profile.oidcSub ? '<br>已绑定：<code>' + esc(profile.oidcEmail || profile.oidcSub) + '</code>' : '<br>尚未绑定，点击登录即可绑定') + '</div><div style="margin-top:10px"><a href="/oidc/login"><button class="primary">使用 OIDC（xid）登录 / 绑定</button></a></div>' : '<div class="hint">未配置 OIDC。设置 OIDC_ISSUER / OIDC_CLIENT_ID / OIDC_CLIENT_SECRET 后重启即可。</div>'
     $('oidc-box').innerHTML = oidc
+    await loadSecurity()
   } catch (error) { status('profile-status', error.message, 'error') }
 }
 async function saveProfile() { try { await api('/api/profile', { method: 'POST', body: JSON.stringify({ name: $('profile-name').value, email: $('profile-email').value, avatarUrl: $('profile-avatar').value }) }); status('profile-status', '已保存', 'ok'); $('who').textContent = $('profile-email').value; } catch (error) { status('profile-status', error.message, 'error') } }
+async function loadSecurity() {
+  try {
+    const data = await api('/api/security'); $('password-source').textContent = data.passwordSource === 'custom' ? '当前使用自定义密码（保存在 Durable Object）' : '当前使用环境变量 ADMIN_PASSWORD，修改后会保存自定义密码'
+    $('totp-status').textContent = data.totpEnabled ? '已启用两步验证' : '未启用'
+    $('totp-disable').classList.toggle('hidden', !data.totpEnabled)
+  } catch (error) { status('profile-status', error.message, 'error') }
+}
+async function changePassword() { try { await api('/api/security/password', { method: 'POST', body: JSON.stringify({ currentPassword: $('current-password').value, newPassword: $('new-password').value }) }); $('current-password').value = ''; $('new-password').value = ''; status('password-status', '密码已修改', 'ok'); await loadSecurity() } catch (error) { status('password-status', error.message, 'error') } }
+async function setup2fa() { try { const data = await api('/api/2fa/setup', { method: 'POST' }); $('totp-secret').textContent = data.secret; $('totp-setup-box').classList.remove('hidden'); status('totp-message', '把密钥加入验证器后输入验证码', 'ok') } catch (error) { status('totp-message', error.message, 'error') } }
+async function enable2fa() { try { await api('/api/2fa/enable', { method: 'POST', body: JSON.stringify({ code: $('totp-enable-code').value }) }); $('totp-setup-box').classList.add('hidden'); $('totp-enable-code').value = ''; status('totp-message', '两步验证已启用', 'ok'); await loadSecurity() } catch (error) { status('totp-message', error.message, 'error') } }
+async function disable2fa() { const password = prompt('输入当前登录密码以关闭两步验证'); if (password === null) return; try { await api('/api/2fa/disable', { method: 'POST', body: JSON.stringify({ password }) }); status('totp-message', '两步验证已关闭', 'ok'); await loadSecurity() } catch (error) { status('totp-message', error.message, 'error') } }
 async function createAgent() { try { const name = $('agent-name').value.trim(); if (!name) return status('agent-status', '请输入名称', 'error'); const allow = $('agent-allow').value.split(',').map((value) => value.trim()).filter(Boolean); const result = await api('/api/agents/create', { method: 'POST', body: JSON.stringify({ name, alias: $('agent-alias').value.trim(), allow, write: $('agent-write').checked }) }); app.token = result.token; $('new-token-value').textContent = result.token; show('new-token', true); $('agent-name').value = ''; $('agent-alias').value = ''; $('agent-allow').value = ''; $('agent-write').checked = false; status('agent-status', '已创建，token 只显示一次', 'ok'); await loadState() } catch (error) { status('agent-status', error.message, 'error') } }
 boot()
 </script></body></html>`

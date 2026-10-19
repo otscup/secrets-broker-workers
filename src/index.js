@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers'
 import { uiHtml } from './ui.js'
 import {
   b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, encryptStr, extractSecret,
-  hmacToken, sha256Base64, unwrapWithKek, wrapWithKek,
+  hmacToken, pbkdf2, sha256Base64, unwrapWithKek, wrapWithKek, bytesToB64,
 } from './crypto.js'
 
 const encoder = new TextEncoder()
@@ -95,6 +95,7 @@ async function loadState(env) {
   state.policies ??= {}
   state.itemGroups ??= {}
   state.profile ??= {}
+  state.security ??= { passwordHash: '', passwordSalt: '', totpSecretWrapped: '', totpEnabled: false, totpPendingWrapped: '' }
   state.grants ??= {}
   state.pending ??= {}
   state.audit ??= []
@@ -170,6 +171,82 @@ async function verifyOidcState(env, cookieValue) {
 
 function base64Url(bytes) {
   return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+async function hashAdminPassword(password, saltText) {
+  const hash = await pbkdf2(password, saltText, 50000, 32)
+  return bytesToB64(hash)
+}
+
+async function verifyAdminPassword(env, state, password) {
+  const security = state.security ?? {}
+  if (security.passwordHash && security.passwordSalt) {
+    return constantTimeEqual(encoder.encode(await hashAdminPassword(String(password), security.passwordSalt)), encoder.encode(security.passwordHash))
+  }
+  if (!env.ADMIN_PASSWORD) return false
+  return constantTimeEqual(encoder.encode(String(password)), encoder.encode(env.ADMIN_PASSWORD))
+}
+
+function base32Decode(text) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+  let bits = 0
+  let value = 0
+  const out = []
+  for (const char of String(text).replace(/=+$/, '').toUpperCase()) {
+    const index = alphabet.indexOf(char)
+    if (index < 0) continue
+    value = (value << 5) | index
+    bits += 5
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 0xff)
+      bits -= 8
+    }
+  }
+  return new Uint8Array(out)
+}
+
+function base32Encode(bytes) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
+  let bits = 0
+  let value = 0
+  let out = ''
+  for (const byte of bytes) {
+    value = (value << 8) | byte
+    bits += 8
+    while (bits >= 5) {
+      out += alphabet[(value >>> (bits - 5)) & 31]
+      bits -= 5
+    }
+  }
+  if (bits > 0) out += alphabet[(value << (5 - bits)) & 31]
+  return out
+}
+
+async function totpCode(secret, time = Date.now()) {
+  const key = base32Decode(secret)
+  const counter = Math.floor(time / 30000)
+  const buffer = new Uint8Array(8)
+  let value = counter
+  for (let i = 7; i >= 0; i--) { buffer[i] = value & 0xff; value = Math.floor(value / 256) }
+  const cryptoKey = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'])
+  const digest = new Uint8Array(await crypto.subtle.sign('HMAC', cryptoKey, buffer))
+  const offset = digest[digest.length - 1] & 0x0f
+  const binary = ((digest[offset] & 0x7f) << 24) | ((digest[offset + 1] & 0xff) << 16) | ((digest[offset + 2] & 0xff) << 8) | (digest[offset + 3] & 0xff)
+  return String(binary % 1000000).padStart(6, '0')
+}
+
+async function verifyTotp(secret, code) {
+  const normalized = String(code ?? '').replace(/\s+/g, '')
+  if (!/^\d{6}$/.test(normalized)) return false
+  for (const drift of [-1, 0, 1]) {
+    if (await totpCode(secret, Date.now() + drift * 30000) === normalized) return true
+  }
+  return false
+}
+
+async function totpSecret(env, state) {
+  if (!state.security?.totpSecretWrapped) return ''
+  return new TextDecoder().decode(await unwrapWithKek(state.security.totpSecretWrapped, await kekBytes(env)))
 }
 
 async function getSession(env) {
@@ -466,10 +543,15 @@ export default {
     }
     if (url.pathname === '/api/login' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
-      if (!env.ADMIN_PASSWORD) return fail('ADMIN_PASSWORD is not configured', 500)
-      if (!constantTimeEqual(encoder.encode(String(body.password ?? '')), encoder.encode(env.ADMIN_PASSWORD))) {
+      const state = await loadState(env)
+      if (!(await verifyAdminPassword(env, state, body.password))) {
         await addAudit(env, { event: 'admin.login-fail' })
         return fail('密码错误', 401)
+      }
+      if (state.security?.totpEnabled) {
+        if (!body.code) return json({ totpRequired: true }, 401)
+        const secret = await totpSecret(env, state)
+        if (!secret || !(await verifyTotp(secret, body.code))) return json({ totpRequired: true, error: '两步验证码错误' }, 401)
       }
       const cookie = await makeCookie(env)
       await addAudit(env, { event: 'admin.login' })
@@ -503,6 +585,53 @@ export default {
         await addAudit(env, { event: 'profile.update' })
         return json({ ok: true })
       }
+    }
+    if (url.pathname === '/api/security') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      return json({ passwordSource: state.security?.passwordHash ? 'custom' : 'env', totpEnabled: state.security?.totpEnabled === true, totpPending: Boolean(state.security?.totpPendingWrapped) })
+    }
+    if (url.pathname === '/api/security/password' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const state = await loadState(env)
+      if (!(await verifyAdminPassword(env, state, body.currentPassword))) return fail('当前密码错误', 401)
+      const next = String(body.newPassword ?? '')
+      if (next.length < 8) return fail('新密码至少 8 位', 400)
+      const salt = bytesToB64(crypto.getRandomValues(new Uint8Array(16)))
+      const hash = await hashAdminPassword(next, salt)
+      await updateState(env, (nextState) => { nextState.security ??= {}; nextState.security.passwordSalt = salt; nextState.security.passwordHash = hash; return nextState })
+      await addAudit(env, { event: 'security.password-change' })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/2fa/setup' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const secret = base32Encode(crypto.getRandomValues(new Uint8Array(20)))
+      const wrapped = await wrapWithKek(encoder.encode(secret), await kekBytes(env))
+      await updateState(env, (next) => { next.security ??= {}; next.security.totpPendingWrapped = wrapped; return next })
+      const label = encodeURIComponent(`Secrets Broker:${state.profile?.email || env.VAULT_EMAIL || 'admin'}`)
+      return json({ ok: true, secret, otpauth: `otpauth://totp/${label}?secret=${secret}&issuer=Secrets%20Broker` })
+    }
+    if (url.pathname === '/api/2fa/enable' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const state = await loadState(env)
+      if (!state.security?.totpPendingWrapped) return fail('请先生成两步验证密钥', 400)
+      const secret = new TextDecoder().decode(await unwrapWithKek(state.security.totpPendingWrapped, await kekBytes(env)))
+      if (!(await verifyTotp(secret, body.code))) return fail('验证码错误', 400)
+      await updateState(env, (next) => { next.security ??= {}; next.security.totpSecretWrapped = state.security.totpPendingWrapped; next.security.totpEnabled = true; next.security.totpPendingWrapped = ''; return next })
+      await addAudit(env, { event: 'security.2fa-enable' })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/2fa/disable' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const state = await loadState(env)
+      if (!(await verifyAdminPassword(env, state, body.password))) return fail('密码错误', 401)
+      await updateState(env, (next) => { next.security ??= {}; next.security.totpEnabled = false; next.security.totpSecretWrapped = ''; next.security.totpPendingWrapped = ''; return next })
+      await addAudit(env, { event: 'security.2fa-disable' })
+      return json({ ok: true })
     }
     if (url.pathname === '/api/oidc/status') {
       const oidc = oidcConfig(env, request)
