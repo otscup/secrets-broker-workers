@@ -810,6 +810,8 @@ export default {
         target.searchParams.set('state', state)
         target.searchParams.set('code_challenge', challenge)
         target.searchParams.set('code_challenge_method', 'S256')
+        const prompt = url.searchParams.get('prompt')
+        if (prompt === 'login' || prompt === 'consent') target.searchParams.set('prompt', prompt)
         return new Response(null, { status: 302, headers: { location: target.toString(), 'set-cookie': `oidc_state=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600` } })
       } catch (error) { return fail(String(error.message ?? error), 502) }
     }
