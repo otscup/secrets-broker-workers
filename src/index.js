@@ -139,6 +139,13 @@ async function loadState(env) {
   state.oauthAgentProfiles ??= {}
   state.adminSessions ??= {}
   state.grants ??= {}
+  for (const grant of Object.values(state.grants)) {
+    if (grant.mode === 'share' && !grant.revokedAt) {
+      grant.noApproval = true
+      grant.expiresAt = 0
+      grant.maxReads = null
+    }
+  }
   state.transfers ??= []
   state.credentialRequests ??= {}
   const defaultAgentAccount = state.settings?.vaultEmail || env.VAULT_EMAIL || ''
@@ -490,7 +497,7 @@ async function processTransfers(env, session) {
       await updateState(env, (next) => {
         next.transfers = (next.transfers ?? []).filter((entry) => entry.id !== transfer.id)
         const key = grantKey(transfer.agent, transfer.name)
-        next.grants[key] = { agent: transfer.agent, name: transfer.name, mode: 'transfer', createdAt: nowIso(), expiresAt: transfer.seconds ? Date.now() + transfer.seconds * 1000 : 0, reads: 0, maxReads: transfer.maxReads ?? null, revokedAt: null, account: transfer.targetAccount }
+        next.grants[key] = { agent: transfer.agent, name: transfer.name, mode: 'transfer', createdAt: nowIso(), expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, noApproval: true, account: transfer.targetAccount }
         return next
       })
       await addAudit(env, { event: 'transfer.complete', agent: transfer.agent, name: transfer.name, sourceAccount: transfer.sourceAccount, targetAccount: transfer.targetAccount })
@@ -1428,7 +1435,7 @@ export default {
             continue
           }
           await updateState(env, (next) => {
-            next.grants[grantKey(agentName, item)] = { agent: agentName, name: item, mode: 'share', createdAt: nowIso(), expiresAt: seconds ? Date.now() + seconds * 1000 : 0, reads: 0, maxReads, revokedAt: null, account: session.email }
+            next.grants[grantKey(agentName, item)] = { agent: agentName, name: item, mode: 'share', createdAt: nowIso(), expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, noApproval: true, account: session.email }
             return next
           })
           await addAudit(env, { event: 'grant.share', agent: agentName, name: item, account: session.email })
@@ -1473,7 +1480,7 @@ export default {
           continue
         }
         await updateState(env, (next) => {
-          next.grants[grantKey(agentName, name)] = { agent: agentName, name, mode: 'share', createdAt: nowIso(), expiresAt: seconds ? Date.now() + seconds * 1000 : 0, reads: 0, maxReads, revokedAt: null, account: session.email }
+          next.grants[grantKey(agentName, name)] = { agent: agentName, name, mode: 'share', createdAt: nowIso(), expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, noApproval: true, account: session.email }
           return next
         })
         await addAudit(env, { event: 'grant.share', name, agents: [agentName], account: session.email })
