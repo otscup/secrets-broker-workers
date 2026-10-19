@@ -15,9 +15,12 @@ separate, Workers-only port so NodeWarden upgrades don't affect it.
 - ✅ Browser-side PBKDF2/HKDF/AES unlock (master password never sent to the Worker)
 - ✅ Durable Object session storage (wrapped with `SESSION_KEK`)
 - ✅ Permanent / 7d / 24h / 1h unlock TTL
-- ✅ Item list + `/secret` read, using an agent Bearer token
+- ✅ Item list + `/secret` read, using per-agent Bearer tokens
+- ✅ Agents: create / rename / rotate / delete, per-agent allowlist and write flag
+- ✅ Approval flow: once / 1h / 24h / 7d / permanent; pending requests in the UI
+- ✅ Per-item no-approval policy (reads are still audited)
+- ✅ Audit log and dashboard: KPIs, bar trend, agent share, top items, recent activity
 - ✅ Headless `unlock.mjs`
-- ⬜ Per-agent tokens, approvals / no-approval policy, audit dashboard
 - ⬜ MCP HTTP/OAuth, notifications, DSH plugin
 
 ## Why browser KDF
@@ -35,6 +38,20 @@ decryption (AES-CBC/HMAC, ~1ms). Free plan CPU is then sufficient per read.
 | Durable Object | 1 namespace | SQLite storage, separate from D1 quota |
 | D1 | **0 new** | read-only binding to existing `nodewarden-db` |
 | KV/R2 | optional | not required |
+
+## Credentials
+
+There are three different secrets; do not mix them:
+
+| Secret | Where | Purpose |
+|---|---|---|
+| `ADMIN_PASSWORD` | browser login form | manage the broker UI; not an agent token |
+| `AGENT_TOKEN` | `Authorization: Bearer ...` | machine/agent `/secret` calls; never used in the browser |
+| Bitwarden master password | browser unlock form | derives keys locally; never sent to the Worker |
+
+The local PoC stores them as `workers-admin-login-password.txt`,
+`workers-agent-bearer-token.txt`, and the Bitwarden master password in
+`nas-master-password.txt` (outside this repo).
 
 ## Setup
 
@@ -81,12 +98,18 @@ node unlock.mjs
 ### Agent API
 
 ```bash
+# first read: returns 202 with a pending request (unless no-approval)
+curl -H "Authorization: Bearer $AGENT_TOKEN" \
+  "https://your-worker.example/secret?name=tavily-api-key"
+
+# after approving in the UI (or setting the item to no-approval)
 curl -H "Authorization: Bearer $AGENT_TOKEN" \
   "https://your-worker.example/secret?name=tavily-api-key"
 ```
 
-The current agent token is a single shared demo token; per-agent tokens and
-approval policies are the next milestone.
+Agents are created in the **Agents** tab; the token is shown only once.
+The item's **免审批** toggle in the **密钥** tab makes reads immediate while still
+recording audit events.
 
 ## Security notes
 
