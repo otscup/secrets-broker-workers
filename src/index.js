@@ -11,7 +11,7 @@ const json = (data, status = 200, headers = {}) => Response.json(data, { status,
 const fail = (message, status = 400) => json({ error: message }, status)
 const nowIso = () => new Date().toISOString()
 
-const emptyState = () => ({ agents: {}, policies: {}, grants: {}, pending: {}, audit: [] })
+const emptyState = () => ({ agents: {}, policies: {}, grants: {}, pending: {}, audit: [], settings: { notifications: {} } })
 
 export class BrokerState extends DurableObject {
   async fetch(request) {
@@ -90,6 +90,12 @@ async function loadState(env) {
   const payload = await response.json()
   let state = payload.state
   if (!state || !state.agents) state = emptyState()
+  state.settings ??= { notifications: {} }
+  state.settings.notifications ??= {}
+  state.policies ??= {}
+  state.grants ??= {}
+  state.pending ??= {}
+  state.audit ??= []
   if (!state.agents || Object.keys(state.agents).length === 0) {
     if (env.AGENT_TOKEN) {
       state.agents['dsh'] = { hash: await sha256Base64(env.AGENT_TOKEN), alias: '', allow: [], write: false, createdAt: nowIso() }
@@ -233,6 +239,69 @@ function publicState(state) {
   }
 }
 
+async function notifyPending(env, origin, entry, ctx) {
+  const state = await loadState(env)
+  const notifications = state.settings?.notifications ?? {}
+  const link = `${origin}/#/grants`
+  const text = `Secrets Broker 授权请求\nAgent: ${entry.agent}\n条目: ${entry.name}\n时间: ${entry.createdAt}\n批准: ${link}`
+  const tasks = []
+  if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
+    tasks.push(fetch(`https://api.telegram.org/bot${notifications.telegram.botToken}/sendMessage`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: notifications.telegram.chatId, text, disable_web_page_preview: true }),
+    }))
+  }
+  if (notifications.ntfy?.url && notifications.ntfy?.topic) {
+    tasks.push(fetch(`${String(notifications.ntfy.url).replace(/\/$/, '')}/${encodeURIComponent(notifications.ntfy.topic)}`, {
+      method: 'POST', headers: { title: 'Secrets Broker approval', tags: 'lock' }, body: text,
+    }))
+  }
+  if (notifications.gotify?.url && notifications.gotify?.token) {
+    tasks.push(fetch(`${String(notifications.gotify.url).replace(/\/$/, '')}/message?token=${encodeURIComponent(notifications.gotify.token)}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Secrets Broker approval', message: text, priority: 5 }),
+    }))
+  }
+  if (notifications.wxpush?.url && notifications.wxpush?.token) {
+    const body = new URLSearchParams({ title: 'Secrets Broker 授权请求', content: text, token: notifications.wxpush.token })
+    tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }))
+  }
+  if (!tasks.length) return
+  const run = Promise.allSettled(tasks)
+  if (ctx?.waitUntil) ctx.waitUntil(run)
+  else await run
+}
+
+async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx }) {
+  const allowed = !agent.allow || agent.allow.length === 0 || agent.allow.includes(name)
+  if (!allowed) return { status: 'forbidden', error: 'agent not allowed to read this item' }
+  const policy = state.policies?.[name]
+  const grant = activeGrant(state, agentName, name)
+  if (!policy?.noApproval && !grant) {
+    let pendingId = findPending(state, agentName, name)
+    if (!pendingId) {
+      pendingId = crypto.randomUUID()
+      const entry = { id: pendingId, agent: agentName, name, createdAt: nowIso() }
+      await updateState(env, (next) => { next.pending[pendingId] = entry; return next })
+      await addAudit(env, { event: 'request.create', agent: agentName, name })
+      await notifyPending(env, origin, entry, ctx)
+    }
+    return { status: 'pending', requestId: pendingId, approvalUrl: `${origin}/#/grants` }
+  }
+  const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
+  if (!result) return { status: 'notfound', error: 'not found' }
+  if (grant) {
+    await updateState(env, (next) => {
+      const current = activeGrant(next, agentName, name)
+      if (current) current.reads = (current.reads ?? 0) + 1
+      if (current?.maxReads != null && (current.reads ?? 0) >= current.maxReads) delete next.grants[grantKey(agentName, name)]
+      return next
+    })
+  }
+  await addAudit(env, { event: 'secret.read', agent: agentName, name, mode: policy?.noApproval ? 'no-approval' : 'grant', via: 'agent' })
+  return { status: 'ok', value: result.value }
+}
+
 function statsFor(state, range) {
   const rangeMs = range === '7d' ? 7 * 86400e3 : range === '30d' ? 30 * 86400e3 : 24 * 3600e3
   const start = Date.now() - rangeMs
@@ -263,7 +332,7 @@ function statsFor(state, range) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url)
     if (url.pathname === '/' || url.pathname === '/index.html') {
       return new Response(uiHtml, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
@@ -450,6 +519,98 @@ export default {
       await updateState(env, (state) => { state.audit = []; return state })
       return json({ ok: true })
     }
+    if (url.pathname === '/api/settings') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      if (request.method === 'GET') {
+        const state = await loadState(env)
+        const n = state.settings?.notifications ?? {}
+        return json({ notifications: {
+          telegram: { chatId: n.telegram?.chatId ?? '', configured: Boolean(n.telegram?.botToken && n.telegram?.chatId) },
+          ntfy: { url: n.ntfy?.url ?? '', topic: n.ntfy?.topic ?? '', configured: Boolean(n.ntfy?.url && n.ntfy?.topic) },
+          gotify: { url: n.gotify?.url ?? '', configured: Boolean(n.gotify?.url && n.gotify?.token) },
+          wxpush: { url: n.wxpush?.url ?? '', configured: Boolean(n.wxpush?.url && n.wxpush?.token) },
+        } })
+      }
+      if (request.method === 'POST') {
+        const body = await request.json().catch(() => ({}))
+        const incoming = body.notifications ?? {}
+        await updateState(env, (state) => {
+          state.settings ??= { notifications: {} }
+          state.settings.notifications ??= {}
+          for (const channel of ['telegram', 'ntfy', 'gotify', 'wxpush']) {
+            if (!incoming[channel]) continue
+            const current = state.settings.notifications[channel] ?? {}
+            const next = { ...current }
+            for (const [key, value] of Object.entries(incoming[channel])) {
+              if (value === null || value === '') {
+                if (key === 'botToken' || key === 'token') continue
+                delete next[key]
+              } else {
+                next[key] = value
+              }
+            }
+            state.settings.notifications[channel] = next
+          }
+          return state
+        })
+        await addAudit(env, { event: 'settings.update', scope: 'notifications' })
+        return json({ ok: true })
+      }
+    }
+    if (url.pathname === '/mcp' && request.method === 'POST') {
+      const resolved = await resolveAgent(request, env)
+      if (!resolved) return new Response(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'unauthorized' } }), { status: 401, headers: { 'content-type': 'application/json', 'www-authenticate': 'Bearer' } })
+      const body = await request.json().catch(() => ({}))
+      const rpcError = (message, code = -32601) => json({ jsonrpc: '2.0', id: body.id ?? null, error: { code, message } })
+      const result = (value) => json({ jsonrpc: '2.0', id: body.id ?? null, result: value })
+      if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
+      if (body.method === 'ping') return result({})
+      if (body.method === 'initialize') {
+        return result({ protocolVersion: body.params?.protocolVersion ?? '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'secrets-broker', version: '0.1.0' } })
+      }
+      if (body.method === 'tools/list') {
+        return result({ tools: [
+          { name: 'list_secrets', description: 'List secret item names available to this agent (no values).', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+          { name: 'request_access', description: 'Request approval to read a secret by name. Returns an approval URL if pending.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
+          { name: 'get_secret', description: 'Read a secret value after approval. Disabled unless MCP_ALLOW_READ=1.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
+        ] })
+      }
+      if (body.method === 'tools/call') {
+        const name = body.params?.name
+        const args = body.params?.arguments ?? {}
+        const text = (value, isError = false) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], ...(isError ? { isError: true } : {}) })
+        const session = await getSession(env)
+        if (!session) return result(text('vault locked; open the broker page or run unlock.mjs', true))
+        try {
+          if (name === 'list_secrets') {
+            const items = await listCiphers(env, env.NODEWARDEN_DB, session)
+            return result(text(items.map((item) => ({ name: item.name, url: item.url, noApproval: item.noApproval }))))
+          }
+          if (name === 'request_access') {
+            const secretName = String(args.name ?? '')
+            if (!secretName) return result(text('name is required', true))
+            const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx })
+            if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
+            if (access.status === 'forbidden') return result(text(access.error, true))
+            if (access.status === 'notfound') return result(text(access.error, true))
+            return result(text('access already allowed; use get_secret'))
+          }
+          if (name === 'get_secret') {
+            if (env.MCP_ALLOW_READ !== '1') return result(text('get_secret is disabled; set MCP_ALLOW_READ=1 to expose values', true))
+            const secretName = String(args.name ?? '')
+            if (!secretName) return result(text('name is required', true))
+            const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx })
+            if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
+            if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
+            return result(text(access.value))
+          }
+          return rpcError('unknown tool')
+        } catch (error) {
+          return result(text(String(error.message ?? error), true))
+        }
+      }
+      return rpcError('unknown method')
+    }
     if (url.pathname === '/secret') {
       const admin = await adminAuthorized(request, env)
       const resolved = admin ? null : await resolveAgent(request, env)
@@ -460,36 +621,14 @@ export default {
       if (!name) return fail('name required', 400)
       try {
         if (resolved) {
-          const { name: agentName, agent, state } = resolved
-          const allowed = !agent.allow || agent.allow.length === 0 || agent.allow.includes(name)
-          if (!allowed) return fail('agent not allowed to read this item', 403)
-          const policy = state.policies?.[name]
-          let grant = activeGrant(state, agentName, name)
-          if (!policy?.noApproval && !grant) {
-            let pendingId = findPending(state, agentName, name)
-            if (!pendingId) {
-              pendingId = crypto.randomUUID()
-              await updateState(env, (next) => {
-                next.pending[pendingId] = { id: pendingId, agent: agentName, name, createdAt: nowIso() }
-                return next
-              })
-              await addAudit(env, { event: 'request.create', agent: agentName, name })
-            }
-            return json({ status: 'pending', requestId: pendingId, approvalUrl: `${url.origin}/#/grants` }, 202)
-          }
-          const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
-          if (!result) return fail('not found', 404)
-          if (grant) {
-            grant.reads = (grant.reads ?? 0) + 1
-            await updateState(env, (next) => {
-              const current = activeGrant(next, agentName, name)
-              if (current) current.reads = (current.reads ?? 0) + 1
-              if (current?.maxReads != null && (current.reads ?? 0) >= current.maxReads) delete next.grants[grantKey(agentName, name)]
-              return next
-            })
-          }
-          await addAudit(env, { event: 'secret.read', agent: agentName, name, mode: policy?.noApproval ? 'no-approval' : 'grant', via: 'agent' })
-          return json({ value: result.value })
+          const access = await agentAccess(env, {
+            session, agentName: resolved.name, agent: resolved.agent, state: resolved.state,
+            name, origin: url.origin, ctx,
+          })
+          if (access.status === 'pending') return json({ status: 'pending', requestId: access.requestId, approvalUrl: access.approvalUrl }, 202)
+          if (access.status === 'forbidden') return fail(access.error, 403)
+          if (access.status === 'notfound') return fail(access.error, 404)
+          return json({ value: access.value })
         }
         const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
         if (!result) return fail('not found', 404)

@@ -4,7 +4,8 @@
   "compatibility_date": "2026-10-19",
   "observability": { "enabled": true },
   "vars": {
-    "VAULT_EMAIL": "you@example.com"
+    "VAULT_EMAIL": "you@example.com",
+    "MCP_ALLOW_READ": "1"
   },
   "durable_objects": {
     "bindings": [

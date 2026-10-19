@@ -40,7 +40,7 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
 @media(max-width:860px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}@media(max-width:620px){.user .email{display:none}}
 </style></head><body><div class="wrap">
 <header><h1>Secrets Broker</h1><span class="badge">Cloudflare Workers</span>
-<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button></nav>
+<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button><button data-view="settings">设置</button></nav>
 <span class="user"><span class="email" id="who"></span><span class="avatar" id="avatar">SB</span></span>
 <button id="logout" class="hidden danger">退出登录</button><button id="lock" class="hidden danger">锁定</button></header>
 
@@ -84,6 +84,19 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
   </section>
 
   <section id="view-logs" class="view hidden"><div class="card"><h2>审计日志</h2><div class="hint">最近 500 条，数据在 Durable Object 中。</div><div id="logs-box" class="table-wrap" style="margin-top:10px"></div></div></section>
+
+  <section id="view-settings" class="view hidden">
+    <div class="card"><h2>通知渠道</h2><div class="hint">待批准请求会推送到这里。留空的 token 表示保留原值。</div>
+      <div class="grid2" style="margin-top:10px">
+        <div><h2 style="font-size:13px">Telegram</h2><label class="field">Bot Token</label><input id="tg-token" type="password" placeholder="留空保留原值"><label class="field">Chat ID</label><input id="tg-chat" placeholder="例如 123456789"><div class="hint" id="tg-status"></div></div>
+        <div><h2 style="font-size:13px">ntfy</h2><label class="field">服务器 URL</label><input id="ntfy-url" placeholder="https://ntfy.example.com"><label class="field">Topic</label><input id="ntfy-topic" placeholder="secrets-broker-xxxx"><div class="hint" id="ntfy-status"></div></div>
+        <div><h2 style="font-size:13px">Gotify</h2><label class="field">服务器 URL</label><input id="gotify-url" placeholder="https://gotify.example.com"><label class="field">App Token</label><input id="gotify-token" type="password" placeholder="留空保留原值"><div class="hint" id="gotify-status"></div></div>
+        <div><h2 style="font-size:13px">wxpush</h2><label class="field">URL</label><input id="wxpush-url" placeholder="https://wxpush.example.com/wxsend"><label class="field">Token</label><input id="wxpush-token" type="password" placeholder="留空保留原值"><div class="hint" id="wxpush-status"></div></div>
+      </div>
+      <div style="margin-top:12px"><button class="primary" id="settings-save">保存通知设置</button></div><div class="status" id="settings-status"></div>
+    </div>
+    <div class="card"><h2>MCP 接入</h2><div class="hint">HTTP MCP 地址（用 Agent Bearer token）：</div><div class="secret" id="mcp-url"></div><div class="hint" style="margin-top:8px">工具：list_secrets / request_access / get_secret。Codex、Hermes 可直接配置 HTTP MCP。</div></div>
+  </section>
 </section>
 <div class="hint" style="text-align:center;margin-top:18px">Workers PoC · 浏览器 KDF · Durable Object 会话 · D1 只读 · 免费版可用</div>
 </div>
@@ -122,9 +135,10 @@ $('unlock').onclick = async () => {
 }
 async function lock() { try { await api('/api/lock', { method: 'POST' }) } catch {} show('dashboard', false); show('unlock-card', true); status('unlock-status', '已锁定', 'ok') }
 $('lock').onclick = lock; $('lock2').onclick = lock
-document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)) } })
+document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('agent-create').onclick = createAgent
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings
+$('mcp-url').textContent = location.origin + '/mcp'
 $('copy-token').onclick = async () => { try { await navigator.clipboard.writeText(app.token); toast('已复制 token') } catch { toast('复制失败', true) } }
 $('modal-close').onclick = () => show('modal', false)
 $('items-box').addEventListener('click', async (event) => { const toggle = event.target.closest('[data-policy]'); if (toggle) { const item = app.items.find((entry) => entry.name === toggle.dataset.policy); if (!item) return; try { await api('/api/policies', { method: 'POST', body: JSON.stringify({ name: item.name, noApproval: !item.noApproval }) }); await loadItems(); toast('已更新免审批策略') } catch (error) { toast(error.message, true) } return } const read = event.target.closest('[data-read]'); if (read) reveal(read.dataset.read) })
@@ -136,6 +150,32 @@ async function loadAll() { await Promise.all([loadState(), loadItems(), loadStat
 async function loadState() { try { app.data = await api('/api/state'); renderAgents(); renderPending(); renderGrants(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
 async function loadItems() { status('item-status', '加载中…'); try { app.items = (await api('/api/items')).items || []; renderItems(); status('item-status', '共 ' + app.items.length + ' 个条目') } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } else status('item-status', error.message, 'error') } }
 async function loadStats() { try { app.stats = await api('/api/stats?range=' + app.range); renderStats() } catch {} }
+async function loadSettings() {
+  try {
+    const data = await api('/api/settings'); const n = data.notifications || {}
+    $('tg-chat').value = n.telegram?.chatId || ''
+    $('tg-status').textContent = n.telegram?.configured ? '已配置（token 已保存）' : '未配置'
+    $('ntfy-url').value = n.ntfy?.url || ''; $('ntfy-topic').value = n.ntfy?.topic || ''
+    $('ntfy-status').textContent = n.ntfy?.configured ? '已配置' : '未配置'
+    $('gotify-url').value = n.gotify?.url || ''
+    $('gotify-status').textContent = n.gotify?.configured ? '已配置（token 已保存）' : '未配置'
+    $('wxpush-url').value = n.wxpush?.url || ''
+    $('wxpush-status').textContent = n.wxpush?.configured ? '已配置（token 已保存）' : '未配置'
+    $('mcp-url').textContent = location.origin + '/mcp'
+  } catch (error) { status('settings-status', error.message, 'error') }
+}
+async function saveSettings() {
+  try {
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ notifications: {
+      telegram: { botToken: $('tg-token').value, chatId: $('tg-chat').value },
+      ntfy: { url: $('ntfy-url').value, topic: $('ntfy-topic').value },
+      gotify: { url: $('gotify-url').value, token: $('gotify-token').value },
+      wxpush: { url: $('wxpush-url').value, token: $('wxpush-token').value },
+    } }) })
+    $('tg-token').value = ''; $('gotify-token').value = ''; $('wxpush-token').value = ''
+    status('settings-status', '已保存', 'ok'); await loadSettings()
+  } catch (error) { status('settings-status', error.message, 'error') }
+}
 function renderStats() {
   const stats = app.stats || { totalReads: 0, activeAgents: 0, pending: 0, activeGrants: 0, buckets: [], topItems: [], topAgents: [] }
   const cards = [{ l: '读取次数', v: stats.totalReads, sub: '当前区间' }, { l: '活跃 Agent', v: stats.activeAgents, sub: '有读取记录' }, { l: '待批准', v: stats.pending, sub: '需要处理', warn: stats.pending > 0 }, { l: '有效授权', v: stats.activeGrants, sub: '含免审批' }]
