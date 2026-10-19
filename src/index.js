@@ -1615,7 +1615,7 @@ export default {
       if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
       if (body.method === 'ping') return result({})
       if (body.method === 'initialize') {
-        return result({ protocolVersion: body.params?.protocolVersion ?? '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'secrets-broker', version: '0.1.0' } })
+        return result({ protocolVersion: body.params?.protocolVersion ?? '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'secrets-broker', version: '0.1.0' }, instructions: 'Use this server for every credential. Call list_secrets to discover items and get_secret to read one; never ask the user for passwords or API keys. If pending approval, present the approval URL and retry. Never print secret values in chat or logs.' })
       }
       if (body.method === 'tools/list') {
         return result({ tools: [
