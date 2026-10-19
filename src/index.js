@@ -99,6 +99,7 @@ async function loadState(env) {
   state.oauthClients ??= {}
   state.oauthCodes ??= {}
   state.oauthTokens ??= {}
+  state.oauthAgentProfiles ??= {}
   state.grants ??= {}
   state.transfers ??= []
   const defaultAgentAccount = state.settings?.vaultEmail || env.VAULT_EMAIL || ''
@@ -107,7 +108,7 @@ async function loadState(env) {
   state.audit ??= []
   if (!state.agents || Object.keys(state.agents).length === 0) {
     if (env.AGENT_TOKEN) {
-      state.agents['dsh'] = { hash: await sha256Base64(env.AGENT_TOKEN), tokenWrapped: await wrapWithKek(encoder.encode(env.AGENT_TOKEN), await kekBytes(env)), alias: '', allow: [], groups: [], write: false, account: defaultAgentAccount, createdAt: nowIso() }
+      state.agents['dsh'] = { hash: await sha256Base64(env.AGENT_TOKEN), tokenWrapped: await wrapWithKek(encoder.encode(env.AGENT_TOKEN), await kekBytes(env)), alias: '', note: '', allow: [], groups: [], write: false, account: defaultAgentAccount, createdAt: nowIso() }
     }
     await saveState(env, state)
   } else if (env.AGENT_TOKEN && state.agents.dsh && !state.agents.dsh.tokenWrapped) {
@@ -313,7 +314,8 @@ async function resolveAgent(request, env) {
   for (const tokenEntry of Object.values(state.oauthTokens ?? {})) {
     if (tokenEntry.expiresAt && tokenEntry.expiresAt < Date.now()) continue
     if (constantTimeEqual(encoder.encode(tokenEntry.hash ?? ''), encoder.encode(hash))) {
-      return { name: tokenEntry.agent, agent: { allow: [], groups: [], write: false, oauth: true, account: tokenEntry.account ?? '' }, state }
+      const profile = state.oauthAgentProfiles?.[tokenEntry.agent] ?? {}
+      return { name: tokenEntry.agent, agent: { allow: profile.allow ?? [], groups: profile.groups ?? [], write: profile.write === true, oauth: true, account: tokenEntry.account ?? '', alias: profile.alias ?? '', note: profile.note ?? '' }, state }
     }
   }
   return null
@@ -558,14 +560,15 @@ async function createCipher(env, db, session, fields, folderNameOverride) {
 }
 
 function publicState(state) {
-  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], write: agent.write === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '' }))
+  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], write: agent.write === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '' }))
   const seen = new Set(agents.map((agent) => agent.name))
   const now = Date.now()
   for (const token of Object.values(state.oauthTokens ?? {})) {
     if (!token.agent || seen.has(token.agent)) continue
     if (token.expiresAt && token.expiresAt <= now) continue
     seen.add(token.agent)
-    agents.push({ name: token.agent, alias: '', allow: [], groups: [], write: false, account: token.account ?? '', oauth: true, createdAt: token.createdAt ?? '' })
+    const profile = state.oauthAgentProfiles?.[token.agent] ?? {}
+    agents.push({ name: token.agent, alias: profile.alias ?? '', note: profile.note ?? '', allow: profile.allow ?? [], groups: profile.groups ?? [], write: profile.write === true, account: token.account ?? '', oauth: true, createdAt: token.createdAt ?? '' })
   }
   return {
     agents,
@@ -1049,7 +1052,7 @@ export default {
       let error = ''
       await updateState(env, (state) => {
         if (state.agents[name]) { error = 'agent already exists'; return state }
-        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], write: body.write === true, account, createdAt: nowIso() }
+        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), note: String(body.note ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], write: body.write === true, account, createdAt: nowIso() }
         return state
       })
       if (error) return fail(error, 409)
@@ -1093,12 +1096,25 @@ export default {
       let found = false
       await updateState(env, (state) => {
         const agent = state.agents[name]
-        if (!agent) return state
+        if (agent) {
+          found = true
+          if (typeof body.alias === 'string') agent.alias = body.alias.trim()
+          if (typeof body.note === 'string') agent.note = body.note.trim()
+          if (Array.isArray(body.allow)) agent.allow = body.allow.map(String).filter(Boolean)
+          if (Array.isArray(body.groups)) agent.groups = body.groups.map(String).filter(Boolean)
+          if (typeof body.write === 'boolean') agent.write = body.write
+          return state
+        }
+        const oauthExists = Object.values(state.oauthTokens ?? {}).some((token) => token.agent === name)
+        if (!oauthExists) return state
         found = true
-        if (typeof body.alias === 'string') agent.alias = body.alias.trim()
-        if (Array.isArray(body.allow)) agent.allow = body.allow.map(String).filter(Boolean)
-        if (Array.isArray(body.groups)) agent.groups = body.groups.map(String).filter(Boolean)
-        if (typeof body.write === 'boolean') agent.write = body.write
+        state.oauthAgentProfiles ??= {}
+        const profile = state.oauthAgentProfiles[name] ??= { alias: '', note: '', allow: [], groups: [], write: false }
+        if (typeof body.alias === 'string') profile.alias = body.alias.trim()
+        if (typeof body.note === 'string') profile.note = body.note.trim()
+        if (Array.isArray(body.allow)) profile.allow = body.allow.map(String).filter(Boolean)
+        if (Array.isArray(body.groups)) profile.groups = body.groups.map(String).filter(Boolean)
+        if (typeof body.write === 'boolean') profile.write = body.write
         return state
       })
       if (!found) return fail('agent not found', 404)
@@ -1389,6 +1405,7 @@ export default {
         }
         if (body.agent) {
           for (const [hash, token] of Object.entries(state.oauthTokens ?? {})) if (token.agent === body.agent) delete state.oauthTokens[hash]
+          delete state.oauthAgentProfiles?.[body.agent]
         }
         if (body.all === true) { state.oauthClients = {}; state.oauthTokens = {}; state.oauthCodes = {} }
         return state
@@ -1461,6 +1478,8 @@ export default {
       await updateState(env, (next) => {
         delete next.oauthCodes[code]
         next.oauthTokens[hash] = { hash, agent: agentName, clientId: entry.clientId, account, createdAt: nowIso(), expiresAt }
+        next.oauthAgentProfiles ??= {}
+        if (!next.oauthAgentProfiles[agentName]) next.oauthAgentProfiles[agentName] = { alias: next.oauthClients?.[entry.clientId]?.clientName ?? '', note: '', allow: [], groups: [], write: false }
         return next
       })
       await addAudit(env, { event: 'oauth.token-issue', agent: agentName, clientId: entry.clientId })
