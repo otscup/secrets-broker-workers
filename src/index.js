@@ -100,6 +100,7 @@ async function loadState(env) {
   state.oauthCodes ??= {}
   state.oauthTokens ??= {}
   state.grants ??= {}
+  state.transfers ??= []
   const defaultAgentAccount = state.settings?.vaultEmail || env.VAULT_EMAIL || ''
   for (const agent of Object.values(state.agents ?? {})) if (!agent.account && defaultAgentAccount) agent.account = defaultAgentAccount
   state.pending ??= {}
@@ -414,6 +415,47 @@ async function findCipherRow(env, db, session, name) {
   return null
 }
 
+async function queueTransfer(env, db, sourceSession, agentName, agent, name, folder) {
+  const found = await findCipherRow(env, db, sourceSession, name)
+  if (!found) throw new Error('source item not found')
+  const payload = { name, value: extractSecret(found.decrypted), url: cipherUrl(found.decrypted.data), notes: found.decrypted.notes }
+  const wrapped = await wrapWithKek(encoder.encode(JSON.stringify(payload)), await kekBytes(env))
+  const targetAccount = String(agent.account ?? '')
+  if (!targetAccount) throw new Error('agent has no bound account')
+  const transfer = { id: crypto.randomUUID(), agent: agentName, name, sourceAccount: sourceSession.email, targetAccount, folder: String(folder ?? ''), payloadWrapped: wrapped, createdAt: nowIso() }
+  await updateState(env, (state) => { state.transfers ??= []; state.transfers.push(transfer); return state })
+  await addAudit(env, { event: 'transfer.queue', agent: agentName, name, sourceAccount: sourceSession.email, targetAccount })
+  return transfer
+}
+
+async function processTransfers(env, session) {
+  if (!session?.email) return []
+  const state = await loadState(env)
+  const completed = []
+  for (const transfer of [...(state.transfers ?? [])]) {
+    if (String(transfer.targetAccount).toLowerCase() !== String(session.email).toLowerCase()) continue
+    try {
+      const payload = JSON.parse(new TextDecoder().decode(await unwrapWithKek(transfer.payloadWrapped, await kekBytes(env))))
+      await createCipher(env, env.NODEWARDEN_DB, session, { name: transfer.name, value: payload.value, url: payload.url, notes: payload.notes, group: '' }, transfer.folder)
+      await updateState(env, (next) => {
+        next.transfers = (next.transfers ?? []).filter((entry) => entry.id !== transfer.id)
+        const key = grantKey(transfer.agent, transfer.name)
+        next.grants[key] = { agent: transfer.agent, name: transfer.name, mode: 'transfer', createdAt: nowIso(), expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, account: transfer.targetAccount }
+        return next
+      })
+      await addAudit(env, { event: 'transfer.complete', agent: transfer.agent, name: transfer.name, sourceAccount: transfer.sourceAccount, targetAccount: transfer.targetAccount })
+      completed.push(transfer.name)
+    } catch (error) {
+      await updateState(env, (next) => {
+        const current = (next.transfers ?? []).find((entry) => entry.id === transfer.id)
+        if (current) current.error = String(error.message ?? error)
+        return next
+      })
+    }
+  }
+  return completed
+}
+
 async function updateCipher(env, db, session, currentName, changes) {
   const found = await findCipherRow(env, db, session, currentName)
   if (!found) return null
@@ -482,18 +524,19 @@ async function listFolders(env, db, session) {
   return out
 }
 
-async function createCipher(env, db, session, fields) {
+async function createCipher(env, db, session, fields, folderNameOverride) {
   const name = String(fields.name ?? '').trim()
   if (!name) throw new Error('name required')
   if (await findCipherRow(env, db, session, name)) throw new Error('item already exists')
   const user = await vaultUser(env, db, session)
   const state = await loadState(env)
+  const folderName = folderNameOverride !== undefined ? folderNameOverride : (state.settings?.vaultFolder ?? '')
   let folderId = null
-  if (state.settings?.vaultFolder) {
-    const folder = (await listFolders(env, db, session)).find((entry) => entry.name === state.settings.vaultFolder)
+  if (folderName) {
+    const folder = (await listFolders(env, db, session)).find((entry) => entry.name === folderName)
     folderId = folder?.id ?? null
   }
-  if (state.settings?.vaultFolder && !folderId) throw new Error('configured Bitwarden folder not found for this account')
+  if (folderName && !folderId) throw new Error('target folder not found: ' + folderName)
   const enc = b64ToBytes(session.symEncKey)
   const mac = b64ToBytes(session.symMacKey)
   const data = { login: { username: '', password: fields.value ? await encryptStr(String(fields.value), enc, mac) : '', uris: [] }, fields: [] }
@@ -522,6 +565,7 @@ function publicState(state) {
     profile: state.profile ?? {},
     grants: Object.values(state.grants ?? {}),
     pending: Object.values(state.pending ?? {}),
+    transfers: (state.transfers ?? []).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, sourceAccount: entry.sourceAccount, targetAccount: entry.targetAccount, folder: entry.folder, createdAt: entry.createdAt, error: entry.error ?? '' })),
     audit: state.audit ?? [],
   }
 }
@@ -538,7 +582,7 @@ async function decidePending(env, id, decision, source = 'web') {
     }
     const mode = ['once', '1h', '24h', '7d', 'always'].includes(decision) ? decision : 'once'
     const expiresAt = mode === '1h' ? Date.now() + 3600e3 : mode === '24h' ? Date.now() + 86400e3 : mode === '7d' ? Date.now() + 7 * 86400e3 : 0
-    state.grants[grantKey(entry.agent, entry.name)] = { agent: entry.agent, name: entry.name, mode, createdAt: nowIso(), expiresAt, reads: 0, maxReads: mode === 'once' ? 1 : null, revokedAt: null }
+    state.grants[grantKey(entry.agent, entry.name)] = { agent: entry.agent, name: entry.name, mode, createdAt: nowIso(), expiresAt, reads: 0, maxReads: mode === 'once' ? 1 : null, revokedAt: null, account: entry.account ?? '' }
     outcome = { agent: entry.agent, name: entry.name, mode }
     return state
   })
@@ -608,7 +652,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     let pendingId = findPending(state, agentName, name)
     if (!pendingId) {
       pendingId = crypto.randomUUID()
-      const entry = { id: pendingId, agent: agentName, name, createdAt: nowIso() }
+      const entry = { id: pendingId, agent: agentName, name, account: session.email, createdAt: nowIso() }
       await updateState(env, (next) => { next.pending[pendingId] = entry; return next })
       await addAudit(env, { event: 'request.create', agent: agentName, name })
       await notifyPending(env, origin, entry, ctx)
@@ -873,9 +917,11 @@ export default {
         const ttl = body.ttl === 'permanent' ? 0 : Math.max(60, Math.min(60 * 86400, Number(body.ttl) || 86400)) * 1000
         const expiresAt = ttl === 0 ? 0 : Date.now() + ttl
         const email = await vaultEmail(env, env.NODEWARDEN_DB, await loadState(env))
-        await putSession(env, { email, symEncKey: String(body.symEncKey), symMacKey: String(body.symMacKey), expiresAt })
+        const sessionData = { email, symEncKey: String(body.symEncKey), symMacKey: String(body.symMacKey), expiresAt }
+        await putSession(env, sessionData)
+        const completedTransfers = await processTransfers(env, sessionData)
         await addAudit(env, { event: 'vault.unlock', email, ttl: body.ttl ?? '24h' })
-        return json({ ok: true, expiresAt, permanent: ttl === 0 })
+        return json({ ok: true, expiresAt, permanent: ttl === 0, completedTransfers })
       } catch (error) { return fail(String(error.message ?? error), 400) }
     }
     if (url.pathname === '/api/lock' && request.method === 'POST') {
@@ -962,7 +1008,8 @@ export default {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
       if (!session) return fail('locked', 423)
-      try { return json({ items: await listCiphers(env, env.NODEWARDEN_DB, session) }) } catch (error) { return fail(String(error.message ?? error), 500) }
+      const completedTransfers = await processTransfers(env, session)
+      try { return json({ items: await listCiphers(env, env.NODEWARDEN_DB, session), completedTransfers }) } catch (error) { return fail(String(error.message ?? error), 500) }
     }
     if (url.pathname === '/api/policies' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -1081,20 +1128,36 @@ export default {
     }
     if (url.pathname === '/api/grants/share' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
       const body = await request.json().catch(() => ({}))
       const name = String(body.name ?? '').trim()
       const agents = Array.isArray(body.agents) ? body.agents.map(String).filter(Boolean) : []
       if (!name || agents.length === 0) return fail('name and agents required', 400)
       const seconds = Math.max(0, Number(body.seconds) || 0)
       const maxReads = body.maxReads == null || body.maxReads === '' ? null : Math.max(1, Number(body.maxReads) || 1)
-      await updateState(env, (state) => {
-        for (const agentName of agents) {
-          state.grants[grantKey(agentName, name)] = { agent: agentName, name, mode: 'share', createdAt: nowIso(), expiresAt: seconds ? Date.now() + seconds * 1000 : 0, reads: 0, maxReads, revokedAt: null }
+      const state = await loadState(env)
+      const queued = []
+      const granted = []
+      const errors = []
+      for (const agentName of agents) {
+        const agent = state.agents[agentName]
+        if (!agent) { errors.push({ agent: agentName, error: 'unknown agent' }); continue }
+        if (agent.account && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) {
+          try {
+            const transfer = await queueTransfer(env, env.NODEWARDEN_DB, session, agentName, agent, name, body.targetFolder)
+            queued.push({ agent: agentName, name, targetAccount: transfer.targetAccount, folder: transfer.folder })
+          } catch (error) { errors.push({ agent: agentName, error: String(error.message ?? error) }) }
+          continue
         }
-        return state
-      })
-      await addAudit(env, { event: 'grant.share', name, agents })
-      return json({ ok: true })
+        await updateState(env, (next) => {
+          next.grants[grantKey(agentName, name)] = { agent: agentName, name, mode: 'share', createdAt: nowIso(), expiresAt: seconds ? Date.now() + seconds * 1000 : 0, reads: 0, maxReads, revokedAt: null, account: session.email }
+          return next
+        })
+        await addAudit(env, { event: 'grant.share', name, agents: [agentName], account: session.email })
+        granted.push({ agent: agentName, name })
+      }
+      return json({ ok: true, queued, granted, errors })
     }
     if (url.pathname === '/api/grants/restore' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
