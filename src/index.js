@@ -1089,6 +1089,50 @@ export default {
       await addAudit(env, { event: 'agent.delete', agent: name })
       return json({ ok: true })
     }
+    if (url.pathname === '/api/agents/rename' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '')
+      const newName = String(body.newName ?? '').trim()
+      if (!name || !newName || name === newName) return fail('name and newName required', 400)
+      if (!/^[a-zA-Z0-9._:-]{1,64}$/.test(newName)) return fail('invalid newName', 400)
+      let found = false
+      let error = ''
+      await updateState(env, (state) => {
+        if (state.agents[newName]) { error = 'target agent already exists'; return state }
+        if (state.agents[name]) {
+          state.agents[newName] = state.agents[name]
+          delete state.agents[name]
+          found = true
+        } else {
+          const tokens = Object.values(state.oauthTokens ?? {}).filter((token) => token.agent === name)
+          if (!tokens.length) return state
+          if (state.agents[newName]) { error = 'target agent already exists'; return state }
+          for (const token of tokens) token.agent = newName
+          state.oauthAgentProfiles ??= {}
+          if (state.oauthAgentProfiles[name]) {
+            state.oauthAgentProfiles[newName] = state.oauthAgentProfiles[name]
+            delete state.oauthAgentProfiles[name]
+          }
+          found = true
+        }
+        if (!found) return state
+        const grants = state.grants ?? {}
+        for (const [key, grant] of Object.entries(grants)) {
+          if (grant.agent !== name) continue
+          delete grants[key]
+          grant.agent = newName
+          grants[grantKey(newName, grant.name)] = grant
+        }
+        for (const entry of Object.values(state.pending ?? {})) if (entry.agent === name) entry.agent = newName
+        for (const entry of Object.values(state.transfers ?? [])) if (entry.agent === name) entry.agent = newName
+        return state
+      })
+      if (error) return fail(error, 409)
+      if (!found) return fail('agent not found', 404)
+      await addAudit(env, { event: 'agent.rename', agent: name, newName })
+      return json({ ok: true, name: newName })
+    }
     if (url.pathname === '/api/agents/update' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const body = await request.json().catch(() => ({}))
