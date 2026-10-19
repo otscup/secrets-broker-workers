@@ -22,7 +22,8 @@ the Docker version.
 - ✅ Item actions: edit name/url/notes/value, group, share, delete (writes to NodeWarden D1)
 - ✅ Create item, JSON import/export, Bitwarden folder filter
 - ✅ Agent write API (`/agent/items/save`, requires per-agent write flag)
-- ✅ Telegram inline approvals via webhook (needs bot token/chat; not tested here)
+- ✅ Telegram inline approvals via webhook; ntfy/Gotify/wxpush signed one-click approval links
+- ✅ Account switch between NodeWarden users; OIDC unbind; notification test button
 - ✅ Agents: create / rename / rotate / delete / copy token; per-agent allowlist, group scope and write flag
 - ✅ Approval flow: once / 1h / 24h / 7d / permanent; pending requests in the UI
 - ✅ Grant actions: extend duration, set max reads, revoke, delete; direct share to an agent

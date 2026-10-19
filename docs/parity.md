@@ -37,10 +37,13 @@ Docker) and the Cloudflare Workers port (`secrets-broker-workers`).
 | Avatar account menu | ✅ | ✅ |
 | Browser notifications | ✅ | ✅ permission + polling |
 | OIDC settings UI + endpoint auto-discovery | env/settings | ✅ |
+| OIDC unbind | ✅ | ✅ |
+| Switch NodeWarden account | ✅ via vault config | ✅ account selector + re-unlock |
 | Telegram / ntfy / Gotify / wxpush | ✅ | ✅ server-side send |
-| Telegram inline approve buttons | ✅ | ⚠️ webhook + inline keyboard implemented; needs bot token to test |
+| Telegram inline approve buttons | ✅ | ✅ webhook + inline keyboard (tested with test notification; bot token configured) |
+| ntfy / Gotify / wxpush signed approval links | ✅ | ✅ `/approve` signed links in notification text |
 | MCP HTTP Bearer | ✅ | ✅ `list_secrets` / `request_access` / `get_secret` |
-| MCP OAuth 2.1 authorization server | ✅ | ✅ DCR + PKCE + consent + token |
+| MCP OAuth 2.1 authorization server | ✅ | ✅ DCR + PKCE + consent + token tested |
 | stdio MCP adapter | ✅ | ❌ Worker cannot spawn processes |
 | DSH plugin / auto setup | ❌ (not yet) | ❌ |
 | Import/export | ✅ | ✅ JSON |

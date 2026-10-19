@@ -30,6 +30,9 @@ html[data-theme="dark"] .modal{background:rgba(0,0,0,.6)}
 h2{font-size:14px;margin:0 0 5px}.hint{color:var(--muted);font-size:12px}
 label.field{display:block;font-size:12px;color:var(--muted);margin:9px 0 4px}
 input,select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fff;font:inherit;outline:none}
+input[type=checkbox]{width:auto;min-width:0;height:auto;flex:0 0 auto;padding:0;accent-color:var(--ok)}
+.chk{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--text);min-width:0;margin:8px 0}
+.row .chk{flex:0 0 auto;min-width:auto}
 input:focus,select:focus{border-color:var(--ok)}
 button{border:0;border-radius:10px;padding:9px 13px;font:inherit;cursor:pointer;background:var(--btn);color:var(--text)}
 button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;color:var(--danger)}button.small{padding:5px 9px;font-size:12px}
@@ -89,7 +92,7 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
 
   <section id="view-agents" class="view hidden">
     <div class="card"><h2>新增 Agent</h2><div class="hint">token 只显示一次；创建后请保存。</div>
-      <div class="row" style="margin-top:10px"><input id="agent-name" placeholder="名称，如 dsh"><input id="agent-alias" placeholder="显示名（可选）"><input id="agent-allow" placeholder="可读条目，逗号分隔，留空=全部"><label class="chk" style="flex:0 0 auto;min-width:auto"><input type="checkbox" id="agent-write"> 允许写入</label><button class="primary" id="agent-create">创建</button></div><div class="status" id="agent-status"></div><div id="new-token" class="hidden"><div class="secret" id="new-token-value"></div><div style="margin-top:8px"><button id="copy-token">复制 token</button></div></div>
+      <div class="row" style="margin-top:10px"><input id="agent-name" placeholder="名称，如 dsh"><input id="agent-alias" placeholder="显示名（可选）"><input id="agent-allow" placeholder="可读条目，逗号分隔，留空=全部"><label class="chk" style="flex:0 0 auto;min-width:auto"><input type="checkbox" id="agent-write"> 允许写入（Agent 可调 /agent/items/save）</label><button class="primary" id="agent-create">创建</button></div><div class="status" id="agent-status"></div><div id="new-token" class="hidden"><div class="secret" id="new-token-value"></div><div style="margin-top:8px"><button id="copy-token">复制 token</button></div></div>
     </div>
     <div class="card"><h2>Agents</h2><div id="agents-box" class="table-wrap"></div></div>
   </section>
@@ -121,9 +124,10 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
         <div><h2 style="font-size:13px">Gotify</h2><label class="field">服务器 URL</label><input id="gotify-url" placeholder="https://gotify.example.com"><label class="field">App Token</label><input id="gotify-token" type="password" placeholder="留空保留原值"><div class="hint" id="gotify-status"></div></div>
         <div><h2 style="font-size:13px">wxpush</h2><label class="field">URL</label><input id="wxpush-url" placeholder="https://wxpush.example.com/wxsend"><label class="field">Token</label><input id="wxpush-token" type="password" placeholder="留空保留原值"><div class="hint" id="wxpush-status"></div></div>
       </div>
-      <div style="margin-top:12px"><button class="primary" id="settings-save">保存通知设置</button></div><div class="status" id="settings-status"></div>
+      <div style="margin-top:12px"><button class="primary" id="settings-save">保存通知设置</button><button id="notify-test" style="margin-left:8px">发送测试通知</button></div><div class="status" id="settings-status"></div>
     </div>
     <div class="card"><h2>Bitwarden 文件夹</h2><div class="hint">只同步指定文件夹；留空表示全部。文件夹列表来自 NodeWarden folders。</div><select id="vault-folder" style="margin-top:8px"><option value="">全部文件夹</option></select><div class="hint" id="vault-folder-status" style="margin-top:8px"></div></div>
+    <div class="card"><h2>Bitwarden 账户</h2><div class="hint">选择读取哪个 NodeWarden 用户；切换后需要重新解锁（主密码对应该用户）。</div><select id="vault-email" style="margin-top:8px"></select><div class="hint" id="vault-email-status" style="margin-top:8px"></div></div>
     <div class="card"><h2>OIDC / xid 登录</h2><div class="hint">这里填的配置会保存到 Durable Object，不需要重新部署；留空的 secret 表示保留原值。</div>
       <label class="field">Issuer</label><input id="oidc-issuer" placeholder="https://auth.example.com">
       <label class="field">Client ID</label><input id="oidc-client-id" placeholder="client_xxx">
@@ -188,7 +192,7 @@ async function lock() { try { await api('/api/lock', { method: 'POST' }) } catch
 $('lock').onclick = lock; $('lock2').onclick = lock
 document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings(); if (view === 'profile') loadProfile() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('oidc-discover').onclick = discoverOidc; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常')
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('notify-test').onclick = testNotifications; $('oidc-discover').onclick = discoverOidc; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常')
 $('mcp-url').textContent = location.origin + '/mcp'
 $('copy-token').onclick = async () => { try { await navigator.clipboard.writeText(app.token); toast('已复制 token') } catch { toast('复制失败', true) } }
 $('modal-close').onclick = () => show('modal', false)
@@ -235,6 +239,7 @@ async function loadSettings() {
     $('mcp-url').textContent = location.origin + '/mcp'
     $('vault-folder').value = data.vaultFolder || ''
     try { const folders = (await api('/api/folders')).folders || []; $('vault-folder').innerHTML = '<option value="">全部文件夹</option>' + folders.map((folder) => '<option value="' + esc(folder.name) + '">' + esc(folder.name) + '</option>').join(''); $('vault-folder').value = data.vaultFolder || ''; $('vault-folder-status').textContent = folders.length ? '共 ' + folders.length + ' 个文件夹' : '没有文件夹' } catch { $('vault-folder-status').textContent = '需要先解锁 vault 才能读取文件夹' }
+    try { const accounts = (await api('/api/accounts')).accounts || []; $('vault-email').innerHTML = accounts.map((account) => '<option value="' + esc(account.email) + '">' + esc(account.email) + '</option>').join(''); $('vault-email').value = data.vaultEmail || accounts[0]?.email || ''; $('vault-email-status').textContent = accounts.length ? '共 ' + accounts.length + ' 个 NodeWarden 账户' : '没有账户' } catch { $('vault-email-status').textContent = '无法读取账户列表' }
   } catch (error) { status('settings-status', error.message, 'error') }
 }
 async function saveSettings() {
@@ -249,10 +254,13 @@ async function saveSettings() {
       redirectUri: $('oidc-redirect').value, scope: $('oidc-scope').value,
       authorizationEndpoint: $('oidc-authorization').value, tokenEndpoint: $('oidc-token').value,
       userinfoEndpoint: $('oidc-userinfo').value, jwksUri: $('oidc-jwks').value,
-    }, vaultFolder: $('vault-folder').value }) })
+    }, vaultFolder: $('vault-folder').value, vaultEmail: $('vault-email').value }) })
     $('tg-token').value = ''; $('gotify-token').value = ''; $('wxpush-token').value = ''; $('oidc-client-secret').value = ''
     status('settings-status', '已保存', 'ok'); await loadSettings()
   } catch (error) { status('settings-status', error.message, 'error') }
+}
+async function testNotifications() {
+  try { status('settings-status', '发送中…'); const result = await api('/api/notify/test', { method: 'POST' }); status('settings-status', '测试结果：' + JSON.stringify(result.results), 'ok') } catch (error) { status('settings-status', error.message, 'error') }
 }
 async function discoverOidc() {
   const issuer = $('oidc-issuer').value.trim(); if (!issuer) return status('oidc-config-status', '请先填 Issuer', 'error')
@@ -358,7 +366,7 @@ function openItemMenu(name) {
 }
 function openAgentMenu(name) {
   const agent = app.data.agents.find((entry) => entry.name === name); if (!agent) return
-  openModal('Agent「' + name + '」', '<label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">可读条目（逗号分隔，留空=全部）</label><input id="ma-allow" value="' + esc((agent.allow || []).join(', ')) + '"><label class="field">可读分组（逗号分隔，留空=不限）</label><input id="ma-groups" value="' + esc((agent.groups || []).join(', ')) + '"><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
+  openModal('Agent「' + name + '」', '<label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">可读条目（逗号分隔，留空=全部）</label><input id="ma-allow" value="' + esc((agent.allow || []).join(', ')) + '"><label class="field">可读分组（逗号分隔，留空=不限）</label><input id="ma-groups" value="' + esc((agent.groups || []).join(', ')) + '"><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
   $('ma-save').onclick = async () => { try { await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name, alias: $('ma-alias').value.trim(), allow: $('ma-allow').value.split(',').map((v) => v.trim()).filter(Boolean), groups: $('ma-groups').value.split(',').map((v) => v.trim()).filter(Boolean), write: $('ma-write').checked }) }); show('modal', false); await loadState(); toast('权限已保存') } catch (error) { toast(error.message, true) } }
   $('ma-copy').onclick = async () => { try { const data = await api('/api/agents/token', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); toast('token 已复制') } catch (error) { toast(error.message, true) } }
   $('ma-rotate').onclick = async () => { if (!confirm('轮换 ' + name + ' 的 token？旧 token 会立即失效。')) return; try { const data = await api('/api/agents/rotate', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); await loadState(); toast('已轮换并复制新 token') } catch (error) { toast(error.message, true) } }
@@ -378,8 +386,9 @@ async function loadProfile() {
   try {
     const data = await api('/api/profile'); const profile = data.profile || {}
     $('profile-name').value = profile.name || ''; $('profile-email').value = profile.email || profile.oidcEmail || ''; $('profile-avatar').value = profile.avatarUrl || ''
-    const oidc = data.oidcEnabled ? '<div class="hint">OIDC issuer：<code>' + esc(data.oidcIssuer) + '</code>' + (profile.oidcSub ? '<br>已绑定：<code>' + esc(profile.oidcEmail || profile.oidcSub) + '</code>' : '<br>尚未绑定，点击登录即可绑定') + '</div><div style="margin-top:10px"><a href="/oidc/login"><button class="primary">使用 OIDC（xid）登录 / 绑定</button></a></div>' : '<div class="hint">未配置 OIDC。设置 OIDC_ISSUER / OIDC_CLIENT_ID / OIDC_CLIENT_SECRET 后重启即可。</div>'
+    const oidc = data.oidcEnabled ? '<div class="hint">OIDC issuer：<code>' + esc(data.oidcIssuer) + '</code>' + (profile.oidcSub ? '<br>已绑定：<code>' + esc(profile.oidcEmail || profile.oidcSub) + '</code>' : '<br>尚未绑定，点击登录即可绑定') + '</div><div style="margin-top:10px"><a href="/oidc/login"><button class="primary">使用 OIDC（xid）登录 / 绑定</button></a>' + (profile.oidcSub ? '<button class="danger" id="oidc-unbind" style="margin-left:8px">解绑 OIDC</button>' : '') + '</div>' : '<div class="hint">未配置 OIDC。设置 OIDC_ISSUER / OIDC_CLIENT_ID / OIDC_CLIENT_SECRET 后重启即可。</div>'
     $('oidc-box').innerHTML = oidc
+    if ($('oidc-unbind')) $('oidc-unbind').onclick = async () => { if (!confirm('解绑 OIDC？下次登录会重新绑定。')) return; try { await api('/api/profile/oidc/unbind', { method: 'POST' }); await loadProfile(); toast('已解绑') } catch (error) { status('oidc-status', error.message, 'error') } }
     await loadSecurity()
   } catch (error) { status('profile-status', error.message, 'error') }
 }

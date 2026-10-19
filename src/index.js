@@ -328,14 +328,16 @@ function findPending(state, agent, name) {
   return Object.entries(state.pending).find(([, entry]) => entry.agent === agent && entry.name === name)?.[0] ?? null
 }
 
-async function vaultEmail(env, db) {
+async function vaultEmail(env, db, state) {
+  if (state?.settings?.vaultEmail) return state.settings.vaultEmail
   if (env.VAULT_EMAIL) return env.VAULT_EMAIL
   const row = await db.prepare('SELECT email FROM users ORDER BY created_at LIMIT 1').first()
   return row?.email ?? ''
 }
 
 async function bootstrap(env, db) {
-  const email = await vaultEmail(env, db)
+  const state = await loadState(env)
+  const email = await vaultEmail(env, db, state)
   const user = await db.prepare('SELECT id, email, key, kdf_type, kdf_iterations FROM users WHERE lower(email) = lower(?)').bind(email).first()
   if (!user) throw new Error('vault user not found')
   return { email: user.email, kdfType: Number(user.kdf_type) || 0, kdfIterations: Number(user.kdf_iterations) || 600000, profileKey: user.key }
@@ -378,8 +380,12 @@ async function listCiphers(env, db, session) {
 
 async function readSecretFromRows(env, db, session, name) {
   const user = await vaultUser(env, db, session)
+  const state = await loadState(env)
+  let folderId = null
+  if (state.settings?.vaultFolder) folderId = (await listFolders(env, db, session)).find((entry) => entry.name === state.settings.vaultFolder)?.id ?? null
   const rows = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
   for (const candidate of rows.results ?? []) {
+    if (folderId && candidate.folder_id !== folderId) continue
     const decrypted = await decryptCipherRow(candidate, session)
     if (decrypted.name !== name) continue
     return { value: extractSecret(decrypted), type: decrypted.type, url: cipherUrl(decrypted.data) }
@@ -389,8 +395,12 @@ async function readSecretFromRows(env, db, session, name) {
 
 async function findCipherRow(env, db, session, name) {
   const user = await vaultUser(env, db, session)
+  const state = await loadState(env)
+  let folderId = null
+  if (state.settings?.vaultFolder) folderId = (await listFolders(env, db, session)).find((entry) => entry.name === state.settings.vaultFolder)?.id ?? null
   const rows = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
   for (const candidate of rows.results ?? []) {
+    if (folderId && candidate.folder_id !== folderId) continue
     const decrypted = await decryptCipherRow(candidate, session)
     if (decrypted.name === name) return { row: candidate, decrypted }
   }
@@ -529,11 +539,21 @@ async function decidePending(env, id, decision, source = 'web') {
   return outcome
 }
 
+async function signedApprovalLinks(env, id, origin, source = 'notification') {
+  const exp = Date.now() + 24 * 3600 * 1000
+  const links = {}
+  for (const decision of ['once', '24h', 'always', 'deny']) {
+    const signature = await hmacToken(await cookieKey(env), `${id}:${decision}:${exp}`)
+    links[decision] = `${origin}/approve?id=${encodeURIComponent(id)}&d=${decision}&exp=${exp}&sig=${encodeURIComponent(signature)}&ch=${encodeURIComponent(source)}`
+  }
+  return links
+}
+
 async function notifyPending(env, origin, entry, ctx) {
   const state = await loadState(env)
   const notifications = state.settings?.notifications ?? {}
-  const link = `${origin}/#/grants`
-  const text = `Secrets Broker 授权请求\nAgent: ${entry.agent}\n条目: ${entry.name}\n时间: ${entry.createdAt}\n批准: ${link}`
+  const links = await signedApprovalLinks(env, entry.id, origin)
+  const text = `Secrets Broker 授权请求\nAgent: ${entry.agent}\n条目: ${entry.name}\n时间: ${entry.createdAt}\n\n批准一次: ${links.once}\n批准 24 小时: ${links['24h']}\n永久: ${links.always}\n拒绝: ${links.deny}`
   const tasks = []
   if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
     const keyboard = { inline_keyboard: [
@@ -661,7 +681,12 @@ export default {
     if (url.pathname === '/api/login' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
       const state = await loadState(env)
-      if (!(await verifyAdminPassword(env, state, body.password))) {
+      let passwordValid = await verifyAdminPassword(env, state, body.password)
+      if (!passwordValid && env.ADMIN_PASSWORD && constantTimeEqual(encoder.encode(String(body.password ?? '')), encoder.encode(env.ADMIN_PASSWORD))) {
+        passwordValid = true
+        await updateState(env, (next) => { next.security ??= {}; next.security.passwordHash = ''; next.security.passwordSalt = ''; return next })
+      }
+      if (!passwordValid) {
         await addAudit(env, { event: 'admin.login-fail' })
         return fail('密码错误', 401)
       }
@@ -681,7 +706,7 @@ export default {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
       const state = await loadState(env)
-      return json({ email: env.VAULT_EMAIL || (session && session.email) || '', unlocked: Boolean(session), expiresAt: session?.expiresAt ?? 0, pending: Object.keys(state.pending ?? {}).length })
+      return json({ email: state.settings?.vaultEmail || env.VAULT_EMAIL || (session && session.email) || '', unlocked: Boolean(session), expiresAt: session?.expiresAt ?? 0, pending: Object.keys(state.pending ?? {}).length })
     }
     if (url.pathname === '/api/profile') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -839,7 +864,7 @@ export default {
         if (encBytes.length !== 32 || macBytes.length !== 32) return fail('invalid session keys', 400)
         const ttl = body.ttl === 'permanent' ? 0 : Math.max(60, Math.min(60 * 86400, Number(body.ttl) || 86400)) * 1000
         const expiresAt = ttl === 0 ? 0 : Date.now() + ttl
-        const email = await vaultEmail(env, env.NODEWARDEN_DB)
+        const email = await vaultEmail(env, env.NODEWARDEN_DB, await loadState(env))
         await putSession(env, { email, symEncKey: String(body.symEncKey), symMacKey: String(body.symMacKey), expiresAt })
         await addAudit(env, { event: 'vault.unlock', email, ttl: body.ttl ?? '24h' })
         return json({ ok: true, expiresAt, permanent: ttl === 0 })
@@ -1123,6 +1148,39 @@ export default {
       await updateState(env, (state) => { state.audit = []; return state })
       return json({ ok: true })
     }
+    if (url.pathname === '/api/accounts') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      try {
+        const rows = await env.NODEWARDEN_DB.prepare('SELECT email FROM users ORDER BY created_at').all()
+        return json({ accounts: (rows.results ?? []).map((row) => ({ email: row.email })) })
+      } catch (error) { return fail(String(error.message ?? error), 500) }
+    }
+    if (url.pathname === '/api/profile/oidc/unbind' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      await updateState(env, (state) => { state.profile ??= {}; delete state.profile.oidcSub; delete state.profile.oidcEmail; return state })
+      await addAudit(env, { event: 'profile.oidc-unbind' })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/notify/test' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const notifications = state.settings?.notifications ?? {}
+      const text = 'Secrets Broker 测试通知：通知渠道工作正常。'
+      const results = {}
+      if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
+        try { const response = await fetch(`https://api.telegram.org/bot${notifications.telegram.botToken}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: notifications.telegram.chatId, text }) }); results.telegram = response.status } catch (error) { results.telegram = String(error.message ?? error) }
+      } else results.telegram = 'not configured'
+      if (notifications.ntfy?.url && notifications.ntfy?.topic) {
+        try { const response = await fetch(`${String(notifications.ntfy.url).replace(/\/$/, '')}/${encodeURIComponent(notifications.ntfy.topic)}`, { method: 'POST', headers: { title: 'Secrets Broker test' }, body: text }); results.ntfy = response.status } catch (error) { results.ntfy = String(error.message ?? error) }
+      } else results.ntfy = 'not configured'
+      if (notifications.gotify?.url && notifications.gotify?.token) {
+        try { const response = await fetch(`${String(notifications.gotify.url).replace(/\/$/, '')}/message?token=${encodeURIComponent(notifications.gotify.token)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Secrets Broker test', message: text, priority: 5 }) }); results.gotify = response.status } catch (error) { results.gotify = String(error.message ?? error) }
+      } else results.gotify = 'not configured'
+      if (notifications.wxpush?.url && notifications.wxpush?.token) {
+        try { const body = new URLSearchParams({ title: 'Secrets Broker test', content: text, token: notifications.wxpush.token }); const response = await fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }); results.wxpush = response.status } catch (error) { results.wxpush = String(error.message ?? error) }
+      } else results.wxpush = 'not configured'
+      return json({ ok: true, results })
+    }
     if (url.pathname === '/api/settings') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       if (request.method === 'GET') {
@@ -1145,10 +1203,11 @@ export default {
           jwksUri: effectiveOidc?.jwksUri ?? '',
           configured: Boolean(effectiveOidc),
           secretConfigured: Boolean(state.settings?.oidc?.clientSecret || env.OIDC_CLIENT_SECRET),
-        }, vaultFolder: state.settings?.vaultFolder ?? '' })
+        }, vaultFolder: state.settings?.vaultFolder ?? '', vaultEmail: state.settings?.vaultEmail ?? '' })
       }
       if (request.method === 'POST') {
         const body = await request.json().catch(() => ({}))
+        const previousEmail = (await loadState(env)).settings?.vaultEmail ?? ''
         const incoming = body.notifications ?? {}
         await updateState(env, (state) => {
           state.settings ??= { notifications: {} }
@@ -1181,10 +1240,12 @@ export default {
             if (body.vaultFolder.trim()) state.settings.vaultFolder = body.vaultFolder.trim()
             else delete state.settings.vaultFolder
           }
+          if (typeof body.vaultEmail === 'string' && body.vaultEmail.trim()) state.settings.vaultEmail = body.vaultEmail.trim()
           return state
         })
         await addAudit(env, { event: 'settings.update', scope: 'notifications-oidc' })
         let latest = await loadState(env)
+        if ((latest.settings?.vaultEmail ?? '') !== previousEmail) await stateStub(env).fetch('https://state/session', { method: 'DELETE' })
         const telegram = latest.settings?.notifications?.telegram
         if (telegram?.botToken) {
           if (!telegram.webhookSecret) {
@@ -1199,6 +1260,19 @@ export default {
         }
         return json({ ok: true })
       }
+    }
+    if (url.pathname === '/approve') {
+      const id = String(url.searchParams.get('id') ?? '')
+      const decision = String(url.searchParams.get('d') ?? '')
+      const exp = Number(url.searchParams.get('exp') ?? '0')
+      const signature = String(url.searchParams.get('sig') ?? '')
+      if (!id || !['once', '24h', 'always', 'deny'].includes(decision) || !Number.isFinite(exp) || exp < Date.now()) return new Response('链接已过期或无效', { status: 400, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+      const expected = await hmacToken(await cookieKey(env), `${id}:${decision}:${exp}`)
+      if (!constantTimeEqual(encoder.encode(expected), encoder.encode(signature))) return new Response('签名无效', { status: 400, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+      const outcome = await decidePending(env, id, decision, String(url.searchParams.get('ch') ?? 'notification'))
+      if (!outcome) return new Response('请求不存在或已处理', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+      const message = outcome.denied ? `已拒绝：${outcome.agent} 读取「${outcome.name}」` : `已授权：${outcome.agent} 读取「${outcome.name}」（${outcome.mode}）`
+      return new Response(`<meta charset="utf-8"><title>Secrets Broker</title><h2>${message}</h2>`, { headers: { 'content-type': 'text/html; charset=utf-8' } })
     }
     if (url.pathname === '/telegram/webhook' && request.method === 'POST') {
       const state = await loadState(env)
