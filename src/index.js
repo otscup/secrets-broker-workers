@@ -558,8 +558,17 @@ async function createCipher(env, db, session, fields, folderNameOverride) {
 }
 
 function publicState(state) {
+  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], write: agent.write === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '' }))
+  const seen = new Set(agents.map((agent) => agent.name))
+  const now = Date.now()
+  for (const token of Object.values(state.oauthTokens ?? {})) {
+    if (!token.agent || seen.has(token.agent)) continue
+    if (token.expiresAt && token.expiresAt <= now) continue
+    seen.add(token.agent)
+    agents.push({ name: token.agent, alias: '', allow: [], groups: [], write: false, account: token.account ?? '', oauth: true, createdAt: token.createdAt ?? '' })
+  }
   return {
-    agents: Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], write: agent.write === true, account: agent.account ?? '', createdAt: agent.createdAt ?? '' })),
+    agents,
     policies: state.policies ?? {},
     itemGroups: state.itemGroups ?? {},
     profile: state.profile ?? {},
@@ -1378,10 +1387,13 @@ export default {
           for (const [hash, token] of Object.entries(state.oauthTokens ?? {})) if (token.clientId === body.clientId) delete state.oauthTokens[hash]
           for (const [code, entry] of Object.entries(state.oauthCodes ?? {})) if (entry.clientId === body.clientId) delete state.oauthCodes[code]
         }
+        if (body.agent) {
+          for (const [hash, token] of Object.entries(state.oauthTokens ?? {})) if (token.agent === body.agent) delete state.oauthTokens[hash]
+        }
         if (body.all === true) { state.oauthClients = {}; state.oauthTokens = {}; state.oauthCodes = {} }
         return state
       })
-      await addAudit(env, { event: 'oauth.revoke', clientId: body.clientId ?? '' })
+      await addAudit(env, { event: 'oauth.revoke', clientId: body.clientId ?? '', agent: body.agent ?? '' })
       return json({ ok: true })
     }
     if (url.pathname === '/.well-known/oauth-protected-resource' || url.pathname === '/.well-known/oauth-protected-resource/mcp') {

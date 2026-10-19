@@ -60,6 +60,38 @@ skill's rules are model-facing; the MCP entry provides the tools.
 Import `SKILL.md` as a skill/instruction file, then add the remote MCP endpoint
 as above.
 
+## stdio MCP bridge
+
+Some agents only support local stdio MCP servers. Use the bundled bridge:
+
+```bash
+node mcp-stdio/index.mjs
+```
+
+It logs in to the broker with OAuth 2.1 (dynamic client registration + PKCE +
+browser consent), caches the token in
+`~/.secrets-broker/oauth.json`, then proxies stdio MCP requests to
+`https://sb.otscup.com/mcp`.
+
+Environment:
+
+| Variable | Meaning |
+|---|---|
+| `BROKER_URL` | default `https://sb.otscup.com` |
+| `BROKER_TOKEN` | optional static agent token; skips OAuth |
+| `BROKER_TOKEN_FILE` | token cache path |
+| `BROKER_NO_BROWSER=1` | print the login URL instead of opening a browser |
+
+Codex-style config:
+
+```toml
+[mcp_servers.secrets]
+command = "node"
+args = ["/absolute/path/to/mcp-stdio/index.mjs"]
+```
+
+The bridge writes logs to stderr only; stdout is JSON-RPC.
+
 ## Create the agent identity
 
 In `https://sb.otscup.com`:

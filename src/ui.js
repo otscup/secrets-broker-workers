@@ -300,7 +300,7 @@ function renderItems() {
 }
 function renderAgents() {
   const agents = app.data.agents || []
-  $('agents-box').innerHTML = agents.length ? '<table><tr><th>Agent</th><th>显示名</th><th>绑定账户</th><th>可读范围</th><th>写入</th><th>操作</th></tr>' + agents.map((agent) => '<tr><td><b>' + esc(agent.name) + '</b></td><td>' + esc(agent.alias || '') + '</td><td class="hint">' + esc(agent.account || '-') + '</td><td class="hint">' + esc(agent.allow && agent.allow.length ? agent.allow.join(', ') : (agent.groups && agent.groups.length ? '分组：' + agent.groups.join(', ') : '全部')) + '</td><td>' + (agent.write ? '开' : '关') + '</td><td><button class="small" data-agent-menu="' + esc(agent.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">还没有 Agent</div>'
+  $('agents-box').innerHTML = agents.length ? '<table><tr><th>Agent</th><th>显示名</th><th>绑定账户</th><th>可读范围</th><th>写入</th><th>操作</th></tr>' + agents.map((agent) => '<tr><td><b>' + esc(agent.name) + '</b>' + (agent.oauth ? ' <span class="pill">OAuth</span>' : '') + '</td><td>' + esc(agent.alias || '') + '</td><td class="hint">' + esc(agent.account || '-') + '</td><td class="hint">' + esc(agent.allow && agent.allow.length ? agent.allow.join(', ') : (agent.groups && agent.groups.length ? '分组：' + agent.groups.join(', ') : '全部')) + '</td><td>' + (agent.write ? '开' : '关') + '</td><td><button class="small" data-agent-menu="' + esc(agent.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">还没有 Agent</div>'
 }
 function renderPending() {
   const pending = app.data.pending || []
@@ -375,6 +375,11 @@ function openItemMenu(name) {
 }
 function openAgentMenu(name) {
   const agent = app.data.agents.find((entry) => entry.name === name); if (!agent) return
+  if (agent.oauth) {
+    openModal('OAuth Agent「' + name + '」', '<div class="hint">这是通过 MCP OAuth 动态注册产生的 Agent，绑定账户：<code>' + esc(agent.account || '-') + '</code>。权限由 OAuth 客户端 token 控制；撤销后需要重新授权。</div><div style="margin-top:12px"><button class="danger" id="ma-oauth-revoke">撤销 OAuth 授权</button></div>')
+    $('ma-oauth-revoke').onclick = async () => { if (!confirm('撤销 ' + name + ' 的 OAuth token？')) return; try { await api('/api/oauth/revoke', { method: 'POST', body: JSON.stringify({ agent: name }) }); show('modal', false); await loadState(); toast('已撤销') } catch (error) { toast(error.message, true) } }
+    return
+  }
   openModal('Agent「' + name + '」', '<div class="hint">绑定账户：<code>' + esc(agent.account || '未绑定（旧数据）') + '</code>。Agent 只能读取该账户；切换账户后旧 Agent 不会自动获得新账户权限。</div><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">可读条目（逗号分隔，留空=全部）</label><input id="ma-allow" value="' + esc((agent.allow || []).join(', ')) + '"><label class="field">可读分组（逗号分隔，留空=不限）</label><input id="ma-groups" value="' + esc((agent.groups || []).join(', ')) + '"><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
   $('ma-save').onclick = async () => { try { await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name, alias: $('ma-alias').value.trim(), allow: $('ma-allow').value.split(',').map((v) => v.trim()).filter(Boolean), groups: $('ma-groups').value.split(',').map((v) => v.trim()).filter(Boolean), write: $('ma-write').checked }) }); show('modal', false); await loadState(); toast('权限已保存') } catch (error) { toast(error.message, true) } }
   $('ma-copy').onclick = async () => { try { const data = await api('/api/agents/token', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); toast('token 已复制') } catch (error) { toast(error.message, true) } }
