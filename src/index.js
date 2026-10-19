@@ -168,26 +168,28 @@ async function oidcDiscovery(issuer) {
   return response.json()
 }
 
-async function oidcStateCookie(env, state, verifier) {
+async function oidcStateCookie(env, state, verifier, next = '') {
   const expires = Date.now() + 10 * 60 * 1000
-  const payload = `${state}:${verifier}.${expires}`
+  const payload = `${state}|${verifier}|${next}|${expires}`
   const signature = await hmacToken(await cookieKey(env), payload)
-  return `${payload}.${signature}`
+  return encodeURIComponent(`${payload}|${signature}`)
 }
 
 async function verifyOidcState(env, cookieValue) {
   if (!cookieValue) return null
-  const parts = cookieValue.split('.')
-  if (parts.length < 3) return null
+  let decoded = ''
+  try { decoded = decodeURIComponent(cookieValue) } catch { return null }
+  const parts = decoded.split('|')
+  if (parts.length < 5) return null
   const signature = parts.pop()
   const expires = Number(parts.pop())
-  const payload = parts.join('.')
+  const next = parts.pop()
+  const verifier = parts.pop()
+  const state = parts.join('|')
   if (!Number.isFinite(expires) || expires < Date.now()) return null
-  const expected = await hmacToken(await cookieKey(env), `${payload}.${expires}`)
-  if (!constantTimeEqual(encoder.encode(expected), encoder.encode(signature))) return null
-  const separator = payload.indexOf(':')
-  if (separator < 0) return null
-  return { state: payload.slice(0, separator), verifier: payload.slice(separator + 1) }
+  const payload = `${state}|${verifier}|${next}|${expires}`
+  const expected = await hmacToken(await cookieKey(env), payload)
+  return constantTimeEqual(encoder.encode(expected), encoder.encode(signature)) ? { state, verifier, next } : null
 }
 
 function base64Url(bytes) {
@@ -798,7 +800,8 @@ export default {
         const state = randomToken()
         const verifier = base64Url(crypto.getRandomValues(new Uint8Array(32)))
         const challenge = base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(verifier))))
-        const cookie = await oidcStateCookie(env, state, verifier)
+        const next = url.searchParams.get('next') === 'profile' ? 'profile' : ''
+        const cookie = await oidcStateCookie(env, state, verifier, next)
         const target = new URL(endpoints.authorization)
         target.searchParams.set('client_id', oidc.clientId)
         target.searchParams.set('redirect_uri', oidc.redirectUri)
@@ -816,7 +819,7 @@ export default {
       if (!oidc) return fail('OIDC is not configured', 503)
       const stateData = await verifyOidcState(env, readCookie(request, 'oidc_state'))
       const returned = url.searchParams.get('state') ?? ''
-      if (!stateData || stateData.state !== returned) return fail('invalid OIDC state', 400)
+      if (!stateData || stateData.state !== returned) return new Response('<meta charset="utf-8"><h2>OIDC 状态校验失败</h2><p>这个链接是回调地址，不能直接打开；请从「个人资料 → 使用 OIDC 登录 / 绑定」重新发起。</p><p><a href="/?view=profile">回到个人资料</a></p>', { status: 400, headers: { 'content-type': 'text/html; charset=utf-8' } })
       const code = url.searchParams.get('code') ?? ''
       if (!code) return fail('missing authorization code', 400)
       try {
@@ -841,7 +844,7 @@ export default {
         })
         const cookie = await makeCookie(env)
         await addAudit(env, { event: 'admin.oidc-login', email: user.email ?? user.sub ?? '' })
-        return new Response(null, { status: 302, headers: { location: '/', 'set-cookie': [
+        return new Response(null, { status: 302, headers: { location: stateData.next === 'profile' ? '/?view=profile' : '/', 'set-cookie': [
           `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`,
           'oidc_state=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0',
         ] } })
