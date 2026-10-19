@@ -846,10 +846,9 @@ export default {
         })
         const cookie = await makeCookie(env)
         await addAudit(env, { event: 'admin.oidc-login', email: user.email ?? user.sub ?? '' })
-        return new Response(null, { status: 302, headers: { location: stateData.next === 'profile' ? '/?view=profile' : '/', 'set-cookie': [
-          `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`,
-          'oidc_state=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0',
-        ] } })
+        const headers = new Headers({ location: stateData.next === 'profile' ? '/?view=profile' : '/' })
+        headers.append('set-cookie', `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`)
+        return new Response(null, { status: 302, headers })
       } catch (error) { return fail(String(error.message ?? error), 502) }
     }
     if (url.pathname === '/api/bootstrap') {
