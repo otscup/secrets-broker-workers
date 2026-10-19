@@ -364,7 +364,7 @@ async function vaultUser(env, db, session) {
 
 async function listCiphers(env, db, session) {
   const user = await vaultUser(env, db, session)
-  const result = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL ORDER BY updated_at DESC').bind(user.id).all()
+  const result = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key, created_at, updated_at FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL ORDER BY updated_at DESC').bind(user.id).all()
   const state = await loadState(env)
   const folderName = state.settings?.vaultFolder ?? ''
   let folderId = null
@@ -378,6 +378,7 @@ async function listCiphers(env, db, session) {
       const name = decrypted.name || '(未命名)'
       items.push({
         id: row.id, type: decrypted.type, name, url: cipherUrl(decrypted.data), folderId: row.folder_id ?? null,
+        createdAt: row.created_at ?? '', creator: session.email,
         group: state.itemGroups?.[name] ?? '',
         noApproval: state.policies[name]?.noApproval === true,
       })
@@ -617,7 +618,7 @@ async function notifyPending(env, origin, entry, ctx) {
   const state = await loadState(env)
   const notifications = state.settings?.notifications ?? {}
   const links = await signedApprovalLinks(env, entry.id, origin)
-  const text = `Secrets Broker 授权请求\nAgent: ${entry.agent}\n条目: ${entry.name}\n时间: ${entry.createdAt}\n\n批准一次: ${links.once}\n批准 24 小时: ${links['24h']}\n永久: ${links.always}\n拒绝: ${links.deny}`
+  const shortText = `Secrets Broker 授权请求\nAgent: ${entry.agent}\n条目: ${entry.name}\n时间: ${entry.createdAt}\n\n请在 Secrets Broker 页面处理: ${origin}/`
   const tasks = []
   if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
     const keyboard = { inline_keyboard: [
@@ -626,23 +627,33 @@ async function notifyPending(env, origin, entry, ctx) {
     ] }
     tasks.push(fetch(`https://api.telegram.org/bot${notifications.telegram.botToken}/sendMessage`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: notifications.telegram.chatId, text, disable_web_page_preview: true, reply_markup: keyboard }),
+      body: JSON.stringify({ chat_id: notifications.telegram.chatId, text: shortText, disable_web_page_preview: true, reply_markup: keyboard }),
     }))
   }
   if (notifications.ntfy?.url && notifications.ntfy?.topic) {
+    const actions = [
+      `view, 仅本次, ${links.once}, clear=true`,
+      `view, 24小时, ${links['24h']}, clear=true`,
+      `view, 永久, ${links.always}, clear=true`,
+      `view, 拒绝, ${links.deny}, clear=true`,
+    ].join('; ')
     tasks.push(fetch(`${String(notifications.ntfy.url).replace(/\/$/, '')}/${encodeURIComponent(notifications.ntfy.topic)}`, {
-      method: 'POST', headers: { title: 'Secrets Broker approval', tags: 'lock' }, body: text,
+      method: 'POST', headers: { title: 'Secrets Broker approval', tags: 'lock', Actions: actions }, body: shortText,
     }))
   }
   if (notifications.gotify?.url && notifications.gotify?.token) {
     tasks.push(fetch(`${String(notifications.gotify.url).replace(/\/$/, '')}/message?token=${encodeURIComponent(notifications.gotify.token)}`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'Secrets Broker approval', message: text, priority: 5 }),
+      body: JSON.stringify({ title: 'Secrets Broker approval', message: shortText, priority: 5 }),
     }))
   }
   if (notifications.wxpush?.url && notifications.wxpush?.token) {
-    const body = new URLSearchParams({ title: 'Secrets Broker 授权请求', content: text, token: notifications.wxpush.token })
-    tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }))
+    if (notifications.wxpush.format === 'json') {
+      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${notifications.wxpush.token}` }, body: JSON.stringify({ title: 'Secrets Broker 授权请求', text: shortText, content: shortText, agent: entry.agent, item: entry.name, approval: links }) }))
+    } else {
+      const body = new URLSearchParams({ title: 'Secrets Broker 授权请求', content: shortText, token: notifications.wxpush.token })
+      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }))
+    }
   }
   if (!tasks.length) return
   const run = Promise.allSettled(tasks)
@@ -768,7 +779,7 @@ export default {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
       const state = await loadState(env)
-      return json({ email: state.settings?.vaultEmail || env.VAULT_EMAIL || (session && session.email) || '', name: state.profile?.name || '', avatarUrl: state.profile?.avatarUrl || '', unlocked: Boolean(session), expiresAt: session?.expiresAt ?? 0, pending: Object.keys(state.pending ?? {}).length })
+      return json({ email: state.settings?.vaultEmail || env.VAULT_EMAIL || (session && session.email) || '', name: state.profile?.name || '', avatarUrl: state.profile?.avatarUrl || '', siteName: state.settings?.siteName || 'Secrets Broker', unlocked: Boolean(session), expiresAt: session?.expiresAt ?? 0, pending: Object.keys(state.pending ?? {}).length })
     }
     if (url.pathname === '/api/profile') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -1375,7 +1386,7 @@ export default {
         try { const response = await fetch(`${String(notifications.gotify.url).replace(/\/$/, '')}/message?token=${encodeURIComponent(notifications.gotify.token)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Secrets Broker test', message: text, priority: 5 }) }); results.gotify = response.status } catch (error) { results.gotify = String(error.message ?? error) }
       } else results.gotify = 'not configured'
       if (notifications.wxpush?.url && notifications.wxpush?.token) {
-        try { const body = new URLSearchParams({ title: 'Secrets Broker test', content: text, token: notifications.wxpush.token }); const response = await fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }); results.wxpush = response.status } catch (error) { results.wxpush = String(error.message ?? error) }
+        try { let response; if (notifications.wxpush.format === 'json') response = await fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${notifications.wxpush.token}` }, body: JSON.stringify({ title: 'Secrets Broker test', text, content: text }) }); else { const body = new URLSearchParams({ title: 'Secrets Broker test', content: text, token: notifications.wxpush.token }); response = await fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }) } results.wxpush = response.status } catch (error) { results.wxpush = String(error.message ?? error) }
       } else results.wxpush = 'not configured'
       return json({ ok: true, results })
     }
@@ -1389,7 +1400,7 @@ export default {
           telegram: { chatId: n.telegram?.chatId ?? '', configured: Boolean(n.telegram?.botToken && n.telegram?.chatId) },
           ntfy: { url: n.ntfy?.url ?? '', topic: n.ntfy?.topic ?? '', configured: Boolean(n.ntfy?.url && n.ntfy?.topic) },
           gotify: { url: n.gotify?.url ?? '', configured: Boolean(n.gotify?.url && n.gotify?.token) },
-          wxpush: { url: n.wxpush?.url ?? '', configured: Boolean(n.wxpush?.url && n.wxpush?.token) },
+          wxpush: { url: n.wxpush?.url ?? '', format: n.wxpush?.format ?? 'form', configured: Boolean(n.wxpush?.url && n.wxpush?.token) },
         }, oidc: {
           issuer: effectiveOidc?.issuer ?? '',
           clientId: effectiveOidc?.clientId ?? '',
@@ -1401,7 +1412,7 @@ export default {
           jwksUri: effectiveOidc?.jwksUri ?? '',
           configured: Boolean(effectiveOidc),
           secretConfigured: Boolean(state.settings?.oidc?.clientSecret || env.OIDC_CLIENT_SECRET),
-        }, vaultFolder: state.settings?.vaultFolder ?? '', vaultEmail: state.settings?.vaultEmail ?? '' })
+        }, vaultFolder: state.settings?.vaultFolder ?? '', vaultEmail: state.settings?.vaultEmail ?? '', siteName: state.settings?.siteName ?? 'Secrets Broker' })
       }
       if (request.method === 'POST') {
         const body = await request.json().catch(() => ({}))
@@ -1439,6 +1450,7 @@ export default {
             else delete state.settings.vaultFolder
           }
           if (typeof body.vaultEmail === 'string' && body.vaultEmail.trim()) state.settings.vaultEmail = body.vaultEmail.trim()
+          if (typeof body.siteName === 'string' && body.siteName.trim()) state.settings.siteName = body.siteName.trim().slice(0, 60)
           return state
         })
         await addAudit(env, { event: 'settings.update', scope: 'notifications-oidc' })
