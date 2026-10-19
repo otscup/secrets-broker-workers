@@ -19,30 +19,31 @@ Docker) and the Cloudflare Workers port (`secrets-broker-workers`).
 | Groups / notes | ✅ broker config | ✅ broker state (`itemGroups`) |
 | Share to agents | ✅ | ✅ multi-agent, duration, max reads |
 | Per-item no-approval | ✅ | ✅ |
-| Create item | ✅ | ❌ |
-| Bitwarden folder sync setting | ✅ | ❌ |
+| Create item | ✅ | ✅ |
+| Import / export (JSON) | ✅ local files | ✅ JSON import/export |
+| Bitwarden folder sync setting | ✅ | ✅ folder filter (broker state) |
 | Agent create/rename/rotate/delete | ✅ | ✅ |
 | Copy agent token later | ✅ encrypted tokens | ✅ token wrapped with `SESSION_KEK` |
 | Per-agent readable items/groups | ✅ | ✅ |
-| Per-agent write flag | ✅ + write API | ⚠️ flag only; no write API yet |
+| Per-agent write flag | ✅ + write API | ✅ `/agent/items/save` |
 | Pending approvals | ✅ | ✅ |
 | Approve once/1h/24h/7d/permanent | ✅ | ✅ |
 | Grant extend/revoke/delete | ✅ | ✅ |
 | Grant max reads | ✅ | ✅ |
-| Grant restore | ✅ | ❌ |
-| Audit log | ✅ file | ✅ DO (last 500) |
+| Grant restore | ✅ | ✅ |
+| Audit log | ✅ file | ✅ DO (last 500, not auto-cleared) |
 | Dashboard KPIs/trend/top items | ✅ | ✅ |
 | Theme (light/dark/auto) | ✅ | ✅ |
 | Avatar account menu | ✅ | ✅ |
 | Browser notifications | ✅ | ✅ permission + polling |
 | OIDC settings UI + endpoint auto-discovery | env/settings | ✅ |
 | Telegram / ntfy / Gotify / wxpush | ✅ | ✅ server-side send |
-| Telegram inline approve buttons | ✅ | ❌ link only |
+| Telegram inline approve buttons | ✅ | ⚠️ webhook + inline keyboard implemented; needs bot token to test |
 | MCP HTTP Bearer | ✅ | ✅ `list_secrets` / `request_access` / `get_secret` |
-| MCP OAuth 2.1 authorization server | ✅ | ❌ currently Bearer only |
+| MCP OAuth 2.1 authorization server | ✅ | ✅ DCR + PKCE + consent + token |
 | stdio MCP adapter | ✅ | ❌ Worker cannot spawn processes |
 | DSH plugin / auto setup | ❌ (not yet) | ❌ |
-| Import/export | ✅ | ❌ |
+| Import/export | ✅ | ✅ JSON |
 | Health/status | ✅ | ✅ |
 
 ## Important notes

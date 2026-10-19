@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers'
 import { uiHtml } from './ui.js'
 import {
-  b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, encryptStr, extractSecret,
+  b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, decryptStr, encryptStr, extractSecret,
   hmacToken, pbkdf2, sha256Base64, unwrapWithKek, wrapWithKek, bytesToB64,
 } from './crypto.js'
 
@@ -96,6 +96,9 @@ async function loadState(env) {
   state.itemGroups ??= {}
   state.profile ??= {}
   state.security ??= { passwordHash: '', passwordSalt: '', totpSecretWrapped: '', totpEnabled: false, totpPendingWrapped: '' }
+  state.oauthClients ??= {}
+  state.oauthCodes ??= {}
+  state.oauthTokens ??= {}
   state.grants ??= {}
   state.pending ??= {}
   state.audit ??= []
@@ -302,6 +305,12 @@ async function resolveAgent(request, env) {
   for (const [name, agent] of Object.entries(state.agents)) {
     if (constantTimeEqual(encoder.encode(agent.hash), encoder.encode(hash))) return { name, agent, state }
   }
+  for (const tokenEntry of Object.values(state.oauthTokens ?? {})) {
+    if (tokenEntry.expiresAt && tokenEntry.expiresAt < Date.now()) continue
+    if (constantTimeEqual(encoder.encode(tokenEntry.hash ?? ''), encoder.encode(hash))) {
+      return { name: tokenEntry.agent, agent: { allow: [], groups: [], write: false, oauth: true }, state }
+    }
+  }
   return null
 }
 
@@ -348,8 +357,12 @@ async function listCiphers(env, db, session) {
   const user = await vaultUser(env, db, session)
   const result = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL ORDER BY updated_at DESC').bind(user.id).all()
   const state = await loadState(env)
+  const folderName = state.settings?.vaultFolder ?? ''
+  let folderId = null
+  if (folderName) folderId = (await listFolders(env, db, session)).find((entry) => entry.name === folderName)?.id ?? null
   const items = []
   for (const row of result.results ?? []) {
+    if (folderId && row.folder_id !== folderId) continue
     try {
       const decrypted = await decryptCipherRow(row, session)
       const name = decrypted.name || '(未命名)'
@@ -442,6 +455,47 @@ async function deleteCipher(env, db, session, name) {
   return true
 }
 
+async function listFolders(env, db, session) {
+  const user = await vaultUser(env, db, session)
+  const rows = await db.prepare('SELECT id, name FROM folders WHERE user_id = ? ORDER BY name').bind(user.id).all()
+  const out = []
+  for (const row of rows.results ?? []) {
+    try { out.push({ id: row.id, name: await decryptStr(row.name, b64ToBytes(session.symEncKey), b64ToBytes(session.symMacKey)) }) } catch {}
+  }
+  return out
+}
+
+async function createCipher(env, db, session, fields) {
+  const name = String(fields.name ?? '').trim()
+  if (!name) throw new Error('name required')
+  if (await findCipherRow(env, db, session, name)) throw new Error('item already exists')
+  const user = await vaultUser(env, db, session)
+  const state = await loadState(env)
+  let folderId = null
+  if (state.settings?.vaultFolder) {
+    const folder = (await listFolders(env, db, session)).find((entry) => entry.name === state.settings.vaultFolder)
+    folderId = folder?.id ?? null
+  }
+  const enc = b64ToBytes(session.symEncKey)
+  const mac = b64ToBytes(session.symMacKey)
+  const data = { login: { username: '', password: fields.value ? await encryptStr(String(fields.value), enc, mac) : '', uris: [] }, fields: [] }
+  if (fields.url) data.login.uris.push({ uri: await encryptStr(String(fields.url), enc, mac) })
+  const id = crypto.randomUUID()
+  const time = nowIso()
+  await db.prepare('INSERT INTO ciphers (id,user_id,type,folder_id,name,notes,favorite,data,reprompt,key,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)').bind(
+    id, user.id, 1, folderId, await encryptStr(name, enc, mac), fields.notes ? await encryptStr(String(fields.notes), enc, mac) : '', 0, JSON.stringify(data), 0, null, time, time,
+  ).run()
+  await updateState(env, (next) => {
+    next.itemGroups ??= {}
+    if (fields.group && String(fields.group).trim()) next.itemGroups[name] = String(fields.group).trim()
+    next.policies ??= {}
+    if (fields.noApproval === true) next.policies[name] = { noApproval: true }
+    return next
+  })
+  await addAudit(env, { event: 'item.create', name })
+  return { name, id }
+}
+
 function publicState(state) {
   return {
     agents: Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], write: agent.write === true, createdAt: agent.createdAt ?? '' })),
@@ -454,6 +508,27 @@ function publicState(state) {
   }
 }
 
+async function decidePending(env, id, decision, source = 'web') {
+  let outcome = null
+  await updateState(env, (state) => {
+    const entry = state.pending[id]
+    if (!entry) return state
+    delete state.pending[id]
+    if (decision === 'deny') {
+      outcome = { denied: true, agent: entry.agent, name: entry.name }
+      return state
+    }
+    const mode = ['once', '1h', '24h', '7d', 'always'].includes(decision) ? decision : 'once'
+    const expiresAt = mode === '1h' ? Date.now() + 3600e3 : mode === '24h' ? Date.now() + 86400e3 : mode === '7d' ? Date.now() + 7 * 86400e3 : 0
+    state.grants[grantKey(entry.agent, entry.name)] = { agent: entry.agent, name: entry.name, mode, createdAt: nowIso(), expiresAt, reads: 0, maxReads: mode === 'once' ? 1 : null, revokedAt: null }
+    outcome = { agent: entry.agent, name: entry.name, mode }
+    return state
+  })
+  if (!outcome) return null
+  await addAudit(env, { event: outcome.denied ? 'request.deny' : 'request.approve', ...outcome, source })
+  return outcome
+}
+
 async function notifyPending(env, origin, entry, ctx) {
   const state = await loadState(env)
   const notifications = state.settings?.notifications ?? {}
@@ -461,9 +536,13 @@ async function notifyPending(env, origin, entry, ctx) {
   const text = `Secrets Broker 授权请求\nAgent: ${entry.agent}\n条目: ${entry.name}\n时间: ${entry.createdAt}\n批准: ${link}`
   const tasks = []
   if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
+    const keyboard = { inline_keyboard: [
+      [{ text: '仅本次', callback_data: `a:${entry.id}:once` }, { text: '24 小时', callback_data: `a:${entry.id}:24h` }],
+      [{ text: '永久', callback_data: `a:${entry.id}:always` }, { text: '拒绝', callback_data: `d:${entry.id}` }],
+    ] }
     tasks.push(fetch(`https://api.telegram.org/bot${notifications.telegram.botToken}/sendMessage`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: notifications.telegram.chatId, text, disable_web_page_preview: true }),
+      body: JSON.stringify({ chat_id: notifications.telegram.chatId, text, disable_web_page_preview: true, reply_markup: keyboard }),
     }))
   }
   if (notifications.ntfy?.url && notifications.ntfy?.topic) {
@@ -548,6 +627,26 @@ function statsFor(state, range) {
     topItems: countBy('name').slice(0, 20),
     topAgents: countBy('agent').slice(0, 8),
   }
+}
+
+function oauthMetadata(origin) {
+  return {
+    issuer: origin,
+    authorization_endpoint: `${origin}/oauth/authorize`,
+    token_endpoint: `${origin}/oauth/token`,
+    registration_endpoint: `${origin}/oauth/register`,
+    response_types_supported: ['code'],
+    grant_types_supported: ['authorization_code'],
+    code_challenge_methods_supported: ['S256'],
+    token_endpoint_auth_methods_supported: ['none'],
+    scopes_supported: ['secrets.read'],
+  }
+}
+
+function oauthConsentPage(origin, params, client) {
+  const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+  const field = (name) => '<input type="hidden" name="' + name + '" value="' + escape(params.get(name)) + '">'
+  return '<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCP 授权</title><style>body{font:14px/1.6 system-ui;background:#f3f6fb;margin:0;padding:40px;color:#152033}.card{max-width:560px;margin:0 auto;background:#fff;border:1px solid #e3e9f2;border-radius:16px;padding:24px}button{border:0;border-radius:9px;padding:10px 16px;font:inherit;cursor:pointer;margin-right:8px}.primary{background:#0f9d8a;color:#fff}.muted{color:#6b7890;font-size:12px}code{background:#eef1f6;padding:2px 5px;border-radius:5px}</style><div class="card"><h2>Secrets Broker · MCP 授权</h2><p>客户端 <code>' + escape(client?.clientName ?? params.get('client_id')) + '</code> 请求访问你的密钥库。</p><p class="muted">Scope: ' + escape(params.get('scope') ?? 'secrets.read') + '</p><form method="post" action="/oauth/authorize">' + field('client_id') + field('redirect_uri') + field('state') + field('code_challenge') + field('code_challenge_method') + field('scope') + '<button class="primary" name="decision" value="allow">允许</button><button name="decision" value="deny">拒绝</button></form></div></html>'
 }
 
 export default {
@@ -784,6 +883,48 @@ export default {
         return json({ ok: true })
       } catch (error) { return fail(String(error.message ?? error), 500) }
     }
+    if (url.pathname === '/api/items/create' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      try { return json({ ok: true, ...(await createCipher(env, env.NODEWARDEN_DB, session, body)) }) } catch (error) { return fail(String(error.message ?? error), 400) }
+    }
+    if (url.pathname === '/api/items/import' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const entries = Array.isArray(body) ? body : Array.isArray(body.items) ? body.items : []
+      const created = []
+      const skipped = []
+      for (const entry of entries) {
+        try { created.push((await createCipher(env, env.NODEWARDEN_DB, session, entry)).name) } catch (error) { skipped.push({ name: entry?.name, error: String(error.message ?? error) }) }
+      }
+      return json({ ok: true, created, skipped })
+    }
+    if (url.pathname === '/api/items/export') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      try {
+        const user = await vaultUser(env, env.NODEWARDEN_DB, session)
+        const rows = await env.NODEWARDEN_DB.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
+        const state = await loadState(env)
+        const items = []
+        for (const row of rows.results ?? []) {
+          const decrypted = await decryptCipherRow(row, session)
+          items.push({ name: decrypted.name, url: cipherUrl(decrypted.data), notes: decrypted.notes, value: extractSecret(decrypted), group: state.itemGroups?.[decrypted.name] ?? '', noApproval: state.policies?.[decrypted.name]?.noApproval === true })
+        }
+        return json({ exportedAt: nowIso(), items })
+      } catch (error) { return fail(String(error.message ?? error), 500) }
+    }
+    if (url.pathname === '/api/folders') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      try { return json({ folders: await listFolders(env, env.NODEWARDEN_DB, session) }) } catch (error) { return fail(String(error.message ?? error), 500) }
+    }
     if (url.pathname === '/api/items') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
@@ -889,24 +1030,8 @@ export default {
     if (url.pathname === '/api/pending/decide' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const body = await request.json().catch(() => ({}))
-      const id = String(body.id ?? '')
-      let outcome = null
-      await updateState(env, (state) => {
-        const entry = state.pending[id]
-        if (!entry) return state
-        delete state.pending[id]
-        if (body.decision === 'deny') {
-          outcome = { denied: true, agent: entry.agent, name: entry.name }
-          return state
-        }
-        const mode = ['once', '1h', '24h', '7d', 'always'].includes(body.decision) ? body.decision : 'once'
-        const expiresAt = mode === '1h' ? Date.now() + 3600e3 : mode === '24h' ? Date.now() + 86400e3 : mode === '7d' ? Date.now() + 7 * 86400e3 : 0
-        state.grants[grantKey(entry.agent, entry.name)] = { agent: entry.agent, name: entry.name, mode, createdAt: nowIso(), expiresAt, reads: 0, maxReads: mode === 'once' ? 1 : null, revokedAt: null }
-        outcome = { agent: entry.agent, name: entry.name, mode }
-        return state
-      })
+      const outcome = await decidePending(env, String(body.id ?? ''), String(body.decision ?? ''), 'web')
       if (!outcome) return fail('pending request not found', 404)
-      await addAudit(env, { event: outcome.denied ? 'request.deny' : 'request.approve', ...outcome, source: 'web' })
       return json({ ok: true, outcome })
     }
     if (url.pathname === '/api/grants/revoke' && request.method === 'POST') {
@@ -934,6 +1059,24 @@ export default {
         return state
       })
       await addAudit(env, { event: 'grant.share', name, agents })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/grants/restore' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const key = grantKey(String(body.agent ?? ''), String(body.name ?? ''))
+      let found = false
+      await updateState(env, (state) => {
+        const grant = state.grants[key]
+        if (!grant) return state
+        found = true
+        grant.revokedAt = null
+        if (grant.expiresAt && grant.expiresAt <= Date.now()) grant.expiresAt = 0
+        grant.reads = 0
+        return state
+      })
+      if (!found) return fail('grant not found', 404)
+      await addAudit(env, { event: 'grant.restore', agent: body.agent, name: body.name, source: 'web' })
       return json({ ok: true })
     }
     if (url.pathname === '/api/grants/update' && request.method === 'POST') {
@@ -1002,7 +1145,7 @@ export default {
           jwksUri: effectiveOidc?.jwksUri ?? '',
           configured: Boolean(effectiveOidc),
           secretConfigured: Boolean(state.settings?.oidc?.clientSecret || env.OIDC_CLIENT_SECRET),
-        } })
+        }, vaultFolder: state.settings?.vaultFolder ?? '' })
       }
       if (request.method === 'POST') {
         const body = await request.json().catch(() => ({}))
@@ -1034,11 +1177,133 @@ export default {
             if (body.oidc.clear === true) { delete next.issuer; delete next.clientId; delete next.clientSecret; delete next.redirectUri; delete next.scope }
             state.settings.oidc = next
           }
+          if (typeof body.vaultFolder === 'string') {
+            if (body.vaultFolder.trim()) state.settings.vaultFolder = body.vaultFolder.trim()
+            else delete state.settings.vaultFolder
+          }
           return state
         })
         await addAudit(env, { event: 'settings.update', scope: 'notifications-oidc' })
+        let latest = await loadState(env)
+        const telegram = latest.settings?.notifications?.telegram
+        if (telegram?.botToken) {
+          if (!telegram.webhookSecret) {
+            const secret = randomToken()
+            await updateState(env, (state) => { state.settings.notifications.telegram.webhookSecret = secret; return state })
+            latest = await loadState(env)
+          }
+          const current = latest.settings.notifications.telegram
+          try {
+            await fetch(`https://api.telegram.org/bot${current.botToken}/setWebhook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: `${url.origin}/telegram/webhook`, secret_token: current.webhookSecret, allowed_updates: ['callback_query'] }) })
+          } catch {}
+        }
         return json({ ok: true })
       }
+    }
+    if (url.pathname === '/telegram/webhook' && request.method === 'POST') {
+      const state = await loadState(env)
+      const telegram = state.settings?.notifications?.telegram ?? {}
+      const secret = String(telegram.webhookSecret ?? '')
+      if (!secret || request.headers.get('x-telegram-bot-api-secret-token') !== secret) return fail('invalid webhook secret', 401)
+      const update = await request.json().catch(() => ({}))
+      const callback = update.callback_query
+      if (!callback) return json({ ok: true })
+      const data = String(callback.data ?? '')
+      const [kind, id, mode] = data.split(':')
+      const decision = kind === 'd' ? 'deny' : (mode || 'once')
+      const outcome = await decidePending(env, id, decision, 'telegram')
+      const token = telegram.botToken
+      if (token) {
+        const answer = outcome ? (outcome.denied ? '已拒绝' : '已授权') : '请求不存在或已处理'
+        await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ callback_query_id: callback.id, text: answer }) }).catch(() => {})
+        if (callback.message?.chat?.id) {
+          await fetch(`https://api.telegram.org/bot${token}/editMessageText`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: callback.message.chat.id, message_id: callback.message.message_id, text: `${callback.message.text ?? ''}\n\n${answer}`, reply_markup: { inline_keyboard: [] } }) }).catch(() => {})
+        }
+      }
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/oauth/revoke' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      await updateState(env, (state) => {
+        if (body.clientId) {
+          delete state.oauthClients[body.clientId]
+          for (const [hash, token] of Object.entries(state.oauthTokens ?? {})) if (token.clientId === body.clientId) delete state.oauthTokens[hash]
+          for (const [code, entry] of Object.entries(state.oauthCodes ?? {})) if (entry.clientId === body.clientId) delete state.oauthCodes[code]
+        }
+        if (body.all === true) { state.oauthClients = {}; state.oauthTokens = {}; state.oauthCodes = {} }
+        return state
+      })
+      await addAudit(env, { event: 'oauth.revoke', clientId: body.clientId ?? '' })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/.well-known/oauth-protected-resource' || url.pathname === '/.well-known/oauth-protected-resource/mcp') {
+      return json({ resource: `${url.origin}/mcp`, authorization_servers: [url.origin], scopes_supported: ['secrets.read'] })
+    }
+    if (url.pathname === '/.well-known/oauth-authorization-server' || url.pathname === '/.well-known/oauth-authorization-server/mcp') {
+      return json(oauthMetadata(url.origin))
+    }
+    if (url.pathname === '/oauth/register' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris.map(String).filter(Boolean) : []
+      if (!redirectUris.length) return fail('redirect_uris required', 400)
+      const clientId = 'mcp_' + base64Url(crypto.getRandomValues(new Uint8Array(18)))
+      await updateState(env, (state) => {
+        state.oauthClients[clientId] = { clientId, clientName: String(body.client_name ?? 'MCP client'), redirectUris, createdAt: nowIso() }
+        return state
+      })
+      await addAudit(env, { event: 'oauth.client-register', clientId, clientName: body.client_name ?? '' })
+      return json({ client_id: clientId, client_name: body.client_name ?? 'MCP client', redirect_uris: redirectUris, token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }, 201)
+    }
+    if (url.pathname === '/oauth/authorize') {
+      const state = await loadState(env)
+      const params = request.method === 'POST' ? new URLSearchParams(await request.text()) : url.searchParams
+      const clientId = String(params.get('client_id') ?? '')
+      const redirectUri = String(params.get('redirect_uri') ?? '')
+      const client = state.oauthClients[clientId]
+      if (!client) return fail('unknown client', 400)
+      if (!client.redirectUris.includes(redirectUri)) return fail('invalid redirect_uri', 400)
+      if (!(await adminAuthorized(request, env))) return new Response('<meta charset="utf-8"><p>请先在 <a href="/">Secrets Broker</a> 登录，然后再打开这个授权链接。</p>', { status: 401, headers: { 'content-type': 'text/html; charset=utf-8' } })
+      if (request.method === 'POST' && params.get('decision') === 'deny') {
+        const target = new URL(redirectUri); target.searchParams.set('error', 'access_denied'); if (params.get('state')) target.searchParams.set('state', params.get('state'))
+        return Response.redirect(target.toString(), 302)
+      }
+      if (request.method === 'POST' && params.get('decision') === 'allow') {
+        const code = randomToken()
+        await updateState(env, (next) => {
+          next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: String(params.get('code_challenge') ?? ''), scope: String(params.get('scope') ?? 'secrets.read'), createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000 }
+          return next
+        })
+        await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId })
+        const target = new URL(redirectUri); target.searchParams.set('code', code); if (params.get('state')) target.searchParams.set('state', params.get('state'))
+        return Response.redirect(target.toString(), 302)
+      }
+      return new Response(oauthConsentPage(url.origin, params, client), { headers: { 'content-type': 'text/html; charset=utf-8' } })
+    }
+    if (url.pathname === '/oauth/token' && request.method === 'POST') {
+      const form = new URLSearchParams(await request.text())
+      if (form.get('grant_type') !== 'authorization_code') return json({ error: 'unsupported_grant_type' }, 400)
+      const code = String(form.get('code') ?? '')
+      const state = await loadState(env)
+      const entry = state.oauthCodes[code]
+      if (!entry || entry.expiresAt < Date.now()) return json({ error: 'invalid_grant' }, 400)
+      if (String(form.get('client_id') ?? '') !== entry.clientId || String(form.get('redirect_uri') ?? '') !== entry.redirectUri) return json({ error: 'invalid_grant' }, 400)
+      if (entry.codeChallenge) {
+        const verifier = String(form.get('code_verifier') ?? '')
+        const challenge = base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(verifier))))
+        if (challenge !== entry.codeChallenge) return json({ error: 'invalid_grant', error_description: 'PKCE verification failed' }, 400)
+      }
+      const accessToken = randomToken() + randomToken()
+      const hash = await sha256Base64(accessToken)
+      const agentName = 'oauth:' + entry.clientId
+      const expiresAt = Date.now() + 24 * 3600 * 1000
+      await updateState(env, (next) => {
+        delete next.oauthCodes[code]
+        next.oauthTokens[hash] = { hash, agent: agentName, clientId: entry.clientId, createdAt: nowIso(), expiresAt }
+        return next
+      })
+      await addAudit(env, { event: 'oauth.token-issue', agent: agentName, clientId: entry.clientId })
+      return json({ access_token: accessToken, token_type: 'Bearer', expires_in: 86400, scope: entry.scope })
     }
     if (url.pathname === '/mcp' && request.method === 'POST') {
       const resolved = await resolveAgent(request, env)
@@ -1093,6 +1358,26 @@ export default {
         }
       }
       return rpcError('unknown method')
+    }
+    if (url.pathname === '/agent/items/save' && request.method === 'POST') {
+      const resolved = await resolveAgent(request, env)
+      if (!resolved) return fail('unauthorized', 401)
+      if (resolved.agent.write !== true) return fail('agent is not allowed to write', 403)
+      const session = await getSession(env)
+      if (!session) return fail('vault locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '').trim()
+      if (!name) return fail('name required', 400)
+      try {
+        const found = await findCipherRow(env, env.NODEWARDEN_DB, session, name)
+        if (found) {
+          await updateCipher(env, env.NODEWARDEN_DB, session, name, body)
+          return json({ ok: true, name, updated: true })
+        }
+        const created = await createCipher(env, env.NODEWARDEN_DB, session, { ...body, name })
+        await addAudit(env, { event: 'secret.write', agent: resolved.name, name })
+        return json({ ok: true, name: created.name, created: true })
+      } catch (error) { return fail(String(error.message ?? error), 500) }
     }
     if (url.pathname === '/secret') {
       const admin = await adminAuthorized(request, env)

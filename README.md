@@ -20,6 +20,9 @@ the Docker version.
 - ✅ Permanent / 7d / 24h / 1h unlock TTL
 - ✅ Item list + `/secret` read, using per-agent Bearer tokens
 - ✅ Item actions: edit name/url/notes/value, group, share, delete (writes to NodeWarden D1)
+- ✅ Create item, JSON import/export, Bitwarden folder filter
+- ✅ Agent write API (`/agent/items/save`, requires per-agent write flag)
+- ✅ Telegram inline approvals via webhook (needs bot token/chat; not tested here)
 - ✅ Agents: create / rename / rotate / delete / copy token; per-agent allowlist, group scope and write flag
 - ✅ Approval flow: once / 1h / 24h / 7d / permanent; pending requests in the UI
 - ✅ Grant actions: extend duration, set max reads, revoke, delete; direct share to an agent
@@ -40,6 +43,16 @@ The Worker exposes a JSON-RPC MCP endpoint:
 POST https://your-worker.example/mcp
 Authorization: Bearer <agent token>
 ```
+
+The Worker also exposes an MCP OAuth 2.1 authorization server:
+
+- `/.well-known/oauth-authorization-server`
+- `/oauth/register` (dynamic client registration)
+- `/oauth/authorize` (PKCE S256 + consent)
+- `/oauth/token` (authorization_code)
+
+MCP clients that support OAuth can discover and use it; the old static Bearer
+token still works.
 
 Tools:
 
