@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers'
 import { uiHtml } from './ui.js'
 import {
-  b64ToBytes, constantTimeEqual, decryptCipherRow, extractSecret,
+  b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, encryptStr, extractSecret,
   hmacToken, sha256Base64, unwrapWithKek, wrapWithKek,
 } from './crypto.js'
 
@@ -93,14 +93,22 @@ async function loadState(env) {
   state.settings ??= { notifications: {} }
   state.settings.notifications ??= {}
   state.policies ??= {}
+  state.itemGroups ??= {}
+  state.profile ??= {}
   state.grants ??= {}
   state.pending ??= {}
   state.audit ??= []
   if (!state.agents || Object.keys(state.agents).length === 0) {
     if (env.AGENT_TOKEN) {
-      state.agents['dsh'] = { hash: await sha256Base64(env.AGENT_TOKEN), alias: '', allow: [], write: false, createdAt: nowIso() }
+      state.agents['dsh'] = { hash: await sha256Base64(env.AGENT_TOKEN), tokenWrapped: await wrapWithKek(encoder.encode(env.AGENT_TOKEN), await kekBytes(env)), alias: '', allow: [], groups: [], write: false, createdAt: nowIso() }
     }
     await saveState(env, state)
+  } else if (env.AGENT_TOKEN && state.agents.dsh && !state.agents.dsh.tokenWrapped) {
+    const hash = await sha256Base64(env.AGENT_TOKEN)
+    if (state.agents.dsh.hash === hash) {
+      state.agents.dsh.tokenWrapped = await wrapWithKek(encoder.encode(env.AGENT_TOKEN), await kekBytes(env))
+      await saveState(env, state)
+    }
   }
   return state
 }
@@ -121,6 +129,47 @@ async function addAudit(env, entry) {
     state.audit.unshift({ time: nowIso(), ...entry })
     state.audit = state.audit.slice(0, 500)
   })
+}
+
+function oidcConfig(env, request) {
+  const issuer = String(env.OIDC_ISSUER ?? '').replace(/\/$/, '')
+  const clientId = String(env.OIDC_CLIENT_ID ?? '')
+  const clientSecret = String(env.OIDC_CLIENT_SECRET ?? '')
+  const redirectUri = String(env.OIDC_REDIRECT_URI ?? `${new URL(request.url).origin}/oidc/callback`)
+  if (!issuer || !clientId) return null
+  return { issuer, clientId, clientSecret, redirectUri, scope: env.OIDC_SCOPE || 'openid profile email' }
+}
+
+async function oidcDiscovery(issuer) {
+  const response = await fetch(`${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`)
+  if (!response.ok) throw new Error('OIDC discovery failed')
+  return response.json()
+}
+
+async function oidcStateCookie(env, state, verifier) {
+  const expires = Date.now() + 10 * 60 * 1000
+  const payload = `${state}:${verifier}.${expires}`
+  const signature = await hmacToken(await cookieKey(env), payload)
+  return `${payload}.${signature}`
+}
+
+async function verifyOidcState(env, cookieValue) {
+  if (!cookieValue) return null
+  const parts = cookieValue.split('.')
+  if (parts.length < 3) return null
+  const signature = parts.pop()
+  const expires = Number(parts.pop())
+  const payload = parts.join('.')
+  if (!Number.isFinite(expires) || expires < Date.now()) return null
+  const expected = await hmacToken(await cookieKey(env), `${payload}.${expires}`)
+  if (!constantTimeEqual(encoder.encode(expected), encoder.encode(signature))) return null
+  const separator = payload.indexOf(':')
+  if (separator < 0) return null
+  return { state: payload.slice(0, separator), verifier: payload.slice(separator + 1) }
+}
+
+function base64Url(bytes) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
 async function getSession(env) {
@@ -211,6 +260,7 @@ async function listCiphers(env, db, session) {
       const name = decrypted.name || '(未命名)'
       items.push({
         id: row.id, type: decrypted.type, name, url: cipherUrl(decrypted.data), folderId: row.folder_id ?? null,
+        group: state.itemGroups?.[name] ?? '',
         noApproval: state.policies[name]?.noApproval === true,
       })
     } catch {}
@@ -229,10 +279,80 @@ async function readSecretFromRows(env, db, session, name) {
   return null
 }
 
+async function findCipherRow(env, db, session, name) {
+  const user = await vaultUser(env, db, session)
+  const rows = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
+  for (const candidate of rows.results ?? []) {
+    const decrypted = await decryptCipherRow(candidate, session)
+    if (decrypted.name === name) return { row: candidate, decrypted }
+  }
+  return null
+}
+
+async function updateCipher(env, db, session, currentName, changes) {
+  const found = await findCipherRow(env, db, session, currentName)
+  if (!found) return null
+  const { row } = found
+  const keys = await cipherKeys(row, session)
+  let data = null
+  try { data = JSON.parse(row.data) } catch {}
+  const nextName = typeof changes.newName === 'string' && changes.newName.trim() ? changes.newName.trim() : currentName
+  const nextNameEnc = nextName !== currentName ? await encryptStr(nextName, keys.itemEnc, keys.itemMac) : row.name
+  let nextNotes = row.notes
+  if (typeof changes.notes === 'string') nextNotes = changes.notes ? await encryptStr(changes.notes, keys.itemEnc, keys.itemMac) : ''
+  if (typeof changes.value === 'string' && changes.value.length > 0) {
+    if (!data || typeof data !== 'object') data = {}
+    data.login = data.login && typeof data.login === 'object' ? data.login : {}
+    data.login.password = await encryptStr(changes.value, keys.itemEnc, keys.itemMac)
+  }
+  if (typeof changes.url === 'string') {
+    if (!data || typeof data !== 'object') data = {}
+    data.login = data.login && typeof data.login === 'object' ? data.login : {}
+    const uris = Array.isArray(data.login.uris) ? data.login.uris : []
+    const encryptedUrl = changes.url ? await encryptStr(changes.url, keys.itemEnc, keys.itemMac) : ''
+    if (uris.length > 0) uris[0] = { ...uris[0], uri: encryptedUrl }
+    else if (encryptedUrl) uris.push({ uri: encryptedUrl })
+    data.login.uris = uris
+  }
+  await db.prepare('UPDATE ciphers SET name = ?, notes = ?, data = ?, updated_at = ? WHERE id = ?').bind(nextNameEnc, nextNotes, data ? JSON.stringify(data) : row.data, nowIso(), row.id).run()
+  await updateState(env, (state) => {
+    state.itemGroups ??= {}
+    if (nextName !== currentName) {
+      if (state.itemGroups[currentName] !== undefined) state.itemGroups[nextName] = state.itemGroups[currentName]
+      delete state.itemGroups[currentName]
+      if (state.policies?.[currentName]) { state.policies[nextName] = state.policies[currentName]; delete state.policies[currentName] }
+    }
+    if (typeof changes.group === 'string') {
+      if (changes.group.trim()) state.itemGroups[nextName] = changes.group.trim()
+      else delete state.itemGroups[nextName]
+    }
+    return state
+  })
+  await addAudit(env, { event: 'item.update', name: nextName, oldName: currentName === nextName ? undefined : currentName })
+  return nextName
+}
+
+async function deleteCipher(env, db, session, name) {
+  const found = await findCipherRow(env, db, session, name)
+  if (!found) return false
+  await db.prepare('UPDATE ciphers SET deleted_at = ?, updated_at = ? WHERE id = ?').bind(nowIso(), nowIso(), found.row.id).run()
+  await updateState(env, (state) => {
+    delete state.policies?.[name]
+    delete state.itemGroups?.[name]
+    for (const key of Object.keys(state.grants ?? {})) if (state.grants[key].name === name) delete state.grants[key]
+    for (const [id, entry] of Object.entries(state.pending ?? {})) if (entry.name === name) delete state.pending[id]
+    return state
+  })
+  await addAudit(env, { event: 'item.delete', name })
+  return true
+}
+
 function publicState(state) {
   return {
-    agents: Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', allow: agent.allow ?? [], write: agent.write === true, createdAt: agent.createdAt ?? '' })),
+    agents: Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], write: agent.write === true, createdAt: agent.createdAt ?? '' })),
     policies: state.policies ?? {},
+    itemGroups: state.itemGroups ?? {},
+    profile: state.profile ?? {},
     grants: Object.values(state.grants ?? {}),
     pending: Object.values(state.pending ?? {}),
     audit: state.audit ?? [],
@@ -273,7 +393,11 @@ async function notifyPending(env, origin, entry, ctx) {
 }
 
 async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx }) {
-  const allowed = !agent.allow || agent.allow.length === 0 || agent.allow.includes(name)
+  const group = state.itemGroups?.[name] ?? ''
+  const allow = agent.allow ?? []
+  const groups = agent.groups ?? []
+  const hasScope = allow.length > 0 || groups.length > 0
+  const allowed = !hasScope || allow.includes(name) || groups.includes(group)
   if (!allowed) return { status: 'forbidden', error: 'agent not allowed to read this item' }
   const policy = state.policies?.[name]
   const grant = activeGrant(state, agentName, name)
@@ -360,6 +484,85 @@ export default {
       const state = await loadState(env)
       return json({ email: env.VAULT_EMAIL || (session && session.email) || '', unlocked: Boolean(session), expiresAt: session?.expiresAt ?? 0, pending: Object.keys(state.pending ?? {}).length })
     }
+    if (url.pathname === '/api/profile') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      if (request.method === 'GET') {
+        const state = await loadState(env)
+        const oidc = oidcConfig(env, request)
+        return json({ profile: state.profile ?? {}, oidcEnabled: Boolean(oidc), oidcIssuer: oidc?.issuer ?? '', oidcLoginUrl: oidc ? '/oidc/login' : '' })
+      }
+      if (request.method === 'POST') {
+        const body = await request.json().catch(() => ({}))
+        await updateState(env, (state) => {
+          state.profile ??= {}
+          if (typeof body.name === 'string') state.profile.name = body.name.trim()
+          if (typeof body.email === 'string') state.profile.email = body.email.trim()
+          if (typeof body.avatarUrl === 'string') state.profile.avatarUrl = body.avatarUrl.trim()
+          return state
+        })
+        await addAudit(env, { event: 'profile.update' })
+        return json({ ok: true })
+      }
+    }
+    if (url.pathname === '/api/oidc/status') {
+      const oidc = oidcConfig(env, request)
+      return json({ enabled: Boolean(oidc), issuer: oidc?.issuer ?? '' })
+    }
+    if (url.pathname === '/oidc/login') {
+      const oidc = oidcConfig(env, request)
+      if (!oidc) return fail('OIDC is not configured (OIDC_ISSUER / OIDC_CLIENT_ID)', 503)
+      try {
+        const discovery = await oidcDiscovery(oidc.issuer)
+        const state = randomToken()
+        const verifier = base64Url(crypto.getRandomValues(new Uint8Array(32)))
+        const challenge = base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(verifier))))
+        const cookie = await oidcStateCookie(env, state, verifier)
+        const target = new URL(discovery.authorization_endpoint)
+        target.searchParams.set('client_id', oidc.clientId)
+        target.searchParams.set('redirect_uri', oidc.redirectUri)
+        target.searchParams.set('response_type', 'code')
+        target.searchParams.set('scope', oidc.scope)
+        target.searchParams.set('state', state)
+        target.searchParams.set('code_challenge', challenge)
+        target.searchParams.set('code_challenge_method', 'S256')
+        return new Response(null, { status: 302, headers: { location: target.toString(), 'set-cookie': `oidc_state=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600` } })
+      } catch (error) { return fail(String(error.message ?? error), 502) }
+    }
+    if (url.pathname === '/oidc/callback') {
+      const oidc = oidcConfig(env, request)
+      if (!oidc) return fail('OIDC is not configured', 503)
+      const stateData = await verifyOidcState(env, readCookie(request, 'oidc_state'))
+      const returned = url.searchParams.get('state') ?? ''
+      if (!stateData || stateData.state !== returned) return fail('invalid OIDC state', 400)
+      const code = url.searchParams.get('code') ?? ''
+      if (!code) return fail('missing authorization code', 400)
+      try {
+        const discovery = await oidcDiscovery(oidc.issuer)
+        const body = new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: oidc.redirectUri, client_id: oidc.clientId, code_verifier: stateData.verifier })
+        if (oidc.clientSecret) body.set('client_secret', oidc.clientSecret)
+        const tokenResponse = await fetch(discovery.token_endpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body })
+        const tokens = await tokenResponse.json()
+        if (!tokenResponse.ok || !tokens.access_token) return fail(tokens.error_description || 'OIDC token exchange failed', 502)
+        const userResponse = await fetch(discovery.userinfo_endpoint, { headers: { authorization: `Bearer ${tokens.access_token}` } })
+        const user = await userResponse.json()
+        if (!userResponse.ok) return fail('OIDC userinfo failed', 502)
+        await updateState(env, (state) => {
+          state.profile ??= {}
+          state.profile.oidcSub = String(user.sub ?? '')
+          state.profile.oidcEmail = String(user.email ?? state.profile.email ?? '')
+          state.profile.name = String(user.name ?? user.preferred_username ?? state.profile.name ?? '')
+          state.profile.email = String(user.email ?? state.profile.email ?? '')
+          state.profile.avatarUrl = String(user.picture ?? state.profile.avatarUrl ?? '')
+          return state
+        })
+        const cookie = await makeCookie(env)
+        await addAudit(env, { event: 'admin.oidc-login', email: user.email ?? user.sub ?? '' })
+        return new Response(null, { status: 302, headers: { location: '/', 'set-cookie': [
+          `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`,
+          'oidc_state=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0',
+        ] } })
+      } catch (error) { return fail(String(error.message ?? error), 502) }
+    }
     if (url.pathname === '/api/bootstrap') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       if (!env.NODEWARDEN_DB) return fail('D1 binding missing', 500)
@@ -384,6 +587,39 @@ export default {
       await stateStub(env).fetch('https://state/session', { method: 'DELETE' })
       await addAudit(env, { event: 'vault.lock' })
       return json({ ok: true })
+    }
+    if (url.pathname === '/api/items/update' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '')
+      if (!name) return fail('name required', 400)
+      try {
+        const nextName = await updateCipher(env, env.NODEWARDEN_DB, session, name, body)
+        if (!nextName) return fail('item not found', 404)
+        if (typeof body.noApproval === 'boolean') {
+          await updateState(env, (state) => {
+            state.policies ??= {}
+            if (body.noApproval) state.policies[nextName] = { noApproval: true }
+            else delete state.policies[nextName]
+            return state
+          })
+        }
+        return json({ ok: true, name: nextName })
+      } catch (error) { return fail(String(error.message ?? error), 500) }
+    }
+    if (url.pathname === '/api/items/delete' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '')
+      try {
+        const deleted = await deleteCipher(env, env.NODEWARDEN_DB, session, name)
+        if (!deleted) return fail('item not found', 404)
+        return json({ ok: true })
+      } catch (error) { return fail(String(error.message ?? error), 500) }
     }
     if (url.pathname === '/api/items') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -418,12 +654,13 @@ export default {
       let error = ''
       await updateState(env, (state) => {
         if (state.agents[name]) { error = 'agent already exists'; return state }
-        state.agents[name] = { hash: '', alias: String(body.alias ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], write: body.write === true, createdAt: nowIso() }
+        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], write: body.write === true, createdAt: nowIso() }
         return state
       })
       if (error) return fail(error, 409)
       const hash = await sha256Base64(token)
-      await updateState(env, (state) => { state.agents[name].hash = hash; return state })
+      const tokenWrapped = await wrapWithKek(encoder.encode(token), await kekBytes(env))
+      await updateState(env, (state) => { state.agents[name].hash = hash; state.agents[name].tokenWrapped = tokenWrapped; return state })
       await addAudit(env, { event: 'agent.create', agent: name })
       return json({ ok: true, name, token })
     }
@@ -434,8 +671,9 @@ export default {
       if (!name) return fail('name required', 400)
       const token = randomToken()
       const hash = await sha256Base64(token)
+      const tokenWrapped = await wrapWithKek(encoder.encode(token), await kekBytes(env))
       let found = false
-      await updateState(env, (state) => { if (state.agents[name]) { state.agents[name].hash = hash; found = true } return state })
+      await updateState(env, (state) => { if (state.agents[name]) { state.agents[name].hash = hash; state.agents[name].tokenWrapped = tokenWrapped; found = true } return state })
       if (!found) return fail('agent not found', 404)
       await addAudit(env, { event: 'agent.rotate', agent: name })
       return json({ ok: true, name, token })
@@ -464,11 +702,26 @@ export default {
         found = true
         if (typeof body.alias === 'string') agent.alias = body.alias.trim()
         if (Array.isArray(body.allow)) agent.allow = body.allow.map(String).filter(Boolean)
+        if (Array.isArray(body.groups)) agent.groups = body.groups.map(String).filter(Boolean)
         if (typeof body.write === 'boolean') agent.write = body.write
         return state
       })
       if (!found) return fail('agent not found', 404)
       return json({ ok: true })
+    }
+    if (url.pathname === '/api/agents/token' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '')
+      const state = await loadState(env)
+      const agent = state.agents[name]
+      if (!agent) return fail('agent not found', 404)
+      if (!agent.tokenWrapped) return fail('this agent was created before token copy support; rotate it to get a new token', 409)
+      try {
+        const token = new TextDecoder().decode(await unwrapWithKek(agent.tokenWrapped, await kekBytes(env)))
+        await addAudit(env, { event: 'agent.token-view', agent: name })
+        return json({ ok: true, token })
+      } catch (error) { return fail(String(error.message ?? error), 500) }
     }
     if (url.pathname === '/api/pending/decide' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -501,6 +754,51 @@ export default {
       await updateState(env, (state) => { if (state.grants[key]) { state.grants[key].revokedAt = nowIso(); found = true } return state })
       if (!found) return fail('grant not found', 404)
       await addAudit(env, { event: 'grant.revoke', agent: body.agent, name: body.name, source: 'web' })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/grants/share' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '').trim()
+      const agents = Array.isArray(body.agents) ? body.agents.map(String).filter(Boolean) : []
+      if (!name || agents.length === 0) return fail('name and agents required', 400)
+      const seconds = Math.max(0, Number(body.seconds) || 0)
+      const maxReads = body.maxReads == null || body.maxReads === '' ? null : Math.max(1, Number(body.maxReads) || 1)
+      await updateState(env, (state) => {
+        for (const agentName of agents) {
+          state.grants[grantKey(agentName, name)] = { agent: agentName, name, mode: 'share', createdAt: nowIso(), expiresAt: seconds ? Date.now() + seconds * 1000 : 0, reads: 0, maxReads, revokedAt: null }
+        }
+        return state
+      })
+      await addAudit(env, { event: 'grant.share', name, agents })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/grants/update' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const key = grantKey(String(body.agent ?? ''), String(body.name ?? ''))
+      let found = false
+      await updateState(env, (state) => {
+        const grant = state.grants[key]
+        if (!grant) return state
+        found = true
+        if (typeof body.seconds === 'number') grant.expiresAt = body.seconds > 0 ? Date.now() + body.seconds * 1000 : 0
+        if (body.maxReads === null || body.maxReads === '') grant.maxReads = null
+        else if (body.maxReads != null) grant.maxReads = Math.max(1, Number(body.maxReads) || 1)
+        return state
+      })
+      if (!found) return fail('grant not found', 404)
+      await addAudit(env, { event: 'grant.update', agent: body.agent, name: body.name, source: 'web' })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/grants/delete' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const key = grantKey(String(body.agent ?? ''), String(body.name ?? ''))
+      let found = false
+      await updateState(env, (state) => { if (state.grants[key]) { delete state.grants[key]; found = true } return state })
+      if (!found) return fail('grant not found', 404)
+      await addAudit(env, { event: 'grant.delete', agent: body.agent, name: body.name, source: 'web' })
       return json({ ok: true })
     }
     if (url.pathname === '/api/stats') {

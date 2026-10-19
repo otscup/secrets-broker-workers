@@ -40,14 +40,14 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
 @media(max-width:860px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}@media(max-width:620px){.user .email{display:none}}
 </style></head><body><div class="wrap">
 <header><h1>Secrets Broker</h1><span class="badge">Cloudflare Workers</span>
-<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button><button data-view="settings">设置</button></nav>
+<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button><button data-view="profile">个人</button><button data-view="settings">设置</button></nav>
 <span class="user"><span class="email" id="who"></span><span class="avatar" id="avatar">SB</span></span>
 <button id="logout" class="hidden danger">退出登录</button><button id="lock" class="hidden danger">锁定</button></header>
 
 <section id="login-card" class="card hidden">
   <h2>管理登录</h2><div class="hint">管理登录密码（不是 Agent token，也不是 Bitwarden 主密码）。</div>
   <label class="field">管理登录密码</label><input id="admin-password" type="password" autocomplete="current-password">
-  <div style="margin-top:12px"><button class="primary" id="login">登录</button></div><div class="status" id="login-status"></div>
+  <div style="margin-top:12px"><button class="primary" id="login">登录</button></div><div class="status" id="login-status"></div><div id="login-oidc" style="margin-top:10px"></div>
 </section>
 
 <section id="unlock-card" class="card hidden">
@@ -85,6 +85,16 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
 
   <section id="view-logs" class="view hidden"><div class="card"><h2>审计日志</h2><div class="hint">最近 500 条，数据在 Durable Object 中。</div><div id="logs-box" class="table-wrap" style="margin-top:10px"></div></div></section>
 
+  <section id="view-profile" class="view hidden">
+    <div class="card"><h2>个人资料</h2><div class="hint">用于页面显示；OIDC 登录会同步姓名/邮箱/头像。</div>
+      <label class="field">名字</label><input id="profile-name" placeholder="你的名字">
+      <label class="field">邮箱</label><input id="profile-email" placeholder="you@example.com">
+      <label class="field">头像 URL</label><input id="profile-avatar" placeholder="https://...">
+      <div class="row" style="margin-top:10px"><button class="primary" id="profile-save">保存资料</button></div><div class="status" id="profile-status"></div>
+    </div>
+    <div class="card"><h2>登录与账号绑定</h2><div class="hint">OIDC（xid）登录会作为管理登录方式；配置后可直接点下方按钮。</div><div id="oidc-box" style="margin-top:10px"></div><div class="status" id="oidc-status"></div></div>
+  </section>
+
   <section id="view-settings" class="view hidden">
     <div class="card"><h2>通知渠道</h2><div class="hint">待批准请求会推送到这里。留空的 token 表示保留原值。</div>
       <div class="grid2" style="margin-top:10px">
@@ -118,7 +128,8 @@ const status = (id, text, cls = '') => { const el = $(id); if (el) { el.textCont
 function show(id, visible) { $(id).classList.toggle('hidden', !visible) }
 function toast(text, error = false) { status('item-status', text, error ? 'error' : 'ok') }
 
-async function boot() { try { app.me = await api('/api/me'); show('login-card', false); $('who').textContent = app.me.email || ''; $('avatar').textContent = (app.me.email || 'SB').slice(0, 2).toUpperCase(); show('lock', true); show('logout', true); if (app.me.unlocked) { show('dashboard', true); show('unlock-card', false); await loadAll() } else { show('dashboard', false); show('unlock-card', true) } } catch { show('login-card', true); show('dashboard', false); show('unlock-card', false) } }
+async function boot() { try { app.me = await api('/api/me'); show('login-card', false); $('who').textContent = app.me.email || ''; $('avatar').textContent = (app.me.email || 'SB').slice(0, 2).toUpperCase(); show('lock', true); show('logout', true); if (app.me.unlocked) { show('dashboard', true); show('unlock-card', false); await loadAll() } else { show('dashboard', false); show('unlock-card', true) } } catch { show('login-card', true); show('dashboard', false); show('unlock-card', false); loadOidcLogin() } }
+async function loadOidcLogin() { try { const data = await api('/api/oidc/status'); if (data.enabled) $('login-oidc').innerHTML = '<a href="/oidc/login"><button class="primary">使用 OIDC（xid）登录</button></a><span class="hint" style="margin-left:8px">' + esc(data.issuer) + '</span>'; else $('login-oidc').innerHTML = '<span class="hint">未配置 OIDC</span>' } catch {} }
 $('login').onclick = async () => { try { status('login-status', '登录中…'); await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('admin-password').value }) }); $('admin-password').value = ''; await boot() } catch (error) { status('login-status', error.message, 'error') } }
 $('logout').onclick = async () => { try { await api('/api/logout', { method: 'POST' }) } catch {} location.reload() }
 $('unlock').onclick = async () => {
@@ -135,16 +146,16 @@ $('unlock').onclick = async () => {
 }
 async function lock() { try { await api('/api/lock', { method: 'POST' }) } catch {} show('dashboard', false); show('unlock-card', true); status('unlock-status', '已锁定', 'ok') }
 $('lock').onclick = lock; $('lock2').onclick = lock
-document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings() } })
+document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings(); if (view === 'profile') loadProfile() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('profile-save').onclick = saveProfile
 $('mcp-url').textContent = location.origin + '/mcp'
 $('copy-token').onclick = async () => { try { await navigator.clipboard.writeText(app.token); toast('已复制 token') } catch { toast('复制失败', true) } }
 $('modal-close').onclick = () => show('modal', false)
-$('items-box').addEventListener('click', async (event) => { const toggle = event.target.closest('[data-policy]'); if (toggle) { const item = app.items.find((entry) => entry.name === toggle.dataset.policy); if (!item) return; try { await api('/api/policies', { method: 'POST', body: JSON.stringify({ name: item.name, noApproval: !item.noApproval }) }); await loadItems(); toast('已更新免审批策略') } catch (error) { toast(error.message, true) } return } const read = event.target.closest('[data-read]'); if (read) reveal(read.dataset.read) })
-$('agents-box').addEventListener('click', async (event) => { const action = event.target.closest('[data-agent-action]'); if (!action) return; const name = action.dataset.agent; try { if (action.dataset.agentAction === 'rotate') { if (!confirm('轮换 ' + name + ' 的 token？旧 token 会立即失效。')) return; const result = await api('/api/agents/rotate', { method: 'POST', body: JSON.stringify({ name }) }); app.token = result.token; $('new-token-value').textContent = result.token; show('new-token', true); toast('已轮换，请保存新 token') } else if (action.dataset.agentAction === 'delete') { if (!confirm('删除 Agent ' + name + '？')) return; await api('/api/agents/delete', { method: 'POST', body: JSON.stringify({ name }) }); await loadState(); toast('已删除') } else if (action.dataset.agentAction === 'alias') { const value = prompt('显示名（留空恢复原名）', ''); if (value === null) return; const agent = app.data.agents.find((entry) => entry.name === name); await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name, alias: value.trim(), allow: agent?.allow ?? [], write: agent?.write === true }) }); await loadState(); toast('已更新') } } catch (error) { toast(error.message, true) } })
+$('items-box').addEventListener('click', async (event) => { const menu = event.target.closest('[data-item-menu]'); if (menu) { openItemMenu(menu.dataset.itemMenu); return } const toggle = event.target.closest('[data-policy]'); if (toggle) { const item = app.items.find((entry) => entry.name === toggle.dataset.policy); if (!item) return; try { await api('/api/policies', { method: 'POST', body: JSON.stringify({ name: item.name, noApproval: !item.noApproval }) }); await loadItems(); toast('已更新免审批策略') } catch (error) { toast(error.message, true) } return } const read = event.target.closest('[data-read]'); if (read) reveal(read.dataset.read) })
+$('agents-box').addEventListener('click', (event) => { const menu = event.target.closest('[data-agent-menu]'); if (menu) openAgentMenu(menu.dataset.agentMenu) })
 $('pending-box').addEventListener('click', async (event) => { const button = event.target.closest('[data-decide]'); if (!button) return; try { await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.decide }) }); await Promise.all([loadState(), loadStats(), loadItems()]); toast('已处理') } catch (error) { toast(error.message, true) } })
-$('grants-box').addEventListener('click', async (event) => { const button = event.target.closest('[data-revoke]'); if (!button) return; try { await api('/api/grants/revoke', { method: 'POST', body: JSON.stringify({ agent: button.dataset.agent, name: button.dataset.name }) }); await Promise.all([loadState(), loadStats()]); toast('已撤销') } catch (error) { toast(error.message, true) } })
+$('grants-box').addEventListener('click', (event) => { const menu = event.target.closest('[data-grant-menu]'); if (menu) openGrantMenu(menu.dataset.agent, menu.dataset.name) })
 
 async function loadAll() { await Promise.all([loadState(), loadItems(), loadStats()]) }
 async function loadState() { try { app.data = await api('/api/state'); renderAgents(); renderPending(); renderGrants(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
@@ -192,12 +203,12 @@ function renderStats() {
   $('updated').textContent = '最后更新 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false })
 }
 function renderItems() {
-  const query = ($('item-filter')?.value || '').trim().toLowerCase(); const items = (app.items || []).filter((item) => !query || item.name.toLowerCase().includes(query) || String(item.url || '').toLowerCase().includes(query))
-  $('items-box').innerHTML = items.length ? '<table><tr><th>名称</th><th>网址</th><th>类型</th><th>免审批</th><th>操作</th></tr>' + items.map((item) => '<tr><td><b>' + esc(item.name) + '</b></td><td class="hint">' + esc(item.url || '') + '</td><td>' + item.type + '</td><td><button class="small ' + (item.noApproval ? 'primary' : '') + '" data-policy="' + esc(item.name) + '">' + (item.noApproval ? '免审批' : '需审批') + '</button></td><td><button class="small" data-read="' + esc(item.name) + '">读取</button></td></tr>').join('') + '</table>' : '<div class="hint">没有条目</div>'
+  const query = ($('item-filter')?.value || '').trim().toLowerCase(); const items = (app.items || []).filter((item) => !query || item.name.toLowerCase().includes(query) || String(item.url || '').toLowerCase().includes(query) || String(item.group || '').toLowerCase().includes(query))
+  $('items-box').innerHTML = items.length ? '<table><tr><th>名称</th><th>分组</th><th>网址</th><th>类型</th><th>免审批</th><th>操作</th></tr>' + items.map((item) => '<tr><td><b>' + esc(item.name) + '</b></td><td class="hint">' + esc(item.group || '') + '</td><td class="hint">' + esc(item.url || '') + '</td><td>' + item.type + '</td><td><button class="small ' + (item.noApproval ? 'primary' : '') + '" data-policy="' + esc(item.name) + '">' + (item.noApproval ? '免审批' : '需审批') + '</button></td><td><button class="small" data-read="' + esc(item.name) + '">读取</button> <button class="small" data-item-menu="' + esc(item.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">没有条目</div>'
 }
 function renderAgents() {
   const agents = app.data.agents || []
-  $('agents-box').innerHTML = agents.length ? '<table><tr><th>Agent</th><th>显示名</th><th>可读条目</th><th>写入</th><th>操作</th></tr>' + agents.map((agent) => '<tr><td><b>' + esc(agent.name) + '</b></td><td>' + esc(agent.alias || '') + '</td><td class="hint">' + esc(agent.allow && agent.allow.length ? agent.allow.join(', ') : '全部') + '</td><td>' + (agent.write ? '开' : '关') + '</td><td><button class="small" data-agent-action="alias" data-agent="' + esc(agent.name) + '">改名</button><button class="small" data-agent-action="rotate" data-agent="' + esc(agent.name) + '">轮换</button><button class="small danger" data-agent-action="delete" data-agent="' + esc(agent.name) + '">删除</button></td></tr>').join('') + '</table>' : '<div class="hint">还没有 Agent</div>'
+  $('agents-box').innerHTML = agents.length ? '<table><tr><th>Agent</th><th>显示名</th><th>可读范围</th><th>写入</th><th>操作</th></tr>' + agents.map((agent) => '<tr><td><b>' + esc(agent.name) + '</b></td><td>' + esc(agent.alias || '') + '</td><td class="hint">' + esc(agent.allow && agent.allow.length ? agent.allow.join(', ') : (agent.groups && agent.groups.length ? '分组：' + agent.groups.join(', ') : '全部')) + '</td><td>' + (agent.write ? '开' : '关') + '</td><td><button class="small" data-agent-menu="' + esc(agent.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">还没有 Agent</div>'
 }
 function renderPending() {
   const pending = app.data.pending || []
@@ -205,7 +216,7 @@ function renderPending() {
 }
 function renderGrants() {
   const grants = (app.data.grants || []).filter((grant) => !grant.revokedAt && (!grant.expiresAt || grant.expiresAt > Date.now()))
-  $('grants-box').innerHTML = grants.length ? '<table><tr><th>Agent</th><th>条目</th><th>模式</th><th>到期</th><th>读取</th><th>操作</th></tr>' + grants.map((grant) => '<tr><td>' + esc(grant.agent) + '</td><td><b>' + esc(grant.name) + '</b></td><td>' + esc(grant.mode) + '</td><td>' + (grant.expiresAt ? new Date(grant.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</td><td>' + (grant.reads ?? 0) + '</td><td><button class="small danger" data-revoke data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '">撤销</button></td></tr>').join('') + '</table>' : '<div class="hint">暂无有效授权</div>'
+  $('grants-box').innerHTML = grants.length ? '<table><tr><th>Agent</th><th>条目</th><th>模式</th><th>到期</th><th>读取</th><th>操作</th></tr>' + grants.map((grant) => '<tr><td>' + esc(grant.agent) + '</td><td><b>' + esc(grant.name) + '</b></td><td>' + esc(grant.mode) + '</td><td>' + (grant.expiresAt ? new Date(grant.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</td><td>' + (grant.reads ?? 0) + (grant.maxReads ? ' / ' + grant.maxReads : '') + '</td><td><button class="small" data-grant-menu data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">暂无有效授权</div>'
 }
 function who(label) { const agent = (app.data.agents || []).find((entry) => entry.name === label); return agent?.alias || label || '系统' }
 function describe(entry) {
@@ -218,6 +229,15 @@ function describe(entry) {
     case 'policy.update': return '免审批策略：' + name + ' → ' + (entry.noApproval ? '开启' : '关闭')
     case 'agent.create': return '新增 Agent ' + agent
     case 'agent.rotate': return '轮换 Agent ' + agent + ' 的 token'
+    case 'agent.token-view': return '查看 Agent ' + agent + ' 的 token'
+    case 'item.update': return '更新密钥 ' + name + (entry.oldName ? '（原名 ' + entry.oldName + '）' : '')
+    case 'item.delete': return '删除密钥 ' + name
+    case 'grant.share': return '分享 ' + name + ' 给 ' + (entry.agents ? entry.agents.join('、') : agent)
+    case 'grant.update': return '修改 ' + agent + ' 对 ' + name + ' 的授权'
+    case 'grant.delete': return '删除 ' + agent + ' 对 ' + name + ' 的授权记录'
+    case 'profile.update': return '更新个人资料'
+    case 'admin.oidc-login': return 'OIDC 登录' + (entry.email ? '（' + entry.email + '）' : '')
+    case 'settings.update': return '更新系统设置'
     case 'agent.delete': return '删除 Agent ' + agent
     case 'vault.unlock': return '解锁了 vault' + (entry.ttl ? '（' + entry.ttl + '）' : '')
     case 'vault.lock': return '锁定了 vault'
@@ -229,6 +249,41 @@ function describe(entry) {
 function renderRecent() { $('recent-box').innerHTML = (app.data.audit || []).slice(0, 8).map((entry) => '<div class="rowline"><span class="ev">' + esc(new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false })) + '</span><span>' + esc(describe(entry)) + '</span></div>').join('') || '<div class="hint">暂无活动</div>' }
 function renderLogs() { $('logs-box').innerHTML = (app.data.audit || []).length ? '<table><tr><th>时间</th><th>描述</th><th>Agent</th><th>条目</th></tr>' + (app.data.audit || []).slice(0, 200).map((entry) => '<tr><td>' + esc(new Date(entry.time).toLocaleString('zh-CN', { hour12: false })) + '</td><td>' + esc(describe(entry)) + '</td><td>' + esc(entry.agent || '') + '</td><td>' + esc(entry.name || '') + '</td></tr>').join('') + '</table>' : '<div class="hint">暂无日志</div>' }
 async function reveal(name) { try { const data = await api('/secret?name=' + encodeURIComponent(name)); $('modal-title').textContent = '读取 ' + name; $('modal-body').innerHTML = '<div class="hint">仅用于人工查看；Agent 应通过 /secret 或 MCP 获取。</div><div class="secret">' + esc(data.value || '(空)') + '</div>'; show('modal', true) } catch (error) { toast(error.message, true) } }
+function openModal(title, body) { $('modal-title').textContent = title; $('modal-body').innerHTML = body; show('modal', true) }
+function openItemMenu(name) {
+  const item = app.items.find((entry) => entry.name === name); if (!item) return
+  const agents = app.data.agents || []
+  openModal('条目「' + name + '」', '<label class="field">名称</label><input id="mi-name" value="' + esc(item.name) + '"><label class="field">分组</label><input id="mi-group" value="' + esc(item.group || '') + '" placeholder="例如 blog/prod"><label class="field">网址</label><input id="mi-url" value="' + esc(item.url || '') + '"><label class="field">备注（留空不改）</label><input id="mi-notes" placeholder="新的备注"><label class="field">新密钥值（留空不改）</label><input id="mi-value" type="password" placeholder="留空保留原值"><label class="chk" style="margin-top:8px"><input type="checkbox" id="mi-noapproval" ' + (item.noApproval ? 'checked' : '') + '> 免审批（自动读取，仍记录）</label><div class="row" style="margin-top:14px"><button class="primary" id="mi-save">保存修改</button><button id="mi-share">分享</button><button class="danger" id="mi-delete">删除</button></div><div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div class="hint">分享给 Agent（直接生成授权）</div><label class="field">Agent</label><select id="mi-share-agent">' + agents.map((agent) => '<option value="' + esc(agent.name) + '">' + esc(agent.alias || agent.name) + '</option>').join('') + '</select><label class="field">时长</label><select id="mi-share-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mi-share-reads" type="number" min="1"></div>')
+  $('mi-save').onclick = async () => { try { await api('/api/items/update', { method: 'POST', body: JSON.stringify({ name: item.name, newName: $('mi-name').value.trim(), group: $('mi-group').value.trim(), url: $('mi-url').value.trim(), notes: $('mi-notes').value.trim() ? $('mi-notes').value : undefined, value: $('mi-value').value, noApproval: $('mi-noapproval').checked }) }); show('modal', false); await Promise.all([loadItems(), loadState()]); toast('已保存') } catch (error) { toast(error.message, true) } }
+  $('mi-delete').onclick = async () => { if (!confirm('删除条目「' + item.name + '」？')) return; try { await api('/api/items/delete', { method: 'POST', body: JSON.stringify({ name: item.name }) }); show('modal', false); await Promise.all([loadItems(), loadState()]); toast('已删除') } catch (error) { toast(error.message, true) } }
+  $('mi-share').onclick = async () => { const agent = $('mi-share-agent').value; if (!agent) return toast('没有 Agent', true); try { await api('/api/grants/share', { method: 'POST', body: JSON.stringify({ name: $('mi-name').value.trim() || item.name, agents: [agent], seconds: Number($('mi-share-seconds').value), maxReads: $('mi-share-reads').value || null }) }); show('modal', false); await loadState(); toast('已分享') } catch (error) { toast(error.message, true) } }
+}
+function openAgentMenu(name) {
+  const agent = app.data.agents.find((entry) => entry.name === name); if (!agent) return
+  openModal('Agent「' + name + '」', '<label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">可读条目（逗号分隔，留空=全部）</label><input id="ma-allow" value="' + esc((agent.allow || []).join(', ')) + '"><label class="field">可读分组（逗号分隔，留空=不限）</label><input id="ma-groups" value="' + esc((agent.groups || []).join(', ')) + '"><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
+  $('ma-save').onclick = async () => { try { await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name, alias: $('ma-alias').value.trim(), allow: $('ma-allow').value.split(',').map((v) => v.trim()).filter(Boolean), groups: $('ma-groups').value.split(',').map((v) => v.trim()).filter(Boolean), write: $('ma-write').checked }) }); show('modal', false); await loadState(); toast('权限已保存') } catch (error) { toast(error.message, true) } }
+  $('ma-copy').onclick = async () => { try { const data = await api('/api/agents/token', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); toast('token 已复制') } catch (error) { toast(error.message, true) } }
+  $('ma-rotate').onclick = async () => { if (!confirm('轮换 ' + name + ' 的 token？旧 token 会立即失效。')) return; try { const data = await api('/api/agents/rotate', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); await loadState(); toast('已轮换并复制新 token') } catch (error) { toast(error.message, true) } }
+  $('ma-delete').onclick = async () => { if (!confirm('删除 Agent ' + name + '？')) return; try { await api('/api/agents/delete', { method: 'POST', body: JSON.stringify({ name }) }); show('modal', false); await loadState(); toast('已删除') } catch (error) { toast(error.message, true) } }
+}
+function openGrantMenu(agent, name) {
+  const grant = (app.data.grants || []).find((entry) => entry.agent === agent && entry.name === name); if (!grant) return
+  const seconds = !grant.expiresAt ? 0 : Math.max(0, Math.round((grant.expiresAt - Date.now()) / 1000))
+  const nearest = !grant.expiresAt ? 0 : ([3600, 86400, 604800, 2592000].find((value) => seconds <= value) || 0)
+  openModal('授权「' + agent + ' → ' + name + '」', '<label class="field">时长</label><select id="mg-seconds"><option value="3600" ' + (nearest === 3600 ? 'selected' : '') + '>1 小时</option><option value="86400" ' + (nearest === 86400 ? 'selected' : '') + '>24 小时</option><option value="604800" ' + (nearest === 604800 ? 'selected' : '') + '>7 天</option><option value="2592000" ' + (nearest === 2592000 ? 'selected' : '') + '>30 天</option><option value="0" ' + (nearest === 0 ? 'selected' : '') + '>永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mg-max" type="number" min="1" value="' + (grant.maxReads ?? '') + '"><div class="row" style="margin-top:14px"><button class="primary" id="mg-save">保存授权</button><button class="danger" id="mg-revoke">撤销</button><button class="danger" id="mg-delete">删除记录</button></div>')
+  $('mg-save').onclick = async () => { try { await api('/api/grants/update', { method: 'POST', body: JSON.stringify({ agent, name, seconds: Number($('mg-seconds').value), maxReads: $('mg-max').value || null }) }); show('modal', false); await loadState(); toast('已更新授权') } catch (error) { toast(error.message, true) } }
+  $('mg-revoke').onclick = async () => { try { await api('/api/grants/revoke', { method: 'POST', body: JSON.stringify({ agent, name }) }); show('modal', false); await loadState(); toast('已撤销') } catch (error) { toast(error.message, true) } }
+  $('mg-delete').onclick = async () => { if (!confirm('删除这条授权记录？')) return; try { await api('/api/grants/delete', { method: 'POST', body: JSON.stringify({ agent, name }) }); show('modal', false); await loadState(); toast('已删除') } catch (error) { toast(error.message, true) } }
+}
+async function loadProfile() {
+  try {
+    const data = await api('/api/profile'); const profile = data.profile || {}
+    $('profile-name').value = profile.name || ''; $('profile-email').value = profile.email || profile.oidcEmail || ''; $('profile-avatar').value = profile.avatarUrl || ''
+    const oidc = data.oidcEnabled ? '<div class="hint">OIDC issuer：<code>' + esc(data.oidcIssuer) + '</code>' + (profile.oidcSub ? '<br>已绑定：<code>' + esc(profile.oidcEmail || profile.oidcSub) + '</code>' : '<br>尚未绑定，点击登录即可绑定') + '</div><div style="margin-top:10px"><a href="/oidc/login"><button class="primary">使用 OIDC（xid）登录 / 绑定</button></a></div>' : '<div class="hint">未配置 OIDC。设置 OIDC_ISSUER / OIDC_CLIENT_ID / OIDC_CLIENT_SECRET 后重启即可。</div>'
+    $('oidc-box').innerHTML = oidc
+  } catch (error) { status('profile-status', error.message, 'error') }
+}
+async function saveProfile() { try { await api('/api/profile', { method: 'POST', body: JSON.stringify({ name: $('profile-name').value, email: $('profile-email').value, avatarUrl: $('profile-avatar').value }) }); status('profile-status', '已保存', 'ok'); $('who').textContent = $('profile-email').value; } catch (error) { status('profile-status', error.message, 'error') } }
 async function createAgent() { try { const name = $('agent-name').value.trim(); if (!name) return status('agent-status', '请输入名称', 'error'); const allow = $('agent-allow').value.split(',').map((value) => value.trim()).filter(Boolean); const result = await api('/api/agents/create', { method: 'POST', body: JSON.stringify({ name, alias: $('agent-alias').value.trim(), allow, write: $('agent-write').checked }) }); app.token = result.token; $('new-token-value').textContent = result.token; show('new-token', true); $('agent-name').value = ''; $('agent-alias').value = ''; $('agent-allow').value = ''; $('agent-write').checked = false; status('agent-status', '已创建，token 只显示一次', 'ok'); await loadState() } catch (error) { status('agent-status', error.message, 'error') } }
 boot()
 </script></body></html>`

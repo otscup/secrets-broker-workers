@@ -5,7 +5,10 @@
   "observability": { "enabled": true },
   "vars": {
     "VAULT_EMAIL": "you@example.com",
-    "MCP_ALLOW_READ": "1"
+    "MCP_ALLOW_READ": "1",
+    "OIDC_ISSUER": "https://auth.example.com",
+    "OIDC_CLIENT_ID": "your-oidc-client-id",
+    "OIDC_REDIRECT_URI": "https://your-worker.example/oidc/callback"
   },
   "durable_objects": {
     "bindings": [

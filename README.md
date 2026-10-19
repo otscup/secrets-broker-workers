@@ -16,10 +16,13 @@ separate, Workers-only port so NodeWarden upgrades don't affect it.
 - ✅ Durable Object session storage (wrapped with `SESSION_KEK`)
 - ✅ Permanent / 7d / 24h / 1h unlock TTL
 - ✅ Item list + `/secret` read, using per-agent Bearer tokens
-- ✅ Agents: create / rename / rotate / delete, per-agent allowlist and write flag
+- ✅ Item actions: edit name/url/notes/value, group, share, delete (writes to NodeWarden D1)
+- ✅ Agents: create / rename / rotate / delete / copy token; per-agent allowlist, group scope and write flag
 - ✅ Approval flow: once / 1h / 24h / 7d / permanent; pending requests in the UI
+- ✅ Grant actions: extend duration, set max reads, revoke, delete; direct share to an agent
 - ✅ Per-item no-approval policy (reads are still audited)
 - ✅ Audit log and dashboard: KPIs, bar trend, agent share, top items, recent activity
+- ✅ Profile page + OIDC (xid) login/binding with PKCE
 - ✅ HTTP MCP endpoint (`/mcp`) with tools: `list_secrets`, `request_access`, `get_secret`
 - ✅ Notification settings: Telegram / ntfy / Gotify / wxpush (sent on pending request)
 - ✅ Headless `unlock.mjs`
@@ -138,6 +141,21 @@ curl -H "Authorization: Bearer $AGENT_TOKEN" \
 Agents are created in the **Agents** tab; the token is shown only once.
 The item's **免审批** toggle in the **密钥** tab makes reads immediate while still
 recording audit events.
+
+## OIDC (xid) login
+
+Set these vars/secrets (or change `wrangler.jsonc`):
+
+```jsonc
+"OIDC_ISSUER": "https://auth.otscup.com",
+"OIDC_CLIENT_ID": "your-client-id",
+"OIDC_REDIRECT_URI": "https://your-worker.example/oidc/callback"
+```
+
+The Worker uses authorization code + PKCE. Register the callback URL at the
+identity provider (xid supports dynamic client registration; a public client with
+`token_endpoint_auth_method=none` works). After login, the profile stores the
+OIDC subject/email/name; admin login can use either the password or OIDC.
 
 ## Security notes
 

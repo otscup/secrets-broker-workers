@@ -80,6 +80,32 @@ export async function decryptStr(cipherString, encKey, macKey) {
   return decoder.decode(await decryptBw(cipherString, encKey, macKey))
 }
 
+/** Encrypt one Bitwarden EncString (type 2). */
+export async function encryptStr(text, encKey, macKey) {
+  const iv = crypto.getRandomValues(new Uint8Array(16))
+  const key = await crypto.subtle.importKey('raw', encKey, { name: 'AES-CBC' }, false, ['encrypt'])
+  const cipher = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, key, encoder.encode(String(text))))
+  const mac = await hmacSha256(macKey, concatBytes(iv, cipher))
+  return `2.${bytesToB64(iv)}|${bytesToB64(cipher)}|${bytesToB64(mac)}`
+}
+
+export async function cipherKeys(row, session) {
+  const userEnc = b64ToBytes(session.symEncKey)
+  const userMac = b64ToBytes(session.symMacKey)
+  let itemEnc = userEnc
+  let itemMac = userMac
+  if (row.key) {
+    try {
+      const itemKey = await decryptBw(row.key, userEnc, userMac)
+      if (itemKey.length >= 64) {
+        itemEnc = itemKey.slice(0, 32)
+        itemMac = itemKey.slice(32, 64)
+      }
+    } catch {}
+  }
+  return { userEnc, userMac, itemEnc, itemMac }
+}
+
 /** Unwrap the user's 64-byte symmetric key from the profile key. */
 export async function unlockUserKey(profileKey, masterKey) {
   const encKey = await hkdfExpand(masterKey, 'enc', 32)
@@ -128,19 +154,7 @@ async function decryptDeep(value, itemEnc, itemMac, userEnc, userMac) {
  * older/imported rows may instead carry a single encrypted string.
  */
 export async function decryptCipherRow(row, session) {
-  const userEnc = b64ToBytes(session.symEncKey)
-  const userMac = b64ToBytes(session.symMacKey)
-  let itemEnc = userEnc
-  let itemMac = userMac
-  if (row.key) {
-    try {
-      const itemKey = await decryptBw(row.key, userEnc, userMac)
-      if (itemKey.length >= 64) {
-        itemEnc = itemKey.slice(0, 32)
-        itemMac = itemKey.slice(32, 64)
-      }
-    } catch {}
-  }
+  const { userEnc, userMac, itemEnc, itemMac } = await cipherKeys(row, session)
   const name = await decryptFieldWithFallback(row.name, itemEnc, itemMac, userEnc, userMac)
   const notes = await decryptFieldWithFallback(row.notes, itemEnc, itemMac, userEnc, userMac)
   let data = null
