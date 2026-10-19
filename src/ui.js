@@ -14,9 +14,9 @@ nav button.active{background:#fff;color:var(--text);box-shadow:0 2px 8px rgba(20
 .user{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
 .user-wrap{position:relative;margin-left:auto}
 .avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#5b6cff,#0f9d8a);color:#fff;display:grid;place-items:center;font-size:11px;border:0;cursor:pointer}
-.theme-switch{display:flex;gap:2px;background:var(--card);border:1px solid var(--line);border-radius:9px;padding:2px;margin-left:auto}
-.theme-switch button{border:0;background:transparent;border-radius:7px;padding:4px 7px;font-size:13px;cursor:pointer;opacity:.65}
-.theme-switch button.on{background:var(--btn);opacity:1}
+.theme-switch{display:flex;gap:2px;background:transparent;border:0;padding:0;margin-left:auto}
+.theme-switch button{border:0;background:transparent;border-radius:7px;padding:4px 6px;font-size:13px;cursor:pointer;opacity:.45}
+.theme-switch button.on{background:transparent;opacity:1}
 .account-menu{position:absolute;right:0;top:38px;z-index:30;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px;min-width:160px;box-shadow:0 12px 30px rgba(15,23,42,.16)}
 .account-menu button{display:block;width:100%;text-align:left;background:transparent;border-radius:8px;padding:8px 10px;font-size:13px}
 .account-menu button:hover{background:var(--btn)}
@@ -129,6 +129,11 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
       <label class="field">Client Secret（public client 可留空）</label><input id="oidc-client-secret" type="password" placeholder="留空保留原值">
       <label class="field">Redirect URI</label><input id="oidc-redirect" placeholder="https://your-worker/oidc/callback">
       <label class="field">Scope</label><input id="oidc-scope" placeholder="openid profile email">
+      <label class="field">Authorization Endpoint（高级，留空自动发现）</label><input id="oidc-authorization" placeholder="https://auth.example.com/authorize">
+      <label class="field">Token Endpoint</label><input id="oidc-token" placeholder="https://auth.example.com/token">
+      <label class="field">Userinfo Endpoint</label><input id="oidc-userinfo" placeholder="https://auth.example.com/userinfo">
+      <label class="field">JWKS URI</label><input id="oidc-jwks" placeholder="https://auth.example.com/jwks">
+      <div style="margin-top:10px"><button id="oidc-discover">从 Issuer 自动发现并填充</button></div>
       <div class="hint" id="oidc-config-status" style="margin-top:8px"></div>
     </div>
     <div class="card"><h2>浏览器通知</h2><div class="hint" id="browser-notify-status"></div><div style="margin-top:10px"><button id="enable-browser-notify">启用浏览器通知</button><button id="test-browser-notify">发送测试通知</button></div></div>
@@ -182,7 +187,7 @@ async function lock() { try { await api('/api/lock', { method: 'POST' }) } catch
 $('lock').onclick = lock; $('lock2').onclick = lock
 document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings(); if (view === 'profile') loadProfile() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常')
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('oidc-discover').onclick = discoverOidc; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常')
 $('mcp-url').textContent = location.origin + '/mcp'
 $('copy-token').onclick = async () => { try { await navigator.clipboard.writeText(app.token); toast('已复制 token') } catch { toast('复制失败', true) } }
 $('modal-close').onclick = () => show('modal', false)
@@ -224,6 +229,7 @@ async function loadSettings() {
     $('wxpush-status').textContent = n.wxpush?.configured ? '已配置（token 已保存）' : '未配置'
     const oidc = data.oidc || {}
     $('oidc-issuer').value = oidc.issuer || ''; $('oidc-client-id').value = oidc.clientId || ''; $('oidc-redirect').value = oidc.redirectUri || ''; $('oidc-scope').value = oidc.scope || ''
+    $('oidc-authorization').value = oidc.authorizationEndpoint || ''; $('oidc-token').value = oidc.tokenEndpoint || ''; $('oidc-userinfo').value = oidc.userinfoEndpoint || ''; $('oidc-jwks').value = oidc.jwksUri || ''
     $('oidc-config-status').textContent = oidc.configured ? '已配置' + (oidc.secretConfigured ? '（client secret 已保存）' : '') : '未配置'
     $('mcp-url').textContent = location.origin + '/mcp'
   } catch (error) { status('settings-status', error.message, 'error') }
@@ -238,10 +244,24 @@ async function saveSettings() {
     }, oidc: {
       issuer: $('oidc-issuer').value, clientId: $('oidc-client-id').value, clientSecret: $('oidc-client-secret').value,
       redirectUri: $('oidc-redirect').value, scope: $('oidc-scope').value,
+      authorizationEndpoint: $('oidc-authorization').value, tokenEndpoint: $('oidc-token').value,
+      userinfoEndpoint: $('oidc-userinfo').value, jwksUri: $('oidc-jwks').value,
     } }) })
     $('tg-token').value = ''; $('gotify-token').value = ''; $('wxpush-token').value = ''; $('oidc-client-secret').value = ''
     status('settings-status', '已保存', 'ok'); await loadSettings()
   } catch (error) { status('settings-status', error.message, 'error') }
+}
+async function discoverOidc() {
+  const issuer = $('oidc-issuer').value.trim(); if (!issuer) return status('oidc-config-status', '请先填 Issuer', 'error')
+  try {
+    status('oidc-config-status', '正在发现…')
+    const data = await api('/api/oidc/discover?issuer=' + encodeURIComponent(issuer))
+    $('oidc-authorization').value = data.authorizationEndpoint || $('oidc-authorization').value
+    $('oidc-token').value = data.tokenEndpoint || $('oidc-token').value
+    $('oidc-userinfo').value = data.userinfoEndpoint || $('oidc-userinfo').value
+    $('oidc-jwks').value = data.jwksUri || $('oidc-jwks').value
+    status('oidc-config-status', '已自动填充，保存后生效', 'ok')
+  } catch (error) { status('oidc-config-status', error.message, 'error') }
 }
 function renderStats() {
   const stats = app.stats || { totalReads: 0, activeAgents: 0, pending: 0, activeGrants: 0, buckets: [], topItems: [], topAgents: [] }

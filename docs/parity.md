@@ -35,6 +35,7 @@ Docker) and the Cloudflare Workers port (`secrets-broker-workers`).
 | Theme (light/dark/auto) | ✅ | ✅ |
 | Avatar account menu | ✅ | ✅ |
 | Browser notifications | ✅ | ✅ permission + polling |
+| OIDC settings UI + endpoint auto-discovery | env/settings | ✅ |
 | Telegram / ntfy / Gotify / wxpush | ✅ | ✅ server-side send |
 | Telegram inline approve buttons | ✅ | ❌ link only |
 | MCP HTTP Bearer | ✅ | ✅ `list_secrets` / `request_access` / `get_secret` |

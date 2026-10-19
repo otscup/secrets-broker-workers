@@ -139,7 +139,24 @@ async function oidcConfig(env, request, state) {
   const clientSecret = String(stored.clientSecret || env.OIDC_CLIENT_SECRET || '')
   const redirectUri = String(stored.redirectUri || env.OIDC_REDIRECT_URI || `${new URL(request.url).origin}/oidc/callback`)
   if (!issuer || !clientId) return null
-  return { issuer, clientId, clientSecret, redirectUri, scope: stored.scope || env.OIDC_SCOPE || 'openid profile email' }
+  return {
+    issuer, clientId, clientSecret, redirectUri, scope: stored.scope || env.OIDC_SCOPE || 'openid profile email',
+    authorizationEndpoint: String(stored.authorizationEndpoint || env.OIDC_AUTHORIZATION_ENDPOINT || ''),
+    tokenEndpoint: String(stored.tokenEndpoint || env.OIDC_TOKEN_ENDPOINT || ''),
+    userinfoEndpoint: String(stored.userinfoEndpoint || env.OIDC_USERINFO_ENDPOINT || ''),
+    jwksUri: String(stored.jwksUri || env.OIDC_JWKS_URI || ''),
+  }
+}
+
+async function oidcEndpoints(oidc) {
+  const needsDiscovery = !oidc.authorizationEndpoint || !oidc.tokenEndpoint || !oidc.userinfoEndpoint
+  const discovered = needsDiscovery ? await oidcDiscovery(oidc.issuer) : {}
+  return {
+    authorization: oidc.authorizationEndpoint || discovered.authorization_endpoint,
+    token: oidc.tokenEndpoint || discovered.token_endpoint,
+    userinfo: oidc.userinfoEndpoint || discovered.userinfo_endpoint,
+    jwks: oidc.jwksUri || discovered.jwks_uri,
+  }
 }
 
 async function oidcDiscovery(issuer) {
@@ -634,6 +651,17 @@ export default {
       await addAudit(env, { event: 'security.2fa-disable' })
       return json({ ok: true })
     }
+    if (url.pathname === '/api/oidc/discover') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const configured = await oidcConfig(env, request, state)
+      const issuer = String(url.searchParams.get('issuer') || configured?.issuer || '').replace(/\/$/, '')
+      if (!issuer) return fail('issuer required', 400)
+      try {
+        const discovery = await oidcDiscovery(issuer)
+        return json({ authorizationEndpoint: discovery.authorization_endpoint ?? '', tokenEndpoint: discovery.token_endpoint ?? '', userinfoEndpoint: discovery.userinfo_endpoint ?? '', jwksUri: discovery.jwks_uri ?? '', scope: discovery.scopes_supported?.join(' ') ?? '' })
+      } catch (error) { return fail(String(error.message ?? error), 502) }
+    }
     if (url.pathname === '/api/oidc/status') {
       const state = await loadState(env)
       const oidc = await oidcConfig(env, request, state)
@@ -644,12 +672,13 @@ export default {
       const oidc = await oidcConfig(env, request, state)
       if (!oidc) return fail('OIDC is not configured (OIDC_ISSUER / OIDC_CLIENT_ID)', 503)
       try {
-        const discovery = await oidcDiscovery(oidc.issuer)
+        const endpoints = await oidcEndpoints(oidc)
+        if (!endpoints.authorization) return fail('OIDC authorization endpoint missing', 502)
         const state = randomToken()
         const verifier = base64Url(crypto.getRandomValues(new Uint8Array(32)))
         const challenge = base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(verifier))))
         const cookie = await oidcStateCookie(env, state, verifier)
-        const target = new URL(discovery.authorization_endpoint)
+        const target = new URL(endpoints.authorization)
         target.searchParams.set('client_id', oidc.clientId)
         target.searchParams.set('redirect_uri', oidc.redirectUri)
         target.searchParams.set('response_type', 'code')
@@ -670,13 +699,14 @@ export default {
       const code = url.searchParams.get('code') ?? ''
       if (!code) return fail('missing authorization code', 400)
       try {
-        const discovery = await oidcDiscovery(oidc.issuer)
+        const endpoints = await oidcEndpoints(oidc)
+        if (!endpoints.token || !endpoints.userinfo) return fail('OIDC token/userinfo endpoint missing', 502)
         const body = new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: oidc.redirectUri, client_id: oidc.clientId, code_verifier: stateData.verifier })
         if (oidc.clientSecret) body.set('client_secret', oidc.clientSecret)
-        const tokenResponse = await fetch(discovery.token_endpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body })
+        const tokenResponse = await fetch(endpoints.token, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body })
         const tokens = await tokenResponse.json()
         if (!tokenResponse.ok || !tokens.access_token) return fail(tokens.error_description || 'OIDC token exchange failed', 502)
-        const userResponse = await fetch(discovery.userinfo_endpoint, { headers: { authorization: `Bearer ${tokens.access_token}` } })
+        const userResponse = await fetch(endpoints.userinfo, { headers: { authorization: `Bearer ${tokens.access_token}` } })
         const user = await userResponse.json()
         if (!userResponse.ok) return fail('OIDC userinfo failed', 502)
         await updateState(env, (state) => {
@@ -966,6 +996,10 @@ export default {
           clientId: effectiveOidc?.clientId ?? '',
           redirectUri: effectiveOidc?.redirectUri ?? '',
           scope: effectiveOidc?.scope ?? '',
+          authorizationEndpoint: effectiveOidc?.authorizationEndpoint ?? '',
+          tokenEndpoint: effectiveOidc?.tokenEndpoint ?? '',
+          userinfoEndpoint: effectiveOidc?.userinfoEndpoint ?? '',
+          jwksUri: effectiveOidc?.jwksUri ?? '',
           configured: Boolean(effectiveOidc),
           secretConfigured: Boolean(state.settings?.oidc?.clientSecret || env.OIDC_CLIENT_SECRET),
         } })
@@ -993,7 +1027,7 @@ export default {
           if (body.oidc && typeof body.oidc === 'object') {
             const current = state.settings.oidc ?? {}
             const next = { ...current }
-            for (const key of ['issuer', 'clientId', 'redirectUri', 'scope']) {
+            for (const key of ['issuer', 'clientId', 'redirectUri', 'scope', 'authorizationEndpoint', 'tokenEndpoint', 'userinfoEndpoint', 'jwksUri']) {
               if (typeof body.oidc[key] === 'string') next[key] = body.oidc[key].trim()
             }
             if (typeof body.oidc.clientSecret === 'string' && body.oidc.clientSecret.length > 0) next.clientSecret = body.oidc.clientSecret
