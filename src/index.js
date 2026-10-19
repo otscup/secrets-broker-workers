@@ -1372,8 +1372,17 @@ export default {
     }
     if (url.pathname === '/api/notify/test' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
       const state = await loadState(env)
       const notifications = state.settings?.notifications ?? {}
+      if (body.simulateApproval === true) {
+        const id = crypto.randomUUID()
+        const entry = { id, agent: 'test-agent', name: '通知测试条目', account: await vaultEmail(env, env.NODEWARDEN_DB, state), createdAt: nowIso() }
+        await updateState(env, (next) => { next.pending ??= {}; next.pending[id] = entry; return next })
+        await notifyPending(env, new URL(request.url).origin, entry, {})
+        await addAudit(env, { event: 'notify.test-approval', agent: 'test-agent', name: entry.name, id })
+        return json({ ok: true, simulated: true, id, pending: entry })
+      }
       const text = 'Secrets Broker 测试通知：通知渠道工作正常。'
       const results = {}
       if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
