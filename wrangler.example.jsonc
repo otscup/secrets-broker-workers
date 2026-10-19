@@ -1,0 +1,27 @@
+{
+  "name": "secrets-broker-workers",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-19",
+  "observability": { "enabled": true },
+  "vars": {
+    "VAULT_EMAIL": "you@example.com"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "BROKER_STATE", "class_name": "BrokerState" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["BrokerState"] }
+  ],
+  "services": [
+    { "binding": "NODEWARDEN", "service": "nodewarden" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "NODEWARDEN_DB",
+      "database_name": "nodewarden-db",
+      "database_id": "REPLACE_WITH_NODEWARDEN_D1_ID"
+    }
+  ]
+}

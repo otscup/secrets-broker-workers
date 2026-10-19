@@ -1,0 +1,11 @@
+node_modules/
+.wrangler/
+.dev.vars
+wrangler.jsonc
+test-*.mjs
+inspect-cipher.mjs
+set-secrets.mjs
+add-domain.mjs
+add-dns.mjs
+attach-route.mjs
+*.log
