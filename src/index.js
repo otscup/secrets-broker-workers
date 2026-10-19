@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { uiHtml } from './ui.js'
+import { LOGO_PNG_B64, FAVICON_ICO_B64 } from './logo.js'
 import {
   b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, decryptStr, encryptStr, extractSecret,
   hmacToken, pbkdf2, sha256Base64, unwrapWithKek, wrapWithKek, bytesToB64,
@@ -65,8 +66,44 @@ async function makeCookie(env) {
   return `v1.${expires}.${signature}`
 }
 
+function cookieSessionId(request) {
+  const value = readCookie(request, SESSION_COOKIE)
+  if (!value.startsWith('v2.')) return ''
+  return value.split('.')[1] ?? ''
+}
+
+async function createAdminCookie(env, request) {
+  const id = randomToken()
+  const expires = Date.now() + 7 * 86400 * 1000
+  const payload = `v2.${id}.${expires}`
+  const signature = await hmacToken(await cookieKey(env), payload)
+  const ip = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-forwarded-for') ?? ''
+  const ua = request.headers.get('user-agent') ?? ''
+  await updateState(env, (state) => {
+    state.adminSessions ??= {}
+    state.adminSessions[id] = { id, ip, ua, createdAt: nowIso(), lastSeen: nowIso(), expiresAt: expires }
+    return state
+  })
+  return `${payload}.${signature}`
+}
+
 async function validCookie(request, env) {
   const value = readCookie(request, SESSION_COOKIE)
+  if (value.startsWith('v2.')) {
+    const [version, id, expiresText, signature] = value.split('.')
+    const expires = Number(expiresText)
+    if (!id || !Number.isFinite(expires) || expires < Date.now()) return false
+    const payload = `${version}.${id}.${expiresText}`
+    const expected = await hmacToken(await cookieKey(env), payload)
+    if (!constantTimeEqual(encoder.encode(expected), encoder.encode(signature ?? ''))) return false
+    const state = await loadState(env)
+    const record = state.adminSessions?.[id]
+    if (!record || (record.expiresAt && record.expiresAt < Date.now())) return false
+    if (!record.lastSeen || Date.now() - Date.parse(record.lastSeen) > 300000) {
+      await updateState(env, (next) => { if (next.adminSessions?.[id]) next.adminSessions[id].lastSeen = nowIso(); return next })
+    }
+    return true
+  }
   if (!value.startsWith('v1.')) return false
   const [, expiresText, signature] = value.split('.')
   const expires = Number(expiresText)
@@ -100,6 +137,7 @@ async function loadState(env) {
   state.oauthCodes ??= {}
   state.oauthTokens ??= {}
   state.oauthAgentProfiles ??= {}
+  state.adminSessions ??= {}
   state.grants ??= {}
   state.transfers ??= []
   const defaultAgentAccount = state.settings?.vaultEmail || env.VAULT_EMAIL || ''
@@ -749,6 +787,10 @@ function oauthConsentPage(origin, params, client) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
+    if (url.pathname === '/logo.png' || url.pathname === '/favicon.ico') {
+      const bytes = b64ToBytes(url.pathname === '/logo.png' ? LOGO_PNG_B64 : FAVICON_ICO_B64)
+      return new Response(bytes, { headers: { 'content-type': url.pathname === '/logo.png' ? 'image/png' : 'image/x-icon', 'cache-control': 'public, max-age=86400' } })
+    }
     if (url.pathname === '/' || url.pathname === '/index.html') {
       return new Response(uiHtml, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
     }
@@ -769,12 +811,29 @@ export default {
         const secret = await totpSecret(env, state)
         if (!secret || !(await verifyTotp(secret, body.code))) return json({ totpRequired: true, error: '两步验证码错误' }, 401)
       }
-      const cookie = await makeCookie(env)
+      const cookie = await createAdminCookie(env, request)
       await addAudit(env, { event: 'admin.login' })
       return json({ ok: true }, 200, { 'set-cookie': `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800` })
     }
     if (url.pathname === '/api/logout' && request.method === 'POST') {
+      const sessionId = cookieSessionId(request)
+      if (sessionId) await updateState(env, (state) => { if (state.adminSessions?.[sessionId]) delete state.adminSessions[sessionId]; return state })
       return json({ ok: true }, 200, { 'set-cookie': `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0` })
+    }
+    if (url.pathname === '/api/sessions' && request.method === 'GET') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const current = cookieSessionId(request)
+      const sessions = Object.values(state.adminSessions ?? {}).filter((entry) => !entry.expiresAt || entry.expiresAt > Date.now()).map((entry) => ({ id: entry.id, ip: entry.ip ?? '', ua: entry.ua ?? '', createdAt: entry.createdAt ?? '', lastSeen: entry.lastSeen ?? '', expiresAt: entry.expiresAt ?? 0, current: entry.id === current }))
+      return json({ sessions, legacy: !current })
+    }
+    if (url.pathname === '/api/sessions/revoke' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      if (!body.id) return fail('session id required', 400)
+      await updateState(env, (state) => { if (state.adminSessions?.[body.id]) delete state.adminSessions[body.id]; return state })
+      await addAudit(env, { event: 'admin.session-revoke', sessionId: body.id })
+      return json({ ok: true })
     }
     if (url.pathname === '/api/me') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -919,7 +978,7 @@ export default {
           state.profile.avatarUrl = String(user.picture ?? state.profile.avatarUrl ?? '')
           return state
         })
-        const cookie = await makeCookie(env)
+        const cookie = await createAdminCookie(env, request)
         await addAudit(env, { event: 'admin.oidc-login', email: user.email ?? user.sub ?? '' })
         const headers = new Headers({ location: stateData.next === 'profile' ? '/?view=profile' : '/' })
         headers.append('set-cookie', `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`)

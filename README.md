@@ -1,6 +1,6 @@
 # Secrets Broker — Cloudflare Workers
 
-![Secrets Broker logo](https://img.otscup.eu.cc/file/%E5%A4%B4%E5%83%8F/1792152333966_otscup-logo-main.png)
+![Secrets Broker logo](assets/logo.png)
 
 Cloudflare Workers-native implementation of Secrets Broker. It reads a
 Bitwarden-compatible vault from **NodeWarden's D1 database**, decrypts items in
