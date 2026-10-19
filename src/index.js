@@ -415,14 +415,14 @@ async function findCipherRow(env, db, session, name) {
   return null
 }
 
-async function queueTransfer(env, db, sourceSession, agentName, agent, name, folder) {
+async function queueTransfer(env, db, sourceSession, agentName, agent, name, folder, options = {}) {
   const found = await findCipherRow(env, db, sourceSession, name)
   if (!found) throw new Error('source item not found')
   const payload = { name, value: extractSecret(found.decrypted), url: cipherUrl(found.decrypted.data), notes: found.decrypted.notes }
   const wrapped = await wrapWithKek(encoder.encode(JSON.stringify(payload)), await kekBytes(env))
   const targetAccount = String(agent.account ?? '')
   if (!targetAccount) throw new Error('agent has no bound account')
-  const transfer = { id: crypto.randomUUID(), agent: agentName, name, sourceAccount: sourceSession.email, targetAccount, folder: String(folder ?? ''), payloadWrapped: wrapped, createdAt: nowIso() }
+  const transfer = { id: crypto.randomUUID(), agent: agentName, name, sourceAccount: sourceSession.email, targetAccount, folder: String(folder ?? ''), seconds: Number(options.seconds) || 0, maxReads: options.maxReads ?? null, payloadWrapped: wrapped, createdAt: nowIso() }
   await updateState(env, (state) => { state.transfers ??= []; state.transfers.push(transfer); return state })
   await addAudit(env, { event: 'transfer.queue', agent: agentName, name, sourceAccount: sourceSession.email, targetAccount })
   return transfer
@@ -440,7 +440,7 @@ async function processTransfers(env, session) {
       await updateState(env, (next) => {
         next.transfers = (next.transfers ?? []).filter((entry) => entry.id !== transfer.id)
         const key = grantKey(transfer.agent, transfer.name)
-        next.grants[key] = { agent: transfer.agent, name: transfer.name, mode: 'transfer', createdAt: nowIso(), expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, account: transfer.targetAccount }
+        next.grants[key] = { agent: transfer.agent, name: transfer.name, mode: 'transfer', createdAt: nowIso(), expiresAt: transfer.seconds ? Date.now() + transfer.seconds * 1000 : 0, reads: 0, maxReads: transfer.maxReads ?? null, revokedAt: null, account: transfer.targetAccount }
         return next
       })
       await addAudit(env, { event: 'transfer.complete', agent: transfer.agent, name: transfer.name, sourceAccount: transfer.sourceAccount, targetAccount: transfer.targetAccount })
@@ -1145,7 +1145,7 @@ export default {
         if (!agent) { errors.push({ agent: agentName, error: 'unknown agent' }); continue }
         if (agent.account && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) {
           try {
-            const transfer = await queueTransfer(env, env.NODEWARDEN_DB, session, agentName, agent, name, body.targetFolder)
+            const transfer = await queueTransfer(env, env.NODEWARDEN_DB, session, agentName, agent, name, body.targetFolder, { seconds, maxReads })
             queued.push({ agent: agentName, name, targetAccount: transfer.targetAccount, folder: transfer.folder })
           } catch (error) { errors.push({ agent: agentName, error: String(error.message ?? error) }) }
           continue
