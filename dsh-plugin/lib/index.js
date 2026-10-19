@@ -73,6 +73,23 @@ export function apply(ctx) {
     ctx.effect(() => {
       const dispose = ctx.webServer.register({
         kind: 'exact',
+        path: `${PREFIX}/connect/save`,
+        handler: async (req, res) => {
+          if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method-not-allowed' })
+          try {
+            const chunks = []
+            for await (const chunk of req) chunks.push(chunk)
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '') || '{}')
+            const result = await broker('/api/plugin/connect/save', { method: 'POST', body: JSON.stringify(body) })
+            json(res, result.status, result.body ?? { ok: false })
+          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
+        },
+      })
+      return () => dispose()
+    }, 'ui-secrets-broker: connect route')
+    ctx.effect(() => {
+      const dispose = ctx.webServer.register({
+        kind: 'exact',
         path: `${PREFIX}/decide`,
         handler: async (req, res) => {
           if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method-not-allowed' })

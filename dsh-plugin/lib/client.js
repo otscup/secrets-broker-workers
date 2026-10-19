@@ -116,10 +116,70 @@ window.__ModuleLoader__.load({
       return react.createElement("div", { style: s.wrap }, ...children);
     }
 
+    function startPopup(ctx) {
+      const dismissed = new Set();
+      let overlay = null;
+      let busy = false;
+      const styleButton = "border:1px solid #d8e0ec;background:#fff;color:#152033;border-radius:6px;padding:5px 8px;font:12px system-ui;cursor:pointer";
+      const stylePrimary = "border:0;background:#0f9d8a;color:#fff;border-radius:6px;padding:6px 9px;font:12px system-ui;cursor:pointer";
+      const styleDanger = "border:1px solid #e3b4b0;background:#fff;color:#c0392b;border-radius:6px;padding:5px 8px;font:12px system-ui;cursor:pointer";
+      const mk = (tag, text, style) => { const el = document.createElement(tag); if (text) el.textContent = text; if (style) el.style.cssText = style; return el; };
+      const remove = () => { if (overlay) { overlay.remove(); overlay = null } };
+      const load = async () => {
+        if (busy) return; busy = true;
+        try {
+          const [pendingResponse, requestResponse] = await Promise.all([
+            fetch('/api/secrets-broker/pending').then((r) => r.json()).catch(() => ({ pending: [] })),
+            fetch('/api/secrets-broker/credential-requests').then((r) => r.json()).catch(() => ({ requests: [] }))
+          ]);
+          const pending = (pendingResponse.pending || []).filter((entry) => !dismissed.has(entry.id));
+          const requests = (requestResponse.requests || []).filter((entry) => !dismissed.has(entry.id));
+          if (pending.length === 0 && requests.length === 0) { remove(); return }
+          if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483000;width:min(380px,calc(100vw - 24px));max-height:70vh;overflow:auto;background:#fff;color:#152033;border:1px solid #d8e0ec;border-radius:14px;box-shadow:0 16px 50px rgba(15,23,42,.25);padding:14px;font:13px/1.5 system-ui';
+            document.body.appendChild(overlay);
+          }
+          overlay.innerHTML = '';
+          const head = mk('div', '', 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px');
+          head.appendChild(mk('b', 'Secrets Broker', 'font-size:14px'));
+          const close = mk('button', '×', 'border:0;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:#6b7890');
+          close.onclick = () => { for (const entry of pending) dismissed.add(entry.id); for (const entry of requests) dismissed.add(entry.id); remove() };
+          head.appendChild(close); overlay.appendChild(head);
+          for (const entry of pending) {
+            const card = mk('div', '', 'border:1px solid #e3e9f2;border-radius:10px;padding:9px;margin:8px 0');
+            card.appendChild(mk('div', (entry.agent || 'Agent') + ' → ' + (entry.name || ''), 'font-weight:600;margin-bottom:6px'));
+            const row = mk('div', '', 'display:flex;gap:6px;flex-wrap:wrap');
+            for (const [decision, label, style] of [['once', '本次', stylePrimary], ['24h', '24h', styleButton], ['always', '永久', styleButton], ['deny', '拒绝', styleDanger]]) {
+              const button = mk('button', label, style);
+              button.onclick = async () => { button.disabled = true; try { await fetch('/api/secrets-broker/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, decision }) }); load() } catch {} };
+              row.appendChild(button);
+            }
+            card.appendChild(row); overlay.appendChild(card);
+          }
+          for (const entry of requests) {
+            const card = mk('div', '', 'border:1px solid #cfe8e2;background:#f5fbf9;border-radius:10px;padding:9px;margin:8px 0');
+            card.appendChild(mk('div', '需要补充：' + (entry.name || ''), 'font-weight:600;margin-bottom:6px'));
+            if (entry.description) card.appendChild(mk('div', entry.description, 'font-size:11px;color:#6b7890;margin-bottom:6px'));
+            const nameInput = mk('input'); nameInput.value = entry.name || ''; nameInput.placeholder = '名称'; nameInput.style.cssText = 'width:100%;box-sizing:border-box;border:1px solid #d8e0ec;border-radius:6px;padding:6px;margin:3px 0;font:12px system-ui';
+            const userInput = mk('input'); userInput.placeholder = '用户名（可选）'; userInput.style.cssText = nameInput.style.cssText;
+            const valueInput = mk('input'); valueInput.type = 'password'; valueInput.placeholder = '密钥'; valueInput.style.cssText = nameInput.style.cssText;
+            const save = mk('button', '保存并授权', stylePrimary); save.style.width = '100%'; save.style.marginTop = '4px';
+            save.onclick = async () => { if (!valueInput.value) return; save.disabled = true; try { const response = await fetch('/api/secrets-broker/connect/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, name: nameInput.value, username: userInput.value, value: valueInput.value, group: '' }) }); const payload = await response.json().catch(() => ({})); if (!response.ok || payload.ok === false) throw new Error(payload.error || 'save failed'); load() } catch (error) { save.disabled = false; save.textContent = String(error.message || error) } };
+            card.append(nameInput, userInput, valueInput, save); overlay.appendChild(card);
+          }
+        } finally { busy = false }
+      };
+      const timer = setInterval(load, 15000);
+      load();
+      return () => { clearInterval(timer); remove() };
+    }
+
     const NS = "secretsBroker";
     const inject = ["slots", "locale"];
     function apply(ctx) {
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), "ui-secrets-broker: dictionaries");
+      ctx.effect(() => startPopup(ctx), "ui-secrets-broker: popup");
       const t = ctx.locale.bind(NS);
       ctx.effect(() => ctx.slots.inject("settings.section", () => ctx.slots.register({
         name: "settings.section",

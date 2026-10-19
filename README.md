@@ -1,6 +1,6 @@
 # Secrets Broker — Cloudflare Workers
 
-![Secrets Broker logo](assets/logo.png)
+[English](#english) | [简体中文](#中文说明)
 
 ## 中文说明
 
@@ -13,6 +13,8 @@ MCP/OAuth 或 Agent token 读取密钥。
 - Docker / Node 参考实现：<https://github.com/otscup/secrets-broker>
 - Agent Skill（MCP + stdio 桥接器）：<https://github.com/otscup/secrets-broker-skill>
 - DSH 插件（设置页内处理待审批）：[`dsh-plugin/`](dsh-plugin/)
+
+## English
 
 Cloudflare Workers-native implementation of Secrets Broker. It reads a
 Bitwarden-compatible vault from **NodeWarden's D1 database**, decrypts items in

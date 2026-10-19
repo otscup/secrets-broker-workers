@@ -173,6 +173,14 @@ export async function decryptCipherRow(row, session) {
   return { id: row.id, type: Number(row.type) || 0, name, notes, data, dataText }
 }
 
+export function extractUsername(decrypted) {
+  return typeof decrypted?.data?.login?.username === 'string' ? decrypted.data.login.username : ''
+}
+
+export function extractTotp(decrypted) {
+  return typeof decrypted?.data?.login?.totp === 'string' ? decrypted.data.login.totp : ''
+}
+
 export function extractSecret(decrypted, preferredField) {
   const data = decrypted.data
   const fields = Array.isArray(data?.fields) ? data.fields : []
