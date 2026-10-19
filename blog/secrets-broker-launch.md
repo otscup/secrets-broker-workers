@@ -51,7 +51,7 @@ Agent 发起请求 → 你在网页 / Telegram / ntfy / Gotify / Webhook 里点�
 
 首页是概览：读取次数、活跃 Agent、待审批、有效授权。每个卡片都能点开看明细。
 
-![Secrets Broker 首页](secrets-broker-home.png)
+![Secrets Broker 首页](https://raw.githubusercontent.com/otscup/secrets-broker-workers/main/blog/secrets-broker-home.png)
 
 密钥页可以管理条目、分享给 Agent、批量分享、查看创建人和使用记录。授权页能看到每个 Agent 读了多少次、什么时候到期、最近使用时间。
 
@@ -80,11 +80,13 @@ Agent 可以调用 `request_credential` 创建一个一次性连接链接。你�
 - D1 里存的是密文；
 - 会话密钥在 Durable Object 里用 `SESSION_KEK` 包裹；
 - 只有在解锁后，Worker 才在内存里解密；
-- 网页和 MCP 拿到的都是解密后的值。
+- 用 `get_secret` 时，网页和 MCP 拿到的都是解密后的值。
 
-所以“网页能看到、MCP 看不到”是不成立的。如果 Agent 要使用密钥，它最终必须拿到值，或者让 broker 代它执行请求。
+所以“网页能看到、MCP 看不到”对 `get_secret` 是不成立的。如果 Agent 要使用密钥，它最终必须拿到值，或者让 broker 代它执行请求。
 
-更安全的方向是 `http_request` 这类服务端注入：Agent 只说“用哪个密钥请求哪个 URL”，broker 注入密钥并返回结果，模型永远看不到 key。
+更安全的方式是 `http_request`：Agent 只说“用哪个密钥请求哪个 URL”，broker 在服务端注入密钥并返回响应，**密钥不进入模型上下文**。这才是真正接近“模型不需要看到密钥”的用法，也是我建议 Agent 优先调用的工具。
+
+连接器则解决了另一个问题：Broker 里本来没有的密钥，可以在一次性链接里填入，broker 保存后自动授权，不需要把值贴进对话。
 
 ## 项目地址
 
