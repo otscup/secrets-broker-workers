@@ -118,6 +118,7 @@ window.__ModuleLoader__.load({
 
     function startPopup(ctx) {
       const dismissed = new Set();
+      const drafts = new Map();
       let overlay = null;
       let busy = false;
       const styleButton = "border:1px solid #d8e0ec;background:#fff;color:#152033;border-radius:6px;padding:5px 8px;font:12px system-ui;cursor:pointer";
@@ -126,7 +127,10 @@ window.__ModuleLoader__.load({
       const mk = (tag, text, style) => { const el = document.createElement(tag); if (text) el.textContent = text; if (style) el.style.cssText = style; return el; };
       const remove = () => { if (overlay) { overlay.remove(); overlay = null } };
       const load = async () => {
-        if (busy) return; busy = true;
+        if (busy) return;
+        // Never rerender while the user is typing in the popup.
+        if (overlay && overlay.contains(document.activeElement)) return;
+        busy = true;
         try {
           const [pendingResponse, requestResponse] = await Promise.all([
             fetch('/api/secrets-broker/pending').then((r) => r.json()).catch(() => ({ pending: [] })),
@@ -158,14 +162,17 @@ window.__ModuleLoader__.load({
             card.appendChild(row); overlay.appendChild(card);
           }
           for (const entry of requests) {
+            const draft = drafts.get(entry.id) || {};
             const card = mk('div', '', 'border:1px solid #cfe8e2;background:#f5fbf9;border-radius:10px;padding:9px;margin:8px 0');
             card.appendChild(mk('div', '需要补充：' + (entry.name || ''), 'font-weight:600;margin-bottom:6px'));
             if (entry.description) card.appendChild(mk('div', entry.description, 'font-size:11px;color:#6b7890;margin-bottom:6px'));
-            const nameInput = mk('input'); nameInput.value = entry.name || ''; nameInput.placeholder = '名称'; nameInput.style.cssText = 'width:100%;box-sizing:border-box;border:1px solid #d8e0ec;border-radius:6px;padding:6px;margin:3px 0;font:12px system-ui';
-            const userInput = mk('input'); userInput.placeholder = '用户名（可选）'; userInput.style.cssText = nameInput.style.cssText;
-            const valueInput = mk('input'); valueInput.type = 'password'; valueInput.placeholder = '密钥'; valueInput.style.cssText = nameInput.style.cssText;
+            const nameInput = mk('input'); nameInput.value = draft.name ?? entry.name ?? ''; nameInput.placeholder = '名称'; nameInput.style.cssText = 'width:100%;box-sizing:border-box;border:1px solid #d8e0ec;border-radius:6px;padding:6px;margin:3px 0;font:12px system-ui';
+            const userInput = mk('input'); userInput.value = draft.username ?? ''; userInput.placeholder = '用户名（可选）'; userInput.style.cssText = nameInput.style.cssText;
+            const valueInput = mk('input'); valueInput.value = draft.value ?? ''; valueInput.type = 'password'; valueInput.placeholder = '密钥'; valueInput.style.cssText = nameInput.style.cssText;
+            const updateDraft = () => drafts.set(entry.id, { name: nameInput.value, username: userInput.value, value: valueInput.value });
+            nameInput.oninput = updateDraft; userInput.oninput = updateDraft; valueInput.oninput = updateDraft;
             const save = mk('button', '保存并授权', stylePrimary); save.style.width = '100%'; save.style.marginTop = '4px';
-            save.onclick = async () => { if (!valueInput.value) return; save.disabled = true; try { const response = await fetch('/api/secrets-broker/connect/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, name: nameInput.value, username: userInput.value, value: valueInput.value, group: '' }) }); const payload = await response.json().catch(() => ({})); if (!response.ok || payload.ok === false) throw new Error(payload.error || 'save failed'); load() } catch (error) { save.disabled = false; save.textContent = String(error.message || error) } };
+            save.onclick = async () => { if (!valueInput.value) return; save.disabled = true; try { const response = await fetch('/api/secrets-broker/connect/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, name: nameInput.value, username: userInput.value, value: valueInput.value, group: '' }) }); const payload = await response.json().catch(() => ({})); if (!response.ok || payload.ok === false) throw new Error(payload.error || 'save failed'); drafts.delete(entry.id); load() } catch (error) { save.disabled = false; save.textContent = String(error.message || error) } };
             card.append(nameInput, userInput, valueInput, save); overlay.appendChild(card);
           }
         } finally { busy = false }
