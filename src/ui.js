@@ -91,7 +91,7 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
     <div class="card"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>
   </section>
 
-  <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读），这里可以设置免审批策略和读取。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div></section>
+  <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读），这里可以设置免审批策略和读取。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div></section>
 
   <section id="view-agents" class="view hidden">
     <div class="card"><h2>新增 Agent</h2><div class="hint">token 只显示一次；创建后请保存。</div>
@@ -164,6 +164,7 @@ async function hkdf(prk, info, length) { const key = await crypto.subtle.importK
 async function decryptBw(text, encKey, macKey) { const dot = text.indexOf('.'); const type = Number(text.slice(0, dot)); const parts = text.slice(dot + 1).split('|'); const iv = unb64(parts[0]), ct = unb64(parts[1]); if (type === 2) { const expected = await hmac(macKey, cat(iv, ct)); const mac = unb64(parts[2]); if (!expected.every((b, i) => b === mac[i])) throw new Error('MAC 校验失败') } const key = await crypto.subtle.importKey('raw', encKey, { name: 'AES-CBC' }, false, ['decrypt']); return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, key, ct)) }
 async function api(path, options = {}) { const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } }); const body = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(body.error || ('HTTP ' + response.status)); error.status = response.status; error.data = body; throw error } return body }
 let app = { me: null, data: { agents: [], policies: {}, grants: [], pending: [], audit: [] }, items: [], stats: null, range: '24h', token: '' }
+const selectedItems = new Set()
 const esc = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const status = (id, text, cls = '') => { const el = $(id); if (el) { el.textContent = text; el.className = 'status ' + cls } }
 function show(id, visible) { $(id).classList.toggle('hidden', !visible) }
@@ -197,7 +198,7 @@ async function lock() { try { await api('/api/lock', { method: 'POST' }) } catch
 $('lock').onclick = lock; $('lock2').onclick = lock
 document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings(); if (view === 'profile') loadProfile() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('notify-test').onclick = testNotifications; $('oidc-discover').onclick = discoverOidc; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('notify-test').onclick = testNotifications; $('oidc-discover').onclick = discoverOidc; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
 $('copy-token').onclick = async () => { try { await navigator.clipboard.writeText(app.token); toast('已复制 token') } catch { toast('复制失败', true) } }
 $('modal-close').onclick = () => show('modal', false)
@@ -296,8 +297,13 @@ function renderStats() {
 }
 function renderItems() {
   const query = ($('item-filter')?.value || '').trim().toLowerCase(); const items = (app.items || []).filter((item) => !query || item.name.toLowerCase().includes(query) || String(item.url || '').toLowerCase().includes(query) || String(item.group || '').toLowerCase().includes(query))
-  $('items-box').innerHTML = items.length ? '<table><tr><th>名称</th><th>分组</th><th>网址</th><th>类型</th><th>免审批</th><th>操作</th></tr>' + items.map((item) => '<tr><td><b>' + esc(item.name) + '</b></td><td class="hint">' + esc(item.group || '') + '</td><td class="hint">' + esc(item.url || '') + '</td><td>' + item.type + '</td><td><button class="small ' + (item.noApproval ? 'primary' : '') + '" data-policy="' + esc(item.name) + '">' + (item.noApproval ? '免审批' : '需审批') + '</button></td><td><button class="small" data-read="' + esc(item.name) + '">读取</button> <button class="small" data-item-menu="' + esc(item.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">没有条目</div>'
+  $('items-box').innerHTML = items.length ? '<table><tr><th><input type="checkbox" id="select-all-items"></th><th>名称</th><th>分组</th><th>网址</th><th>类型</th><th>免审批</th><th>操作</th></tr>' + items.map((item) => '<tr><td><input type="checkbox" class="item-select" data-name="' + esc(item.name) + '" ' + (selectedItems.has(item.name) ? 'checked' : '') + '></td><td><b>' + esc(item.name) + '</b></td><td class="hint">' + esc(item.group || '') + '</td><td class="hint">' + esc(item.url || '') + '</td><td>' + item.type + '</td><td><button class="small ' + (item.noApproval ? 'primary' : '') + '" data-policy="' + esc(item.name) + '">' + (item.noApproval ? '免审批' : '需审批') + '</button></td><td><button class="small" data-read="' + esc(item.name) + '">读取</button> <button class="small" data-item-menu="' + esc(item.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">没有条目</div>'
+  const all = $('select-all-items')
+  if (all) all.onchange = () => { if (all.checked) items.forEach((item) => selectedItems.add(item.name)); else items.forEach((item) => selectedItems.delete(item.name)); renderItems() }
+  $('items-box').querySelectorAll('.item-select').forEach((box) => { box.onchange = () => { if (box.checked) selectedItems.add(box.dataset.name); else selectedItems.delete(box.dataset.name); updateBulkBar(); const allBox = $('select-all-items'); if (allBox) allBox.checked = items.every((item) => selectedItems.has(item.name)) } })
+  updateBulkBar()
 }
+function updateBulkBar() { const bar = $('bulk-bar'); if (!bar) return; bar.classList.toggle('hidden', selectedItems.size === 0); $('bulk-count').textContent = '已选择 ' + selectedItems.size + ' 个条目' }
 function renderAgents() {
   const agents = app.data.agents || []
   $('agents-box').innerHTML = agents.length ? '<table><tr><th>Agent</th><th>显示名 / 备注</th><th>绑定账户</th><th>可读范围</th><th>写入</th><th>操作</th></tr>' + agents.map((agent) => '<tr><td><b>' + esc(agent.name) + '</b>' + (agent.oauth ? ' <span class="pill">OAuth</span>' : '') + '</td><td>' + esc(agent.alias || '') + (agent.note ? '<br><span class="hint">' + esc(agent.note) + '</span>' : '') + '</td><td class="hint">' + esc(agent.account || '-') + '</td><td class="hint">' + esc(agent.allow && agent.allow.length ? agent.allow.join(', ') : (agent.groups && agent.groups.length ? '分组：' + agent.groups.join(', ') : '全部')) + '</td><td>' + (agent.write ? '开' : '关') + '</td><td><button class="small" data-agent-menu="' + esc(agent.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">还没有 Agent</div>'
@@ -358,6 +364,35 @@ async function importItems(event) {
     const result = await api('/api/items/import', { method: 'POST', body: JSON.stringify({ items }) })
     await Promise.all([loadItems(), loadState()]); toast('导入完成：新增 ' + (result.created?.length || 0) + '，跳过 ' + (result.skipped?.length || 0))
   } catch (error) { toast('导入失败：' + error.message, true) }
+}
+function openBulkShare() {
+  const names = [...selectedItems]
+  if (!names.length) return
+  const agents = app.data.agents || []
+  const single = names.length === 1
+  const boxes = agents.map((agent) => {
+    const checked = single ? (app.data.grants || []).some((grant) => !grant.revokedAt && grant.agent === agent.name && grant.name === names[0]) : names.every((name) => (app.data.grants || []).some((grant) => !grant.revokedAt && grant.agent === agent.name && grant.name === name))
+    return '<label class="chk" style="display:flex;width:100%"><input type="checkbox" class="bulk-agent" value="' + esc(agent.name) + '" ' + (checked ? 'checked' : '') + '> ' + esc(agent.alias || agent.name) + (agent.oauth ? ' <span class="pill">OAuth</span>' : '')</label>'
+  }).join('')
+  openModal('批量分享 / 同步（' + names.length + ' 个条目）', '<div class="hint">勾选的 Agent 会获得这些条目；勾选“取消未勾选分享”后，未勾选 Agent 的现有分享会被撤销。</div><div style="max-height:220px;overflow:auto;margin-top:8px">' + (boxes || '<div class="hint">没有 Agent</div>') + '</div><label class="field">跨账户目标文件夹（跨账户时必填）</label><input id="bulk-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="bulk-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="bulk-reads" type="number" min="1"><label class="chk"><input type="checkbox" id="bulk-revoke" ' + (single ? 'checked' : '') + '> 取消未勾选 Agent 的分享</label><div class="row" style="margin-top:12px"><button class="primary" id="bulk-confirm">确定</button></div>')
+  $('bulk-confirm').onclick = async () => {
+    const agentsSelected = [...document.querySelectorAll('.bulk-agent:checked')].map((box) => box.value)
+    try {
+      const result = await api('/api/grants/sync', { method: 'POST', body: JSON.stringify({ items: names, agents: agentsSelected, seconds: Number($('bulk-seconds').value), maxReads: $('bulk-reads').value || null, targetFolder: $('bulk-folder').value.trim(), revokeUnselected: $('bulk-revoke').checked }) })
+      show('modal', false); selectedItems.clear(); await Promise.all([loadState(), loadItems()])
+      toast('分享 ' + (result.granted?.length || 0) + '，转移 ' + (result.queued?.length || 0) + '，取消 ' + (result.revoked?.length || 0) + (result.errors?.length ? '，失败 ' + result.errors.length : ''))
+    } catch (error) { toast(error.message, true) }
+  }
+}
+async function bulkDelete() {
+  const names = [...selectedItems]
+  if (!names.length) return
+  if (!confirm('删除选中的 ' + names.length + ' 个条目？')) return
+  let deleted = 0
+  for (const name of names) {
+    try { await api('/api/items/delete', { method: 'POST', body: JSON.stringify({ name }) }); deleted++ } catch {}
+  }
+  selectedItems.clear(); await Promise.all([loadItems(), loadState()]); toast('已删除 ' + deleted + ' 个条目')
 }
 async function exportItems() {
   try {

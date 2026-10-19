@@ -1195,6 +1195,62 @@ export default {
       await addAudit(env, { event: 'grant.revoke', agent: body.agent, name: body.name, source: 'web' })
       return json({ ok: true })
     }
+    if (url.pathname === '/api/grants/sync' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const items = (Array.isArray(body.items) ? body.items : []).map(String).filter(Boolean)
+      const selectedAgents = new Set((Array.isArray(body.agents) ? body.agents : []).map(String).filter(Boolean))
+      if (!items.length) return fail('items required', 400)
+      const seconds = Math.max(0, Number(body.seconds) || 0)
+      const maxReads = body.maxReads == null || body.maxReads === '' ? null : Math.max(1, Number(body.maxReads) || 1)
+      const targetFolder = String(body.targetFolder ?? '')
+      const revokeUnselected = body.revokeUnselected === true
+      const state = await loadState(env)
+      const allAgents = new Set(Object.keys(state.agents ?? {}))
+      for (const token of Object.values(state.oauthTokens ?? {})) if (token.agent) allAgents.add(token.agent)
+      const queued = []
+      const granted = []
+      const revoked = []
+      const errors = []
+      for (const item of items) {
+        for (const agentName of selectedAgents) {
+          const agent = state.agents[agentName] ?? (() => {
+            const token = Object.values(state.oauthTokens ?? {}).find((entry) => entry.agent === agentName)
+            if (!token) return null
+            const profile = state.oauthAgentProfiles?.[agentName] ?? {}
+            return { account: token.account, allow: profile.allow ?? [], groups: profile.groups ?? [], write: profile.write === true, oauth: true }
+          })()
+          if (!agent) { errors.push({ agent: agentName, item, error: 'unknown agent' }); continue }
+          if (agent.account && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) {
+            try {
+              const transfer = await queueTransfer(env, env.NODEWARDEN_DB, session, agentName, agent, item, targetFolder, { seconds, maxReads })
+              queued.push({ agent: agentName, name: item, targetAccount: transfer.targetAccount, folder: transfer.folder })
+            } catch (error) { errors.push({ agent: agentName, item, error: String(error.message ?? error) }) }
+            continue
+          }
+          await updateState(env, (next) => {
+            next.grants[grantKey(agentName, item)] = { agent: agentName, name: item, mode: 'share', createdAt: nowIso(), expiresAt: seconds ? Date.now() + seconds * 1000 : 0, reads: 0, maxReads, revokedAt: null, account: session.email }
+            return next
+          })
+          await addAudit(env, { event: 'grant.share', agent: agentName, name: item, account: session.email })
+          granted.push({ agent: agentName, name: item })
+        }
+        if (revokeUnselected) {
+          for (const agentName of allAgents) {
+            if (selectedAgents.has(agentName)) continue
+            const key = grantKey(agentName, item)
+            const grant = state.grants?.[key]
+            if (!grant || grant.revokedAt) continue
+            await updateState(env, (next) => { if (next.grants[key]) next.grants[key].revokedAt = nowIso(); return next })
+            await addAudit(env, { event: 'grant.revoke', agent: agentName, name: item, source: 'bulk-unselect' })
+            revoked.push({ agent: agentName, name: item })
+          }
+        }
+      }
+      return json({ ok: true, queued, granted, revoked, errors })
+    }
     if (url.pathname === '/api/grants/share' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
