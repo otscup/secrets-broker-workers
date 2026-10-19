@@ -5,7 +5,11 @@ export const uiHtml = String.raw`<!doctype html>
 <link rel="apple-touch-icon" href="/logo.png?v=2">
 <title>Secrets Broker · Cloudflare Workers</title>
 <style>
-:root{--bg:#f3f6fb;--card:#fff;--line:#e3e9f2;--text:#152033;--muted:#6b7890;--ok:#0f9d8a;--warn:#f2994a;--danger:#c0392b;--btn:#eef1f6}
+:root{--bg:#f3f6fb;--card:#fff;--line:#e3e9f2;--text:#152033;--muted:#6b7890;--ok:#0f9d8a;--warn:#f2994a;--danger:#c0392b;--btn:#eef1f6;--ios-radius:20px;--ios-shadow:0 1px 2px rgba(20,40,80,.04),0 8px 24px rgba(20,40,80,.04)}
+.card,.kpi{border-radius:var(--ios-radius);box-shadow:var(--ios-shadow)}
+button{border-radius:10px}
+input,select{border-radius:12px;background:#f8f9fc}
+html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none;background:#151f31}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
 .wrap{max-width:1040px;margin:0 auto;padding:22px 24px 40px}
 header{display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap}
@@ -65,7 +69,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th{color:var(--muted)
 .recent .rowline{display:flex;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12px}.recent .rowline:last-child{border-bottom:0}.recent .ev{color:var(--muted);white-space:nowrap}
 ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}ul.items li:last-child{border-bottom:0}ul.items .name{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}ul.items .type{color:var(--muted);font-size:11px}
 .secret{background:#0f172a;color:#d1fae5;border-radius:10px;padding:12px;margin-top:8px;word-break:break-all;font-family:ui-monospace,monospace;font-size:12px}
-.modal{position:fixed;inset:0;background:rgba(15,23,42,.4);display:grid;place-items:center;padding:20px;z-index:20;overflow-y:auto}.modal .card{position:relative;max-width:620px;width:100%;margin:0;max-height:calc(100vh - 40px);overflow-y:auto;overscroll-behavior:contain}.modal-x{position:sticky;top:0;float:right;margin:-6px -6px 0 8px;border:0;background:transparent;font-size:20px;line-height:1;padding:2px 6px;cursor:pointer;color:var(--muted);z-index:2}
+.modal{position:fixed;inset:0;background:rgba(15,23,42,.4);display:grid;place-items:center;padding:20px;z-index:20;overflow-y:auto}.modal .card{position:relative;max-width:620px;width:100%;margin:0;max-height:calc(100vh - 40px);overflow:hidden;display:flex;flex-direction:column;border-radius:20px}#modal-body{overflow-y:auto;min-height:0;flex:1 1 auto;padding-right:4px;scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}#modal-body::-webkit-scrollbar{width:8px}#modal-body::-webkit-scrollbar-track{background:transparent}#modal-body::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:99px;border:2px solid transparent;background-clip:padding-box}.modal-x{position:sticky;top:0;float:right;margin:-6px -6px 0 8px;border:0;background:transparent;font-size:20px;line-height:1;padding:2px 6px;cursor:pointer;color:var(--muted);z-index:2}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(12px);background:#152033;color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;z-index:60;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;max-width:calc(100vw - 32px);box-shadow:0 10px 30px rgba(15,23,42,.25)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.error{background:#c0392b}
@@ -73,6 +77,8 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
 .chart-tip.show{opacity:1;transform:translateY(0);animation:tipShake .22s ease}
 @keyframes tipShake{0%,100%{margin-left:0}25%{margin-left:2px}75%{margin-left:-2px}}
 .donut-seg{cursor:pointer;transition:stroke-width .15s,opacity .15s}.donut-seg:hover,.donut-seg.active{stroke-width:25;opacity:1!important}.modal .secret{max-height:120px;overflow:auto}
+.card,.kpi{border-radius:20px!important;box-shadow:0 1px 2px rgba(20,40,80,.04),0 8px 24px rgba(20,40,80,.04)!important}
+html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!important;background:#151f31}
 @media(max-width:860px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}@media(max-width:620px){.user .email{display:none}}
 @media(max-width:720px){.wrap{padding:14px 12px}header{gap:8px}h1{font-size:18px}nav{order:3;width:100%;overflow-x:auto;margin-left:0;padding-bottom:2px}nav button{flex:0 0 auto}.user-wrap{margin-left:0}.theme-switch{margin-left:auto}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:14px}.row>*{min-width:100%}.row button{width:100%}.modal{padding:8px}.modal .card{max-height:calc(100vh - 16px);padding:16px}.chart{overflow-x:auto}table{font-size:12px}th,td{padding:6px}}
 </style></head><body><div class="wrap">
@@ -268,7 +274,7 @@ $('modal-close').onclick = () => show('modal', false)
 $('modal-close-x').onclick = () => show('modal', false)
 $('modal').addEventListener('click', (event) => { if (event.target === $('modal')) show('modal', false) })
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('modal').classList.contains('hidden')) show('modal', false) })
-$('items-box').addEventListener('click', async (event) => { const menu = event.target.closest('[data-item-menu]'); if (menu) { openItemMenu(menu.dataset.itemMenu); return } const toggle = event.target.closest('[data-policy]'); if (toggle) { const item = app.items.find((entry) => entry.name === toggle.dataset.policy); if (!item) return; try { await api('/api/policies', { method: 'POST', body: JSON.stringify({ name: item.name, noApproval: !item.noApproval }) }); await loadItems(); toast('已更新免审批策略') } catch (error) { toast(error.message, true) } return } const read = event.target.closest('[data-read]'); if (read) reveal(read.dataset.read) })
+$('items-box').addEventListener('click', async (event) => { const grantEdit = event.target.closest('[data-item-grant]'); if (grantEdit) { openGrantMenu(grantEdit.dataset.agent, grantEdit.dataset.name); return } const menu = event.target.closest('[data-item-menu]'); if (menu) { openItemMenu(menu.dataset.itemMenu); return } const toggle = event.target.closest('[data-policy]'); if (toggle) { const item = app.items.find((entry) => entry.name === toggle.dataset.policy); if (!item) return; try { await api('/api/policies', { method: 'POST', body: JSON.stringify({ name: item.name, noApproval: !item.noApproval }) }); await loadItems(); toast('已更新免审批策略') } catch (error) { toast(error.message, true) } return } const read = event.target.closest('[data-read]'); if (read) reveal(read.dataset.read) })
 $('agents-box').addEventListener('click', (event) => { const menu = event.target.closest('[data-agent-menu]'); if (menu) openAgentMenu(menu.dataset.agentMenu) })
 $('kpis').addEventListener('click', (event) => {
   const card = event.target.closest('[data-kpi]'); if (!card) return
@@ -527,7 +533,7 @@ function describeEvent(entry) { return ({ 'secret.read': '读取密钥', 'grant.
 function itemInfoHtml(item) {
   const grants = (app.data.grants || []).filter((grant) => grant.name === item.name)
   const usage = (app.data.audit || []).filter((entry) => entry.name === item.name && ['secret.read', 'grant.share', 'grant.approve', 'transfer.complete', 'item.create', 'item.update'].includes(entry.event)).slice(0, 10)
-  const rows = grants.length ? '<table><tr><th>Agent</th><th>方式</th><th>到期</th><th>读取</th><th>免审批</th></tr>' + grants.map((grant) => '<tr><td>' + esc(agentLabel(grant.agent)) + '</td><td>' + esc(grant.mode || '') + '</td><td>' + (grant.expiresAt ? new Date(grant.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</td><td>' + (grant.reads || 0) + '/' + (grant.maxReads || '∞') + '</td><td>' + (grant.noApproval || grant.mode === 'share' ? '<span class="pill">免审批</span>' : '需审批') + '</td></tr>').join('') + '</table>' : '<div class="hint">当前没有分享给 Agent</div>'
+  const rows = grants.length ? '<table><tr><th>Agent</th><th>方式</th><th>到期</th><th>读取</th><th>免审批</th></tr>' + grants.map((grant) => '<tr><td>' + esc(agentLabel(grant.agent)) + '</td><td>' + esc(grant.mode || '') + '</td><td>' + (grant.expiresAt ? new Date(grant.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</td><td>' + (grant.reads || 0) + '/' + (grant.maxReads || '∞') + '</td><td>' + (grant.noApproval || grant.mode === 'share' ? '<button class="small" data-item-grant data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '">免审批</button>' : '需审批') + '</td></tr>').join('') + '</table>' : '<div class="hint">当前没有分享给 Agent</div>'
   const usageRows = usage.length ? '<table><tr><th>时间</th><th>Agent</th><th>动作</th><th>方式</th></tr>' + usage.map((entry) => '<tr><td>' + esc(entry.time ? new Date(entry.time).toLocaleString('zh-CN', { hour12: false }) : '') + '</td><td>' + esc(agentLabel(entry.agent)) + '</td><td>' + esc(describeEvent(entry)) + '</td><td>' + esc(entry.mode || entry.source || '') + '</td></tr>').join('') + '</table>' : '<div class="hint">暂无使用记录</div>'
   return '<div class="hint" style="margin-bottom:8px">创建：' + esc(item.createdAt ? new Date(item.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-') + ' · 创建人：' + esc(item.creator || '-') + '</div><div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center"><b>分享情况</b><button class="small" id="mi-share-sync">分享 / 同步</button></div>' + rows + '<div style="margin-top:10px"><b>最近使用</b></div>' + usageRows + '</div>'
 }

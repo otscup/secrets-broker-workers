@@ -140,7 +140,7 @@ async function loadState(env) {
   state.adminSessions ??= {}
   state.grants ??= {}
   for (const grant of Object.values(state.grants)) {
-    if (grant.mode === 'share' && !grant.revokedAt) {
+    if (grant.mode === 'share' && !grant.revokedAt && !grant.noApproval) {
       grant.noApproval = true
       grant.expiresAt = 0
       grant.maxReads = null
