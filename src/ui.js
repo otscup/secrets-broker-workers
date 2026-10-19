@@ -18,8 +18,8 @@ nav button.active{background:#fff;color:var(--text);box-shadow:0 2px 8px rgba(20
 .avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#5b6cff,#0f9d8a);color:#fff;display:grid;place-items:center;font-size:11px;border:0;padding:0;line-height:0;cursor:pointer;overflow:hidden}
 .avatar img{display:block;width:100%;height:100%;object-fit:cover;border-radius:50%}
 .theme-switch{display:flex;gap:2px;background:transparent;border:0;padding:0;margin-left:auto}
-.icon-btn{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;color:var(--muted);border:1px solid var(--line);background:var(--card);text-decoration:none}
-.icon-btn:hover{color:var(--text);background:var(--btn)}
+.icon-btn{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;color:var(--muted);border:0;background:transparent;text-decoration:none}
+.icon-btn:hover{color:var(--text);background:transparent}
 .theme-switch button{border:0;background:transparent;border-radius:7px;padding:4px 6px;font-size:13px;cursor:pointer;opacity:.45}
 .theme-switch button.on{background:transparent;opacity:1}
 .account-menu{position:absolute;right:0;top:38px;z-index:30;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:6px;min-width:160px;box-shadow:0 12px 30px rgba(15,23,42,.16)}
@@ -68,7 +68,7 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
 <span class="theme-switch" id="theme-switch"><button data-theme-mode="light" title="白天">☀️</button><button data-theme-mode="dark" title="夜间">🌙</button><button data-theme-mode="auto" title="跟随系统">💻</button></span>
 <a class="icon-btn" href="https://github.com/otscup/secrets-broker-workers" target="_blank" rel="noreferrer" title="GitHub"><svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
 <div class="user-wrap"><span class="user"><span class="email" id="who"></span><button id="avatar" class="avatar" title="账户">SB</button></span>
-<div id="account-menu" class="account-menu hidden"><button data-view="profile">个人资料</button><button data-view="settings">系统设置</button><button id="account-logout" class="danger">退出登录</button><button id="lock">锁定</button></div></div>
+<div id="account-menu" class="account-menu hidden"><button data-view="profile">个人资料</button><button data-view="settings">系统设置</button><button id="account-logout">退出登录</button><button id="lock" class="danger">锁定</button></div></div>
 </header>
 
 <section id="login-card" class="card hidden">
@@ -205,7 +205,14 @@ $('unlock').onclick = async () => {
     $('master-password').value = ''; status('unlock-status', '已解锁', 'ok'); show('unlock-card', false); show('dashboard', true); await loadAll()
   } catch (error) { status('unlock-status', error.message, 'error') }
 }
-async function lock() { try { await api('/api/lock', { method: 'POST' }) } catch {} show('dashboard', false); show('unlock-card', true); status('unlock-status', '已锁定', 'ok') }
+async function lock() {
+  const password = prompt('锁定后：当前 vault 会话会被清除，所有 Agent 立即无法读取；再次使用需要用该账户主密码重新解锁。\n\n请输入管理密码确认锁定：')
+  if (password === null) return
+  try {
+    await api('/api/lock', { method: 'POST', body: JSON.stringify({ password }) })
+    show('dashboard', false); show('unlock-card', true); status('unlock-status', '已锁定，需要重新解锁才能读取', 'ok')
+  } catch (error) { toast(error.message, true) }
+}
 $('lock').onclick = lock; $('lock2').onclick = lock
 document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings(); if (view === 'profile') loadProfile() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })

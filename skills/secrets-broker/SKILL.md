@@ -37,6 +37,10 @@ issued. Do not try to use an agent token against a different vault account.
   approval URL.
 - `get_secret` — return the value after approval (or immediately for an item
   marked no-approval). Use `{ "name": "item-name" }`.
+- `http_request` — make an HTTPS request with the secret injected server-side
+  (header or bearer prefix). Use this instead of `get_secret` whenever possible;
+  the model never receives the secret.
+  Example: `{ "name": "tavily-api-key", "url": "https://api.tavily.com/search", "method": "POST", "body": "{\"query\":\"...\"}" }`.
 
 ## Mandatory workflow
 

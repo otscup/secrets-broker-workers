@@ -619,6 +619,7 @@ async function notifyPending(env, origin, entry, ctx) {
   const notifications = state.settings?.notifications ?? {}
   const links = await signedApprovalLinks(env, entry.id, origin)
   const shortText = `Secrets Broker 授权请求\nAgent: ${entry.agent}\n条目: ${entry.name}\n时间: ${entry.createdAt}\n\n请在 Secrets Broker 页面处理: ${origin}/`
+  const linkText = `Secrets Broker 授权请求\nAgent: ${entry.agent}\n条目: ${entry.name}\n时间: ${entry.createdAt}\n\n批准一次: ${links.once}\n批准 24 小时: ${links['24h']}\n永久: ${links.always}\n拒绝: ${links.deny}`
   const tasks = []
   if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
     const keyboard = { inline_keyboard: [
@@ -644,14 +645,14 @@ async function notifyPending(env, origin, entry, ctx) {
   if (notifications.gotify?.url && notifications.gotify?.token) {
     tasks.push(fetch(`${String(notifications.gotify.url).replace(/\/$/, '')}/message?token=${encodeURIComponent(notifications.gotify.token)}`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'Secrets Broker approval', message: shortText, priority: 5 }),
+      body: JSON.stringify({ title: 'Secrets Broker approval', message: linkText, priority: 5 }),
     }))
   }
   if (notifications.wxpush?.url && notifications.wxpush?.token) {
     if (notifications.wxpush.format === 'json') {
-      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${notifications.wxpush.token}` }, body: JSON.stringify({ title: 'Secrets Broker 授权请求', text: shortText, content: shortText, agent: entry.agent, item: entry.name, approval: links }) }))
+      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${notifications.wxpush.token}` }, body: JSON.stringify({ title: 'Secrets Broker 授权请求', text: linkText, content: linkText, agent: entry.agent, item: entry.name, approval: links }) }))
     } else {
-      const body = new URLSearchParams({ title: 'Secrets Broker 授权请求', content: shortText, token: notifications.wxpush.token })
+      const body = new URLSearchParams({ title: 'Secrets Broker 授权请求', content: linkText, token: notifications.wxpush.token })
       tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }))
     }
   }
@@ -948,8 +949,12 @@ export default {
       } catch (error) { return fail(String(error.message ?? error), 400) }
     }
     if (url.pathname === '/api/lock' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const state = await loadState(env)
+      if (!(await verifyAdminPassword(env, state, body.password))) return fail('管理密码错误', 401)
       await stateStub(env).fetch('https://state/session', { method: 'DELETE' })
-      await addAudit(env, { event: 'vault.lock' })
+      await addAudit(env, { event: 'vault.lock', source: 'password-confirmed' })
       return json({ ok: true })
     }
     if (url.pathname === '/api/items/update' && request.method === 'POST') {
@@ -1615,13 +1620,14 @@ export default {
       if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
       if (body.method === 'ping') return result({})
       if (body.method === 'initialize') {
-        return result({ protocolVersion: body.params?.protocolVersion ?? '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'secrets-broker', version: '0.1.0' }, instructions: 'Use this server for every credential. Call list_secrets to discover items and get_secret to read one; never ask the user for passwords or API keys. If pending approval, present the approval URL and retry. Never print secret values in chat or logs.' })
+        return result({ protocolVersion: body.params?.protocolVersion ?? '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'secrets-broker', version: '0.1.0' }, instructions: 'Use this server for every credential. Call list_secrets to discover items, get_secret to read one, or http_request to call an API with the secret injected server-side (keeps it out of the model). Never ask the user for passwords or API keys. If pending approval, present the approval URL and retry. Never print secret values in chat or logs.' })
       }
       if (body.method === 'tools/list') {
         return result({ tools: [
           { name: 'list_secrets', description: 'List secret item names available to this agent (no values).', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
           { name: 'request_access', description: 'Request approval to read a secret by name. Returns an approval URL if pending.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'get_secret', description: 'Read a secret value after approval. Disabled unless MCP_ALLOW_READ=1.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
+          { name: 'http_request', description: 'Make an HTTPS request with a secret injected server-side. The secret is never returned to the caller.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' }, url: { type: 'string', description: 'HTTPS target URL' }, method: { type: 'string', description: 'HTTP method (default GET)' }, headers: { type: 'object', description: 'Extra headers' }, body: { type: 'string', description: 'Request body' }, headerName: { type: 'string', description: 'Header to inject the secret into (default Authorization)' }, authPrefix: { type: 'string', description: 'Prefix before the secret (default "Bearer ")' } }, required: ['name', 'url'] } },
         ] })
       }
       if (body.method === 'tools/call') {
@@ -1653,6 +1659,28 @@ export default {
             if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
             if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
             return result(text(access.value))
+          }
+          if (name === 'http_request') {
+            const secretName = String(args.name ?? '')
+            if (!secretName) return result(text('name is required', true))
+            const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx })
+            if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
+            if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
+            let target
+            try { target = new URL(String(args.url ?? '')) } catch { return result(text('invalid url', true)) }
+            if (target.protocol !== 'https:') return result(text('only https targets are allowed', true))
+            const host = target.hostname.toLowerCase()
+            if (host === 'localhost' || host.endsWith('.local') || /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host) || host === '::1') return result(text('private/local targets are not allowed', true))
+            const method = String(args.method ?? 'GET').toUpperCase()
+            const headers = { ...(args.headers && typeof args.headers === 'object' ? args.headers : {}) }
+            const headerName = String(args.headerName ?? 'Authorization')
+            headers[headerName] = String(args.authPrefix ?? 'Bearer ') + access.value
+            const init = { method, headers, redirect: 'follow' }
+            if (args.body != null && !['GET', 'HEAD'].includes(method)) init.body = String(args.body)
+            const response = await fetch(target.toString(), init)
+            const responseBody = (await response.text()).slice(0, 8000)
+            await addAudit(env, { event: 'secret.use', agent: resolved.name, name: secretName, via: 'http_request', status: response.status })
+            return result(text(JSON.stringify({ status: response.status, ok: response.ok, body: responseBody })))
           }
           return rpcError('unknown tool')
         } catch (error) {
