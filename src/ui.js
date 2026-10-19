@@ -4,7 +4,7 @@ export const uiHtml = String.raw`<!doctype html>
 <style>
 :root{--bg:#f3f6fb;--card:#fff;--line:#e3e9f2;--text:#152033;--muted:#6b7890;--ok:#0f9d8a;--warn:#f2994a;--danger:#c0392b;--btn:#eef1f6}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
-.wrap{max-width:1180px;margin:0 auto;padding:22px 24px 40px}
+.wrap{max-width:1040px;margin:0 auto;padding:22px 24px 40px}
 header{display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap}
 h1{font-size:20px;margin:0;letter-spacing:-.2px}
 .badge{background:#e8f7f4;color:#0b7d6d;border-radius:999px;padding:2px 9px;font-size:11px}

@@ -682,10 +682,7 @@ export default {
       const body = await request.json().catch(() => ({}))
       const state = await loadState(env)
       let passwordValid = await verifyAdminPassword(env, state, body.password)
-      if (!passwordValid && env.ADMIN_PASSWORD && constantTimeEqual(encoder.encode(String(body.password ?? '')), encoder.encode(env.ADMIN_PASSWORD))) {
-        passwordValid = true
-        await updateState(env, (next) => { next.security ??= {}; next.security.passwordHash = ''; next.security.passwordSalt = ''; return next })
-      }
+      if (!passwordValid && env.ADMIN_PASSWORD && constantTimeEqual(encoder.encode(String(body.password ?? '')), encoder.encode(env.ADMIN_PASSWORD))) passwordValid = true
       if (!passwordValid) {
         await addAudit(env, { event: 'admin.login-fail' })
         return fail('密码错误', 401)
