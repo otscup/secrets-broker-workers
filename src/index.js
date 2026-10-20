@@ -807,12 +807,12 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     }
     return { status: 'pending', requestId: pendingId, approvalUrl: `${origin}/#/grants` }
   }
-  const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
-  if (!result) return { status: 'notfound', error: 'not found' }
   if (grant && consumeRead) {
     const consumed = await consumeGrant(env, agentName, name)
     if (!consumed?.ok) return { status: 'forbidden', error: 'grant is no longer valid' }
   }
+  const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
+  if (!result) return { status: 'notfound', error: 'not found' }
   await addAudit(env, { event: 'secret.read', agent: agentName, name, mode: policy?.noApproval ? 'no-approval' : 'grant', via: 'agent' })
   return { status: 'ok', value: result.value, url: result.url }
 }
