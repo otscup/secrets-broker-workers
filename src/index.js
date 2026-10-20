@@ -2805,12 +2805,21 @@ export default {
         // a bogus "client ID invalid" page. Rebuild from the actual params and
         // resume with GET, which carries everything in the query string; the
         // user simply re-confirms on the consent page.
-        const resume = new URLSearchParams()
-        for (const [key, value] of params.entries()) {
-          if (key === 'decision') continue
-          resume.append(key, value)
+        let returnTo
+        if (request.method === 'POST') {
+          // Form parameters live in the body; rebuild a query string once.
+          const resume = new URLSearchParams()
+          for (const [key, value] of params.entries()) {
+            if (key === 'decision') continue
+            resume.append(key, value)
+          }
+          returnTo = url.pathname + (resume.toString() ? '?' + resume.toString() : '')
+        } else {
+          // GET already carries a correctly encoded query string. Rebuilding it
+          // through URLSearchParams would double-encode every %XX (notably
+          // redirect_uri -> %253A), so pass it through untouched.
+          returnTo = url.pathname + url.search
         }
-        const returnTo = url.pathname + (resume.toString() ? '?' + resume.toString() : '')
         const loginUrl = new URL('/login', url.origin)
         loginUrl.searchParams.set('next', returnTo)
         if (request.method === 'POST') {
