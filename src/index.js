@@ -5,7 +5,7 @@ import {
   b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, decryptStr, encryptStr, extractSecret, extractUsername, extractTotp,
   hmacToken, pbkdf2, sha256Base64, unwrapWithKek, wrapWithKek, bytesToB64,
 } from './crypto.js'
-import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, isUsedState, markUsedState } from './oidc.js'
+import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub } from './oidc.js'
 
 const encoder = new TextEncoder()
 const SESSION_COOKIE = 'broker_admin'
@@ -44,6 +44,48 @@ export class BrokerState extends DurableObject {
       if (grant.maxReads != null && grant.reads >= grant.maxReads) delete state.grants[key]
       await this.ctx.storage.put('state', state)
       return json({ ok: true, reads: grant.reads })
+    }
+    // Atomic OIDC state check-and-consume. The state mutation runs inside
+    // storage.transaction(), which Cloudflare executes with exclusive access
+    // against every other transaction on the same Durable Object (SQLite
+    // storage: BEGIN IMMEDIATE-style; concurrent transactions serialize and
+    // only one check-and-mark wins). Pure-crypto parsing/verification happens
+    // before the transaction; the replay check + mark inside it is atomic.
+    // Callers must treat any non-ok result as a hard reject.
+    if (url.pathname === '/oidc/state/consume' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const cookieValue = String(body.cookie ?? '')
+      const returned = String(body.state ?? '')
+      const decoded = (() => { try { return decodeURIComponent(cookieValue) } catch { return '' } })()
+      const parts = decoded ? decoded.split('|') : []
+      if (parts.length < 6) return json({ ok: false, reason: 'invalid' })
+      const signature = parts.pop()
+      const expires = Number(parts.pop())
+      const next = parts.pop()
+      const nonce = parts.pop()
+      const verifier = parts.pop()
+      const state = parts.join('|')
+      if (!state || state !== returned) return json({ ok: false, reason: 'mismatch' })
+      const payload = `${state}|${verifier}|${nonce}|${next}|${expires}`
+      const expected = await hmacToken(await cookieKey(this.env), payload)
+      if (!constantTimeEqual(encoder.encode(expected), encoder.encode(signature ?? ''))) return json({ ok: false, reason: 'invalid' })
+      if (!Number.isFinite(expires) || expires < Date.now()) return json({ ok: false, reason: 'expired' })
+      const marked = await this.ctx.storage.transaction(async (txn) => {
+        const store = (await txn.get('state')) ?? {}
+        store.oidcUsedStates ??= {}
+        const entry = store.oidcUsedStates[state]
+        if (entry && typeof entry.at === 'number' && Date.now() - entry.at <= 15 * 60 * 1000) return false
+        store.oidcUsedStates[state] = { at: Date.now() }
+        const keys = Object.keys(store.oidcUsedStates)
+        if (keys.length > 5000) {
+          keys.sort((a, b) => ((store.oidcUsedStates[a]?.at ?? 0) - (store.oidcUsedStates[b]?.at ?? 0)))
+          for (const k of keys.slice(0, keys.length - 5000)) delete store.oidcUsedStates[k]
+        }
+        await txn.put('state', store)
+        return true
+      })
+      if (!marked) return json({ ok: false, reason: 'replay' })
+      return json({ ok: true, state, verifier, nonce, next, expires })
     }
     if (url.pathname === '/session') {
       if (request.method === 'GET') {
@@ -255,23 +297,9 @@ async function oidcStateCookie(env, state, verifier, next = '', nonce = '') {
   return encodeURIComponent(`${payload}|${signature}`)
 }
 
-async function verifyOidcState(env, cookieValue) {
-  if (!cookieValue) return null
-  let decoded = ''
-  try { decoded = decodeURIComponent(cookieValue) } catch { return null }
-  const parts = decoded.split('|')
-  if (parts.length < 6) return null
-  const signature = parts.pop()
-  const expires = Number(parts.pop())
-  const next = parts.pop()
-  const nonce = parts.pop()
-  const verifier = parts.pop()
-  const state = parts.join('|')
-  if (!Number.isFinite(expires) || expires < Date.now()) return null
-  const payload = `${state}|${verifier}|${nonce}|${next}|${expires}`
-  const expected = await hmacToken(await cookieKey(env), payload)
-  return constantTimeEqual(encoder.encode(expected), encoder.encode(signature)) ? { state, verifier, nonce, next } : null
-}
+// NOTE: OIDC state verification moved into the Durable Object endpoint
+// /oidc/state/consume above, so check-and-mark is atomic. Do not reintroduce
+// a Worker-side read-then-write check here.
 
 function base64Url(bytes) {
   return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
@@ -676,6 +704,9 @@ async function createCipher(env, db, session, fields, folderNameOverride) {
     next.itemGroups ??= {}
     if (fields.group && String(fields.group).trim()) next.itemGroups[name] = String(fields.group).trim()
     next.policies ??= {}
+    // NOTE: /agent/items/save passes an explicit field allowlist without
+    // noApproval, so Agents cannot self-grant it. Admin create flows here
+    // keep their previous behavior (noApproval honored when provided).
     if (fields.noApproval === true) next.policies[name] = { noApproval: true }
     return next
   })
@@ -785,19 +816,30 @@ async function notifyPending(env, origin, entry, ctx) {
   else await run
 }
 
+async function consumeOidcState(env, cookieValue, returned) {
+  const response = await stateStub(env).fetch('https://state/oidc/state/consume', { method: 'POST', body: JSON.stringify({ cookie: cookieValue, state: returned }) })
+  return response.json()
+}
+
 async function consumeGrant(env, agent, name) {
   const response = await stateStub(env).fetch('https://state/grant/consume', { method: 'POST', body: JSON.stringify({ agent, name }) })
   return response.json()
 }
 
-async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx, consumeRead = true }) {
-  if (agent.account && session.email && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) return { status: 'forbidden', error: 'agent is bound to another vault account' }
-  const group = state.itemGroups?.[name] ?? ''
+// Shared item/group scope predicate for reads AND writes. allowAll only applies
+// when the agent has no explicit allow/groups scope. Exported for unit tests;
+// the save handler and agentAccess use the same rule.
+export function agentInScope(agent, itemGroups, targetName, groupOverride) {
+  const group = groupOverride !== undefined ? groupOverride : (itemGroups?.[targetName] ?? '')
   const allow = agent.allow ?? []
   const groups = agent.groups ?? []
-  const hasScope = allow.length > 0 || groups.length > 0
-  const allowed = hasScope ? (allow.includes(name) || groups.includes(group)) : agent.allowAll === true
-  if (!allowed) return { status: 'forbidden', error: 'agent not allowed to read this item' }
+  if (allow.length === 0 && groups.length === 0) return agent.allowAll === true
+  return allow.includes(targetName) || (group !== '' && groups.includes(group))
+}
+
+async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx, consumeRead = true }) {
+  if (agent.account && session.email && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) return { status: 'forbidden', error: 'agent is bound to another vault account' }
+  if (!agentInScope(agent, state.itemGroups, name)) return { status: 'forbidden', error: 'agent not allowed to read this item' }
   const policy = state.policies?.[name]
   const grant = activeGrant(state, agentName, name)
   if (!policy?.noApproval && !grant) {
@@ -1151,16 +1193,20 @@ export default {
     if (url.pathname === '/oidc/callback') {
       const clearOidcCookie = 'oidc_state=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0'
       const failOidc = (message, status = 400) => json({ error: message }, status, { 'set-cookie': clearOidcCookie })
-      const state = await loadState(env)
-      const oidc = await oidcConfig(env, request, state)
+      const oidc = await oidcConfig(env, request, await loadState(env))
       if (!oidc) return fail('OIDC is not configured', 503)
-      const stateData = await verifyOidcState(env, readCookie(request, 'oidc_state'))
       const returned = url.searchParams.get('state') ?? ''
-      if (!stateData || stateData.state !== returned) return new Response('<meta charset="utf-8"><h2>OIDC 状态校验失败</h2><p>这个链接是回调地址，不能直接打开；请从「个人资料 → 使用 OIDC 登录 / 绑定」重新发起。</p><p><a href="/?view=profile">回到个人资料</a></p>', { status: 400, headers: { 'content-type': 'text/html; charset=utf-8', 'set-cookie': clearOidcCookie } })
+      const consumed = await consumeOidcState(env, readCookie(request, 'oidc_state'), returned)
+      if (!consumed?.ok) {
+        const reason = String(consumed?.reason ?? 'invalid')
+        if (reason === 'replay') return failOidc('OIDC state already used (replay)', 400)
+        if (reason === 'expired') return failOidc('OIDC state expired', 400)
+        return new Response('<meta charset="utf-8"><h2>OIDC 状态校验失败</h2><p>这个链接是回调地址，不能直接打开；请从「个人资料 → 使用 OIDC 登录 / 绑定」重新发起。</p><p><a href="/?view=profile">回到个人资料</a></p>', { status: 400, headers: { 'content-type': 'text/html; charset=utf-8', 'set-cookie': clearOidcCookie } })
+      }
+      const stateData = { state: consumed.state, verifier: consumed.verifier, nonce: consumed.nonce, next: consumed.next }
+      const state = await loadState(env)
       const code = url.searchParams.get('code') ?? ''
       if (!code) return failOidc('missing authorization code', 400)
-      if (isUsedState(state.oidcUsedStates, stateData.state)) return failOidc('OIDC state already used (replay)', 400)
-      await updateState(env, (next) => { next.oidcUsedStates = markUsedState(next.oidcUsedStates, stateData.state); return next })
       try {
         const endpoints = await oidcEndpoints(oidc)
         if (!endpoints.token || !endpoints.userinfo || !endpoints.jwks) return failOidc('OIDC token/userinfo/jwks endpoint missing', 502)
@@ -2063,13 +2109,50 @@ export default {
       const body = await request.json().catch(() => ({}))
       const name = String(body.name ?? '').trim()
       if (!name) return fail('name required', 400)
+      const forbid = async (reason, audit) => {
+        await addAudit(env, { event: 'secret.write-deny', agent: resolved.name, name: audit?.name ?? name, reason })
+        return fail(reason, 403)
+      }
+      // write=true only permits the write operation; item/group scope still
+      // applies, using the same agentInScope rule as reads.
+      const inWriteScope = (targetName, groupOverride) => agentInScope(resolved.agent, resolved.state.itemGroups, targetName, groupOverride)
       try {
         const found = await findCipherRow(env, env.NODEWARDEN_DB, session, name)
         if (found) {
-          await updateCipher(env, env.NODEWARDEN_DB, session, name, body)
+          if (!inWriteScope(name)) return forbid('agent not allowed to write this item', { name })
+          const rawNewName = typeof body.newName === 'string' ? body.newName.trim() : ''
+          if (rawNewName && rawNewName !== name && !inWriteScope(rawNewName, typeof body.group === 'string' ? body.group.trim() : (resolved.state.itemGroups?.[rawNewName] ?? ''))) return forbid('agent not allowed to write this item', { name: rawNewName })
+          const currentGroup = resolved.state.itemGroups?.[name] ?? ''
+          const nextGroup = typeof body.group === 'string' ? body.group.trim() : currentGroup
+          if (nextGroup !== currentGroup) {
+            const targetForGroup = rawNewName && rawNewName !== name ? rawNewName : name
+            if (!inWriteScope(targetForGroup, nextGroup)) return forbid('agent not allowed to move this item to the target group', { name: targetForGroup })
+          }
+          // Explicit field allowlist: never forward Agent-controlled permission
+          // or identity keys (allow/allowAll/groups/noApproval/id/...) into
+          // the cipher helpers. Rename/move is expressed via newName/group.
+          await updateCipher(env, env.NODEWARDEN_DB, session, name, {
+            newName: typeof body.newName === 'string' ? body.newName : undefined,
+            group: typeof body.group === 'string' ? body.group : undefined,
+            value: typeof body.value === 'string' ? body.value : undefined,
+            username: typeof body.username === 'string' ? body.username : undefined,
+            totp: typeof body.totp === 'string' ? body.totp : undefined,
+            url: typeof body.url === 'string' ? body.url : undefined,
+            notes: typeof body.notes === 'string' ? body.notes : undefined,
+          })
           return json({ ok: true, name, updated: true })
         }
-        const created = await createCipher(env, env.NODEWARDEN_DB, session, { ...body, name })
+        const targetGroup = typeof body.group === 'string' ? body.group.trim() : ''
+        if (!inWriteScope(name, targetGroup)) return forbid('agent not allowed to create this item', { name })
+        const created = await createCipher(env, env.NODEWARDEN_DB, session, {
+          name,
+          value: typeof body.value === 'string' ? body.value : undefined,
+          username: typeof body.username === 'string' ? body.username : undefined,
+          totp: typeof body.totp === 'string' ? body.totp : undefined,
+          url: typeof body.url === 'string' ? body.url : undefined,
+          notes: typeof body.notes === 'string' ? body.notes : undefined,
+          group: typeof body.group === 'string' ? body.group : undefined,
+        })
         await addAudit(env, { event: 'secret.write', agent: resolved.name, name })
         return json({ ok: true, name: created.name, created: true })
       } catch (error) { return fail(String(error.message ?? error), 500) }

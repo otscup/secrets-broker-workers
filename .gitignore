@@ -3,6 +3,11 @@ node_modules/
 .dev.vars
 wrangler.jsonc
 test-*.mjs
+# Security regression suites are versioned; helpers that embed local
+# operator scripts stay ignored.
+!test-oidc.mjs
+!test-r1-r6.mjs
+!test-mf-oidc.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs
