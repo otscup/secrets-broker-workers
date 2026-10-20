@@ -32,6 +32,26 @@ export class BrokerState extends DurableObject {
         return json({ ok: true })
       }
     }
+    // Versioned read: the version lives beside the state so a caller can detect
+    // that another writer committed in between.
+    if (url.pathname === '/state/versioned' && request.method === 'GET') {
+      const version = (await this.ctx.storage.get('stateVersion')) ?? 0
+      return json({ state: (await this.ctx.storage.get('state')) ?? null, version })
+    }
+    // Compare-and-swap write. The version check and the write happen in one
+    // transaction, so exactly one of several racing writers can win.
+    if (url.pathname === '/state/cas' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const expected = Number(body.expectedVersion ?? -1)
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const current = (await txn.get('stateVersion')) ?? 0
+        if (Number(current) !== expected) return { ok: false, reason: 'version-mismatch', version: Number(current) }
+        await txn.put('state', body.state ?? {})
+        await txn.put('stateVersion', Number(current) + 1)
+        return { ok: true, version: Number(current) + 1 }
+      })
+      return json(result)
+    }
     if (url.pathname === '/grant/consume' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
       const state = (await this.ctx.storage.get('state')) ?? null
@@ -405,8 +425,9 @@ function stateStub(env) {
 }
 
 async function loadState(env) {
-  const response = await stateStub(env).fetch('https://state/state')
+  const response = await stateStub(env).fetch('https://state/state/versioned')
   const payload = await response.json()
+  const stateVersion = Number(payload.version ?? 0)
   let state = payload.state
   if (!state || !state.agents) state = emptyState()
   state.settings ??= { notifications: {} }
@@ -452,16 +473,20 @@ async function loadState(env) {
   }
   state.pending ??= {}
   state.audit ??= []
+  // Bootstrap writes must not blindly overwrite the whole state: that would
+  // discard concurrent changes (notably a just-created admin session). Use the
+  // compare-and-swap writer and, on conflict, skip — the migration simply runs
+  // again on the next read.
   if (!state.agents || Object.keys(state.agents).length === 0) {
     if (env.AGENT_TOKEN) {
       state.agents['dsh'] = { hash: await sha256Base64(env.AGENT_TOKEN), tokenWrapped: await wrapWithKek(encoder.encode(env.AGENT_TOKEN), await kekBytes(env)), alias: '', note: '', allow: [], groups: [], write: false, account: defaultAgentAccount, createdAt: nowIso() }
     }
-    await saveState(env, state)
+    await saveStateCas(env, state, stateVersion).catch(() => {})
   } else if (env.AGENT_TOKEN && state.agents.dsh && !state.agents.dsh.tokenWrapped) {
     const hash = await sha256Base64(env.AGENT_TOKEN)
     if (state.agents.dsh.hash === hash) {
       state.agents.dsh.tokenWrapped = await wrapWithKek(encoder.encode(env.AGENT_TOKEN), await kekBytes(env))
-      await saveState(env, state)
+      await saveStateCas(env, state, stateVersion).catch(() => {})
     }
   }
   return state
@@ -471,6 +496,13 @@ async function saveState(env, state) {
   await stateStub(env).fetch('https://state/state', { method: 'PUT', body: JSON.stringify(state) })
 }
 
+// Compare-and-swap save: only writes when the stored version still matches what
+// the caller read. Returns false when another writer won the race.
+async function saveStateCas(env, state, expectedVersion) {
+  const response = await stateStub(env).fetch('https://state/state/cas', { method: 'POST', body: JSON.stringify({ state, expectedVersion }) })
+  return response.json()
+}
+
 // Apply declarative ops atomically inside the Durable Object's storage
 // transaction, avoiding lost updates from concurrent read-modify-write cycles.
 async function mutateState(env, ops) {
@@ -478,11 +510,35 @@ async function mutateState(env, ops) {
   return response.json()
 }
 
+// Read-modify-write over the whole state, made safe against concurrent writers.
+//
+// The previous implementation did load -> mutate -> save with no concurrency
+// control: two overlapping requests each read the same snapshot and the later
+// write silently discarded the other's change. That is how an admin session
+// record could vanish immediately after login, which made validCookie reject a
+// freshly issued cookie and bounced users between /login and /oauth/authorize.
+//
+// The mutation runs against a snapshot and is retried while the stored version
+// keeps moving underneath it.
+const STATE_WRITE_ATTEMPTS = 8
+async function loadStateVersioned(env) {
+  const response = await stateStub(env).fetch('https://state/state/versioned')
+  const payload = await response.json()
+  return { state: payload.state ?? {}, version: Number(payload.version ?? 0) }
+}
+
 async function updateState(env, mutate) {
-  const state = await loadState(env)
-  const result = await mutate(state)
-  await saveState(env, state)
-  return result
+  for (let attempt = 0; attempt < STATE_WRITE_ATTEMPTS; attempt += 1) {
+    const loaded = await loadStateVersioned(env)
+    const state = loaded.state
+    const result = await mutate(state)
+    const saved = await saveStateCas(env, state, loaded.version)
+    if (saved?.ok) return result
+    // Lost the race: back off briefly and re-apply the mutation to fresh state.
+    await new Promise((resolve) => setTimeout(resolve, 5 + attempt * 10))
+  }
+  // Exhausted retries. Fail loudly rather than silently dropping a write.
+  throw new Error('state write conflict: too many concurrent updates')
 }
 
 async function addAudit(env, entry) {

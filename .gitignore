@@ -27,6 +27,7 @@ test-*.mjs
 !test-mf-oauth-clients.mjs
 !test-mf-oauth-resume.mjs
 !test-mf-session-durability.mjs
+!test-mf-state-write-safety.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs

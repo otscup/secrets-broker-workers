@@ -63,3 +63,5 @@ jobs:
         run: npm run test:oauth-resume
       - name: Admin session durability (Miniflare)
         run: npm run test:session
+      - name: State write safety (Miniflare)
+        run: npm run test:state-write
