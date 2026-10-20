@@ -86,29 +86,88 @@ export class BrokerState extends DurableObject {
     // consume, which would allow lost updates between migration and consume.
     if (url.pathname === '/capability/ensure' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
-      const key = String(body.key ?? '')
-      const cap = body.capability && typeof body.capability === 'object' ? body.capability : null
-      if (!key || !cap) return json({ ok: false, reason: 'invalid' })
+      // The DO trusts only IDENTIFIERS from the caller. It derives every
+      // authority-bearing field (expiresAt/maxUses/usedCount/accountId/mode)
+      // from persisted state, so a caller cannot widen a grant by submitting a
+      // hand-built capability object.
+      const subjectId = String(body.subjectId ?? '')
+      const itemId = String(body.itemId ?? '')
+      const action = String(body.action ?? '')
+      const accountId = String(body.accountId ?? '')
+      const legacyName = String(body.legacyName ?? '')
+      if (!subjectId || !itemId || !legacyName || !SECRET_ACTIONS.has(action)) return json({ ok: false, reason: 'invalid' })
+      // Legacy grants only ever migrate to secret.read. secret.use requires an
+      // explicit admin capability; it is never synthesised here.
+      if (action !== 'secret.read') return json({ ok: false, reason: 'action-not-migratable' })
+      const key = capabilityKey(subjectId, itemId, action)
       const result = await this.ctx.storage.transaction(async (txn) => {
         const store = (await txn.get('state')) ?? {}
         store.capabilities ??= {}
         const existing = store.capabilities[key]
-        if (existing) return { ok: true, existed: true, usedCount: existing.usedCount ?? 0 }
-        // Refuse to create a capability whose legacy source disappeared while
-        // we were migrating (grant revoked/deleted between read and ensure).
-        const legacyKey = `${String(body.legacyAgent ?? '')}\u0000${String(body.legacyName ?? '')}`
-        if (body.legacyAgent) {
-          const legacy = store.grants?.[legacyKey]
-          if (!legacy || legacy.revokedAt || legacy.migratedToCapability) return { ok: false, reason: 'legacy-gone' }
+        // Any existing record — valid, revoked, expired or exhausted — wins.
+        // ensure must never overwrite or resurrect it.
+        if (existing) return { ok: true, existed: true, usedCount: existing.usedCount ?? 0, status: capabilityStatus(existing) }
+
+        const legacyKey = `${subjectId}\u0000${legacyName}`
+        const legacy = store.grants?.[legacyKey] ?? null
+        const grantEntry = store.actionGrants?.[actionGrantKey(subjectId, itemId)] ?? null
+        const policyNoApproval = store.policies?.[legacyName]?.noApproval === true
+
+        // ── Authority checks (all inside this transaction) ────────────────
+        let source = null
+        if (legacy) {
+          if (legacy.agent !== subjectId || legacy.name !== legacyName) return { ok: false, reason: 'legacy-subject-mismatch' }
+          if (legacy.revokedAt) return { ok: false, reason: 'legacy-revoked' }
+          if (legacy.migratedToCapability) return { ok: false, reason: 'legacy-already-migrated' }
+          if (legacy.expiresAt && legacy.expiresAt < Date.now()) return { ok: false, reason: 'legacy-expired' }
           if (legacy.maxReads != null && (legacy.reads ?? 0) >= legacy.maxReads) return { ok: false, reason: 'legacy-exhausted' }
-          legacy.migratedToCapability = key
+          if (accountId && legacy.account && String(legacy.account).toLowerCase() !== accountId.toLowerCase()) return { ok: false, reason: 'legacy-cross-account' }
+          source = 'legacy-grant'
+        } else {
+          // No legacy grant: a noApproval policy alone is NOT sufficient
+          // authority (it would mint a permanent, unlimited capability from a
+          // single boolean). It additionally requires a persisted actionGrant
+          // covering secret.read for this exact subject/item/account.
+          if (!policyNoApproval) return { ok: false, reason: 'no-legacy-source' }
+          if (!grantEntry) return { ok: false, reason: 'no-action-grant' }
+          if (!(grantEntry.actions ?? []).includes('secret.read')) return { ok: false, reason: 'action-grant-mismatch' }
+          if (grantEntry.subjectId !== subjectId || grantEntry.itemId !== itemId) return { ok: false, reason: 'action-grant-subject-mismatch' }
+          if (accountId && grantEntry.accountId && String(grantEntry.accountId).toLowerCase() !== accountId.toLowerCase()) return { ok: false, reason: 'action-grant-cross-account' }
+          source = 'no-approval-policy'
         }
-        // Strip the internal migration marker: it must never be persisted.
-        const stored = { ...cap, usedCount: Number(cap.usedCount ?? 0) }
-        delete stored.__pendingMigration
-        store.capabilities[key] = stored
+
+        // ── Derive the capability strictly from the persisted source ──────
+        const now = Date.now()
+        const derived = {
+          id: key,
+          subjectId,
+          itemId,
+          itemName: legacy?.name ?? grantEntry?.itemName ?? legacyName,
+          action,
+          // A noApproval-only migration is bounded: 24h and a single use, so a
+          // boolean cannot produce an unbounded grant. A legacy grant keeps its
+          // own terms verbatim.
+          mode: 'preapproved',
+          createdAt: new Date(now).toISOString(),
+          createdBy: 'do-migration:' + source,
+          accountId: String((legacy?.account ?? grantEntry?.accountId ?? accountId) || ''),
+          expiresAt: source === 'legacy-grant'
+            ? (legacy.expiresAt ? legacy.expiresAt : null)
+            : now + 86400e3,
+          maxUses: source === 'legacy-grant'
+            ? (legacy.maxReads ?? null)
+            : 1,
+          usedCount: source === 'legacy-grant' ? Number(legacy.reads ?? 0) : 0,
+          revokedAt: null,
+          revokedBy: null,
+          approvalId: null,
+          policyVersion: 1,
+        }
+        if (derived.accountId && accountId && derived.accountId.toLowerCase() !== accountId.toLowerCase()) return { ok: false, reason: 'derived-cross-account' }
+        if (source === 'legacy-grant') legacy.migratedToCapability = key
+        store.capabilities[key] = derived
         await txn.put('state', store)
-        return { ok: true, existed: false, usedCount: Number(cap.usedCount ?? 0) }
+        return { ok: true, existed: false, usedCount: derived.usedCount, source }
       })
       return json(result)
     }
@@ -953,10 +1012,11 @@ async function consumeCapability(env, key, accountId, action) {
   return response.json()
 }
 
-// Persist an in-memory lazy migration before consuming it. Returns the
-// authoritative record (or null when the legacy source vanished/was used up).
-async function ensureCapability(env, { key, capability, legacyAgent, legacyName }) {
-  const response = await stateStub(env).fetch('https://state/capability/ensure', { method: 'POST', body: JSON.stringify({ key, capability, legacyAgent, legacyName }) })
+// Ask the Durable Object to materialise a capability from persisted authority.
+// Only identifiers cross the boundary; the DO derives expiry/uses/account from
+// its own records, so nothing in this request can widen the grant.
+async function ensureCapability(env, { subjectId, itemId, action, accountId, legacyName }) {
+  const response = await stateStub(env).fetch('https://state/capability/ensure', { method: 'POST', body: JSON.stringify({ subjectId, itemId, action, accountId, legacyName }) })
   return response.json()
 }
 
@@ -976,6 +1036,9 @@ function migrateLegacyCapability(state, { subjectId, accountId, itemId, itemName
   // explicit admin-issued capability (action + usePolicy). Legacy grants
   // migrate to secret.read only; allow/groups/noApproval never imply use.
   if (action === 'secret.use' && !state.capabilities?.[key]) return null
+  // noApproval alone is not an authority source: it must be backed by a
+  // persisted actionGrant for secret.read on this exact subject/item
+  // (mirrors the DO-side rule so both sides agree).
   if (!oldGrant && !(actionAllowed && noApproval)) return null
   // Validate the legacy source before migrating: revoked/expired/exhausted
   // legacy grants must NOT resurrect as capabilities.
@@ -1223,7 +1286,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     // Resolve a lazily-migrated (not yet persisted) capability through the DO
     // first, so the record and its counter exist before the consume step.
     if (decision.capability.__pendingMigration) {
-      const ensured = await ensureCapability(env, { key: decision.capabilityKey, capability: decision.capability, legacyAgent: agentName, legacyName: name })
+      const ensured = await ensureCapability(env, { subjectId: agentName, itemId, action, accountId: session.email, legacyName: name })
       if (!ensured?.ok) return { status: 'forbidden', error: `capability migration rejected: ${ensured?.reason ?? 'unknown'}` }
     }
     const consumed = await consumeCapability(env, decision.capabilityKey, session.email, action)

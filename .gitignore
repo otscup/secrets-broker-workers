@@ -17,6 +17,8 @@ test-*.mjs
 !test-mf-capabilities-admin.mjs
 !test-mf-review-fixes.mjs
 !test-mf-state-machine.mjs
+!test-mf-ensure-authority.mjs
+!test-mf-legacy-scope.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs

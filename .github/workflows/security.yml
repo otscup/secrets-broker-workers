@@ -43,3 +43,7 @@ jobs:
         run: npm run test:review-fixes
       - name: State machine edge cases (Miniflare)
         run: npm run test:state-machine
+      - name: Capability ensure authority (Miniflare)
+        run: npm run test:ensure-authority
+      - name: Legacy scope behaviour (Miniflare)
+        run: npm run test:legacy-scope
