@@ -67,3 +67,5 @@ jobs:
         run: npm run test:state-write
       - name: Stale cookie clearing (Miniflare)
         run: npm run test:cookie-clearing
+      - name: Admin UI smoke (Miniflare)
+        run: npm run test:ui
