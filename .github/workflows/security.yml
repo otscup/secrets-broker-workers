@@ -41,3 +41,5 @@ jobs:
         run: npm run test:capabilities-admin
       - name: Independent review regression (Miniflare)
         run: npm run test:review-fixes
+      - name: State machine edge cases (Miniflare)
+        run: npm run test:state-machine

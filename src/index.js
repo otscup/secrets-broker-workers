@@ -80,6 +80,38 @@ export class BrokerState extends DurableObject {
       })
       return json(result)
     }
+    // Atomic lazy migration: materialise a legacy grant into a capability
+    // exactly once, inside the same serialized storage boundary that later
+    // consumes it. Workers never mutate capabilities in memory and then
+    // consume, which would allow lost updates between migration and consume.
+    if (url.pathname === '/capability/ensure' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const key = String(body.key ?? '')
+      const cap = body.capability && typeof body.capability === 'object' ? body.capability : null
+      if (!key || !cap) return json({ ok: false, reason: 'invalid' })
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const store = (await txn.get('state')) ?? {}
+        store.capabilities ??= {}
+        const existing = store.capabilities[key]
+        if (existing) return { ok: true, existed: true, usedCount: existing.usedCount ?? 0 }
+        // Refuse to create a capability whose legacy source disappeared while
+        // we were migrating (grant revoked/deleted between read and ensure).
+        const legacyKey = `${String(body.legacyAgent ?? '')}\u0000${String(body.legacyName ?? '')}`
+        if (body.legacyAgent) {
+          const legacy = store.grants?.[legacyKey]
+          if (!legacy || legacy.revokedAt || legacy.migratedToCapability) return { ok: false, reason: 'legacy-gone' }
+          if (legacy.maxReads != null && (legacy.reads ?? 0) >= legacy.maxReads) return { ok: false, reason: 'legacy-exhausted' }
+          legacy.migratedToCapability = key
+        }
+        // Strip the internal migration marker: it must never be persisted.
+        const stored = { ...cap, usedCount: Number(cap.usedCount ?? 0) }
+        delete stored.__pendingMigration
+        store.capabilities[key] = stored
+        await txn.put('state', store)
+        return { ok: true, existed: false, usedCount: Number(cap.usedCount ?? 0) }
+      })
+      return json(result)
+    }
     // Atomic OIDC state check-and-consume. The state mutation runs inside
     // storage.transaction(), which Cloudflare executes with exclusive access
     // against every other transaction on the same Durable Object (SQLite
@@ -239,10 +271,13 @@ async function loadState(env) {
   state.adminSessions ??= {}
   state.grants ??= {}
   for (const grant of Object.values(state.grants)) {
-    if (grant.mode === 'share' && !grant.revokedAt && !grant.noApproval) {
+    // Legacy share grants used to be promoted to permanent/no-approval. That
+    // silently erased an operator-set expiry (and let an expired grant migrate
+    // into a fresh capability), so only fill fields that were never set.
+    if (grant.mode === 'share' && !grant.revokedAt && grant.noApproval === undefined) {
       grant.noApproval = true
-      grant.expiresAt = 0
-      grant.maxReads = null
+      if (grant.expiresAt === undefined) grant.expiresAt = 0
+      if (grant.maxReads === undefined) grant.maxReads = null
     }
   }
   state.transfers ??= []
@@ -515,8 +550,11 @@ function activeGrant(state, agent, name) {
   return grant
 }
 
+// Strict binding: a pending entry only matches when agent + name + action all
+// agree. Legacy entries without an action are NOT reusable for a new request —
+// approving them could silently mint the wrong action's capability.
 function findPending(state, agent, name, action) {
-  return Object.entries(state.pending).find(([, entry]) => entry.agent === agent && entry.name === name && (!action || !entry.action || entry.action === action))?.[0] ?? null
+  return Object.entries(state.pending).find(([, entry]) => entry.agent === agent && entry.name === name && entry.action === action)?.[0] ?? null
 }
 
 async function vaultEmail(env, db, state) {
@@ -795,17 +833,35 @@ async function decidePending(env, id, decision, source = 'web') {
       outcome = { denied: true, agent: entry.agent, name: entry.name }
       return state
     }
+    // Legacy entries created before action binding have no action (and often
+    // no account/itemId). Approving one would mint a capability whose action
+    // is a guess, so refuse and require a fresh request.
+    if (!SECRET_ACTIONS.has(String(entry.action ?? ''))) {
+      outcome = { agent: entry.agent, name: entry.name, denied: true, error: 'legacy-pending-without-action' }
+      return state
+    }
     const mode = ['once', '1h', '24h', '7d', 'always'].includes(decision) ? decision : 'once'
     const expiresAt = mode === '1h' ? Date.now() + 3600e3 : mode === '24h' ? Date.now() + 86400e3 : mode === '7d' ? Date.now() + 7 * 86400e3 : 0
     state.grants[grantKey(entry.agent, entry.name)] = { agent: entry.agent, name: entry.name, mode, createdAt: nowIso(), expiresAt, reads: 0, maxReads: mode === 'once' ? 1 : null, revokedAt: null, account: entry.account ?? '' }
     // Temporary capability bound to the pending entry's action. Approving
     // secret.use never mints secret.read and vice versa.
     const entryAction = entry.action === 'secret.use' ? 'secret.use' : 'secret.read'
-    const itemId = state.itemIds?.[entry.name] ?? ''
+    const itemId = entry.itemId || state.itemIds?.[entry.name] || ''
     if (itemId) {
       const key = capabilityKey(entry.agent, itemId, entryAction)
       const ttl = APPROVAL_DURATIONS[mode]
       state.capabilities ??= {}
+      const existing = state.capabilities[key]
+      // Never silently overwrite a live capability (one approval must not
+      // reset counters a previous approval established). Re-granting over a
+      // revoked/expired/exhausted record is allowed but recorded distinctly.
+      if (existing) {
+        const status = capabilityStatus(existing)
+        if (status === 'valid' || status === 'expiring') {
+          outcome = { agent: entry.agent, name: entry.name, mode, action: entryAction, skipped: 'live-capability' }
+          return state
+        }
+      }
       state.capabilities[key] = {
         id: key, subjectId: entry.agent, accountId: entry.account ?? '', itemId,
         itemName: entry.name, action: entryAction, mode: 'temporary',
@@ -813,7 +869,13 @@ async function decidePending(env, id, decision, source = 'web') {
         expiresAt: ttl == null || ttl === 0 ? null : Date.now() + ttl,
         maxUses: mode === 'once' ? 1 : null, usedCount: 0,
         revokedAt: null, revokedBy: null, approvalId: id, policyVersion: 1,
+        regrantedFrom: existing ? (existing.revokedAt ? 'revoked' : (existing.exhaustedAt ? 'exhausted' : 'expired')) : null,
       }
+    } else {
+      // Missing itemId: refuse to mint a capability rather than create an
+      // unusable grant that could later be revived by name.
+      outcome = { agent: entry.agent, name: entry.name, mode, action: entryAction, error: 'no-item-id' }
+      return state
     }
     outcome = { agent: entry.agent, name: entry.name, mode, action: entryAction }
     return state
@@ -891,6 +953,13 @@ async function consumeCapability(env, key, accountId, action) {
   return response.json()
 }
 
+// Persist an in-memory lazy migration before consuming it. Returns the
+// authoritative record (or null when the legacy source vanished/was used up).
+async function ensureCapability(env, { key, capability, legacyAgent, legacyName }) {
+  const response = await stateStub(env).fetch('https://state/capability/ensure', { method: 'POST', body: JSON.stringify({ key, capability, legacyAgent, legacyName }) })
+  return response.json()
+}
+
 // Lazy migration: ONLY live approval state migrates — a valid legacy grant
 // or a noApproval policy. A bare actionGrant (needs approval) must NOT
 // synthesize a capability, otherwise the approval gate in agentAccess would
@@ -926,13 +995,11 @@ function migrateLegacyCapability(state, { subjectId, accountId, itemId, itemName
     maxUses: oldGrant?.maxReads ?? null, usedCount: oldGrant?.reads ?? 0,
     revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1,
   }
-  state.capabilities ??= {}
-  state.capabilities[key] = cap
-  // Retire the legacy mirror: the capability owns counting from here on.
-  // activeGrant() ignores migrated grants, so the old counter can never
-  // become authoritative again.
-  const legacyKey = `${subjectId}\u0000${itemName}`
-  if (state.grants?.[legacyKey]) state.grants[legacyKey].migratedToCapability = key
+  // NOTE: deliberately do NOT write to state.capabilities here. The caller
+  // persists through /capability/ensure so migration and the first consume
+  // share one serialized storage boundary (no in-memory-only capability and
+  // no lost update between two concurrent migrations).
+  cap.__pendingMigration = true
   return cap
 }
 
@@ -1054,6 +1121,11 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
     ok = true
     reason = 'legacy-scope'
   }
+  // A capability that exists but is not usable is DECISIVE: no caller may
+  // fall through to the approval gate, a legacy grant, or the legacy scope
+  // path. Account mismatch counts as decisive too (cross-account attempt).
+  const capabilityDecisive = Boolean(cap) && (reason !== 'capability')
+  if (capabilityDecisive) { ok = false; if (!reason || reason === 'no-capability') reason = capabilityStatus(cap) }
   // Capability-eligible but not yet issued (actionGrant without approval
   // state): the approval gate in agentAccess must see this as pending, not
   // as a hard deny — EXCEPT target-policy violations, which stay hard denies
@@ -1067,7 +1139,7 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
     else if (!targetAllowed(policy, target)) { ok = false; reason = 'target-denied'; grantEligible = false }
     else { ok = false; reason = 'awaiting-approval' }
   }
-  return { ok, reason, legacy: legacyDecision, grant: null, capability: cap, capabilityKey: key, grantEligible }
+  return { ok, reason, legacy: legacyDecision, grant: null, capability: cap, capabilityKey: key, grantEligible, capabilityDecisive }
 }
 
 function shadowAudit(env, state, action, agentName, itemName, itemId, newDecision, legacyDecision) {
@@ -1115,16 +1187,23 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   shadowAudit(env, state, action, agentName, name, itemId, decision.ok, decision.legacy)
   if (!decision.ok) {
     if (decision.reason === 'no-use-policy' || decision.reason === 'target-denied') return { status: 'forbidden', error: `secret.use denied: ${decision.reason}` }
+    // A capability that exists but is expired/revoked/exhausted/cross-account
+    // is decisive. Never fall through to approval, legacy grants or legacy
+    // scope — that would resurrect access the operator already withdrew.
+    if (decision.capabilityDecisive) return { status: 'forbidden', error: `capability ${decision.reason}: access denied` }
     // Not capability-eligible at all -> hard deny. Eligible-but-unapproved
     // falls through to the approval gate below (pending), never a bypass.
     if (!decision.grantEligible && !decision.legacy) return { status: 'forbidden', error: 'agent not allowed to read this item' }
   }
   const policy = state.policies?.[name]
-  // Approval gate: noApproval items skip; otherwise a live capability (or a
-  // live legacy grant, which migrates into one) is required. The capability
-  // carries mode/approvalId; temporary grants always come from an approval.
-  const legacyGrant = activeGrant(state, agentName, name)
-  if (!policy?.noApproval && !decision.capability && !legacyGrant) {
+  // Approval gate.
+  //   secret.read: a noApproval item or a live legacy grant may satisfy it.
+  //   secret.use : NEVER satisfied by a legacy read grant or by noApproval;
+  //                it needs an explicit use capability (which only an
+  //                approval or an admin pre-grant mints).
+  const legacyGrant = action === 'secret.read' ? activeGrant(state, agentName, name) : null
+  const noApprovalSatisfies = action === 'secret.read' && policy?.noApproval === true
+  if (!noApprovalSatisfies && !decision.capability && !legacyGrant) {
     let pendingId = findPending(state, agentName, name, action)
     if (!pendingId) {
       pendingId = crypto.randomUUID()
@@ -1141,6 +1220,12 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   // Whenever a capability exists it is the sole counter — including for
   // legacy agents. The legacy path never skips consumption.
   if (consumeRead && decision.capability) {
+    // Resolve a lazily-migrated (not yet persisted) capability through the DO
+    // first, so the record and its counter exist before the consume step.
+    if (decision.capability.__pendingMigration) {
+      const ensured = await ensureCapability(env, { key: decision.capabilityKey, capability: decision.capability, legacyAgent: agentName, legacyName: name })
+      if (!ensured?.ok) return { status: 'forbidden', error: `capability migration rejected: ${ensured?.reason ?? 'unknown'}` }
+    }
     const consumed = await consumeCapability(env, decision.capabilityKey, session.email, action)
     if (!consumed?.ok) return { status: 'forbidden', error: `capability no longer valid: ${consumed?.reason ?? 'unknown'}` }
   } else if (legacyGrant && consumeRead) {

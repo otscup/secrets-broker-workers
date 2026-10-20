@@ -17,7 +17,8 @@
     "test:capabilities": "node test-mf-capabilities.mjs",
     "test:capabilities-admin": "node test-mf-capabilities-admin.mjs",
     "test:review-fixes": "node test-mf-review-fixes.mjs",
-    "test:security": "npm run test:oidc && npm run test:r1-r6 && npm run test:mcp-oidc && npm run test:maxreads && npm run test:permissions && npm run test:actions && npm run test:approval && npm run test:admin-api && npm run test:capabilities && npm run test:capabilities-admin && npm run test:review-fixes"
+    "test:state-machine": "node test-mf-state-machine.mjs",
+    "test:security": "npm run test:oidc && npm run test:r1-r6 && npm run test:mcp-oidc && npm run test:maxreads && npm run test:permissions && npm run test:actions && npm run test:approval && npm run test:admin-api && npm run test:capabilities && npm run test:capabilities-admin && npm run test:review-fixes && npm run test:state-machine"
   },
   "devDependencies": {
     "miniflare": "^4.20260730.0",
