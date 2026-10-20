@@ -967,6 +967,22 @@ function publicState(state) {
     profile: state.profile ?? {},
     grants: Object.values(state.grants ?? {}),
     pending: Object.values(state.pending ?? {}),
+    // OAuth client registrations + their live token counts, so the admin UI can
+    // show and prune them. Full client IDs are safe here (admin-only view) but
+    // tokens are never exposed, only counts.
+    oauthClients: Object.values(state.oauthClients ?? {}).map((c) => {
+      const tokens = Object.values(state.oauthTokens ?? {}).filter((t) => t.clientId === c.clientId)
+      const live = tokens.filter((t) => !t.expiresAt || t.expiresAt > now)
+      return {
+        clientId: c.clientId ?? '',
+        clientName: String(c.clientName ?? '').slice(0, 80),
+        redirectUris: (c.redirectUris ?? []).slice(0, 5),
+        createdAt: c.createdAt ?? '',
+        tokens: tokens.length,
+        liveTokens: live.length,
+        expiresAt: live.length ? Math.min(...live.map((t) => (typeof t.expiresAt === 'number' ? t.expiresAt : Infinity))) : null,
+      }
+    }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
     transfers: (state.transfers ?? []).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, sourceAccount: entry.sourceAccount, targetAccount: entry.targetAccount, folder: entry.folder, createdAt: entry.createdAt, error: entry.error ?? '' })),
     audit: state.audit ?? [],
   }

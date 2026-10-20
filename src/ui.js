@@ -130,6 +130,7 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div class="card" id="transfers-card"><h2>待复制到其他账户</h2><div class="hint">主账户分享后先进入队列；切回目标账户并解锁后自动复制到指定文件夹并生成授权。</div><div id="transfers-box" class="table-wrap" style="margin-top:10px"></div></div>
     <div class="card"><h2>待批准请求</h2><div class="hint">点按钮即授权；同 Docker 版的 once/1h/24h/7d/永久。</div><div id="pending-box" class="table-wrap" style="margin-top:10px"></div></div>
     <div class="card"><h2>有效授权</h2><div id="grants-box" class="table-wrap"></div></div>
+    <div class="card"><h2>OAuth 客户端</h2><div class="hint">每个连接（Muse、Codex、ChatGPT 等）在首次授权时会注册一个客户端。重复或失效的注册可以逐个撤销，撤销会同时清除它的 token。</div><div id="oauth-clients-box" class="table-wrap" style="margin-top:10px"></div></div>
   </section>
 
   <section id="view-logs" class="view hidden"><div class="card"><h2>审计日志</h2><div class="hint">最近 500 条，数据在 Durable Object 中。</div><div id="logs-box" class="table-wrap" style="margin-top:10px"></div></div></section>
@@ -305,6 +306,17 @@ document.addEventListener('click', async (event) => {
 })
 $('pending-box').addEventListener('click', async (event) => { const button = event.target.closest('[data-decide]'); if (!button) return; try { await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.decide }) }); await Promise.all([loadState(), loadStats(), loadItems()]); toast('已处理') } catch (error) { toast(error.message, true) } })
 $('grants-box').addEventListener('click', (event) => { const menu = event.target.closest('[data-grant-menu]'); if (menu) openGrantMenu(menu.dataset.agent, menu.dataset.name) })
+$('oauth-clients-box').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-oauth-revoke]')
+  if (!button) return
+  const clientId = button.dataset.oauthRevoke
+  if (!confirm('撤销这个 OAuth 客户端？它的 token 会立即失效，需要重新连接。')) return
+  try {
+    await api('/api/oauth/revoke', { method: 'POST', body: JSON.stringify({ clientId }) })
+    await loadState()
+    toast('已撤销')
+  } catch (error) { toast(error.message, true) }
+})
 
 async function loadAll() { await Promise.all([loadState(), loadItems(), loadStats()]); startPendingPolling(); updateBrowserNotifyStatus() }
 let pendingTimer = null
@@ -326,7 +338,7 @@ async function checkPendingNotifications() {
   } catch {}
 }
 function startPendingPolling() { updateBrowserNotifyStatus(); if (pendingTimer) return; checkPendingNotifications(); pendingTimer = setInterval(checkPendingNotifications, 15000) }
-async function loadState() { try { app.data = await api('/api/state'); renderAgents(); renderPending(); renderGrants(); renderTransfers(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
+async function loadState() { try { app.data = await api('/api/state'); renderAgents(); renderPending(); renderGrants(); renderOauthClients(); renderTransfers(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
 async function loadItems() { status('item-status', '加载中…'); try { const result = await api('/api/items'); app.items = result.items || []; renderItems(); status('item-status', '共 ' + app.items.length + ' 个条目'); if (result.completedTransfers?.length) { toast('已自动复制：' + result.completedTransfers.join('、')); await loadState() } } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } else status('item-status', error.message, 'error') } }
 async function loadStats() { try { app.stats = await api('/api/stats?range=' + app.range); renderStats() } catch {} }
 async function loadSettings() {
@@ -466,6 +478,24 @@ function renderPending() {
 function renderGrants() {
   const grants = app.data.grants || []
   $('grants-box').innerHTML = grants.length ? '<table><tr><th>Agent</th><th>条目</th><th>状态</th><th>模式</th><th>到期</th><th>读取</th><th>操作</th></tr>' + grants.map((grant) => { const status = grant.revokedAt ? '已撤销' : (grant.expiresAt && grant.expiresAt <= Date.now() ? '已过期' : (grant.maxReads && (grant.reads ?? 0) >= grant.maxReads ? '次数用尽' : '生效中')); return '<tr><td>' + esc(grant.agent) + '</td><td><b>' + esc(grant.name) + '</b></td><td>' + status + '</td><td>' + esc(grant.mode) + '</td><td>' + (grant.expiresAt ? new Date(grant.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</td><td>' + (grant.reads ?? 0) + (grant.maxReads ? ' / ' + grant.maxReads : '') + '</td><td><button class="small" data-grant-menu data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="更多">⋮</button></td></tr>' }).join('') + '</table>' : '<div class="hint">暂无授权</div>'
+}
+function renderOauthClients() {
+  const box = $('oauth-clients-box')
+  if (!box) return
+  const clients = (app.data && app.data.oauthClients) || []
+  if (!clients.length) { box.innerHTML = '<div class="hint">还没有 OAuth 客户端注册</div>'; return }
+  const rows = clients.map((client) => {
+    const when = client.createdAt ? new Date(client.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-'
+    const tokenText = client.liveTokens > 0
+      ? (client.expiresAt ? '有效 · 至 ' + new Date(client.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '有效 · 永久')
+      : (client.tokens > 0 ? '已过期' : '无 token')
+    return '<tr><td><b>' + esc(client.clientName || '未命名') + '</b></td>' +
+      '<td class="hint"><code>' + esc(String(client.clientId || '').slice(0, 16)) + '…</code></td>' +
+      '<td class="hint">' + esc(when) + '</td>' +
+      '<td>' + esc(tokenText) + '</td>' +
+      '<td class="nowrap"><button class="small danger" data-oauth-revoke="' + esc(client.clientId) + '">撤销</button></td></tr>'
+  }).join('')
+  box.innerHTML = '<table><tr><th>名称</th><th>客户端 ID</th><th>注册时间</th><th>Token</th><th>操作</th></tr>' + rows + '</table>'
 }
 function renderTransfers() {
   const transfers = app.data.transfers || []

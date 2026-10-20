@@ -57,3 +57,5 @@ jobs:
         run: npm run test:oauth-consent
       - name: OAuth client persistence (Miniflare)
         run: npm run test:oauth-persist
+      - name: OAuth client management (Miniflare)
+        run: npm run test:oauth-clients
