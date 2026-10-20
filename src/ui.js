@@ -149,6 +149,7 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
         <div class="row" style="flex:0 0 auto;gap:8px">
           <div class="seg" id="globe-range"><button data-grange="1h">1 小时</button><button data-grange="24h" class="on">24 小时</button><button data-grange="7d">7 天</button></div>
           <button class="small" id="globe-pause" title="暂停动画">暂停</button>
+          <button class="small" id="globe-expand" title="展开详情">详情</button>
           <button class="small" id="globe-hide" title="隐藏地球">隐藏</button>
         </div>
       </div>
@@ -616,7 +617,7 @@ function expiryLabel(expiresAt) {
 // ── Agent Live Globe (P3/P4) ────────────────────────────────────────────────
 // Loaded lazily and entirely optional: any failure hides the globe and leaves
 // the rest of the console untouched.
-const globe = { instance: null, loading: false, failed: false, range: '24h', cursor: 0, events: [], timer: null, paused: false, hidden: false, reduceMotion: false }
+const globe = { instance: null, loading: false, failed: false, range: '24h', cursor: 0, events: [], timer: null, paused: false, hidden: false, reduceMotion: false, operator: null, showArcs: true, showOperator: true }
 function globeVisible() {
   return !globe.hidden && !document.hidden && !globe.paused
 }
@@ -627,6 +628,7 @@ async function fetchGlobeEvents(reset) {
   const since = reset ? 0 : globe.cursor
   const response = await api('/api/geo/events?range=' + encodeURIComponent(globe.range) + '&sinceSeq=' + since + '&limit=300')
   if (!response.enabled) return { disabled: true, events: [] }
+  globe.operator = response.operator || null
   if (reset) globe.events = []
   // De-duplicate by id so a retried poll cannot double-plot.
   const seen = new Set(globe.events.map((e) => e.id))
@@ -673,7 +675,7 @@ async function refreshGlobe(reset) {
     if (!events.length) return
     const instance = await ensureGlobe()
     if (!instance) return
-    instance.setPoints(events, 0, 0)
+    instance.setPoints(events, globe.operator, { showArcs: globe.showArcs, showOperator: globe.showOperator })
   } catch { /* polling is best-effort */ }
 }
 function syncGlobePolling() {
@@ -682,6 +684,35 @@ function syncGlobePolling() {
   refreshGlobe(false)
   // 5s incremental polling, paused whenever the page or globe is hidden.
   globe.timer = setInterval(() => { if (globeVisible()) refreshGlobe(false) }, 5000)
+}
+function openGlobeModal() {
+  const events = globe.events || []
+  const op = globe.operator
+  const opText = op && op.known ? (op.city || op.country || '未知') + ' (' + (op.country || '') + ')' : '未记录'
+  const toggles = '<div class="row" style="gap:16px;margin:12px 0">' +
+    '<label class="chk" style="flex:0 0 auto"><input type="checkbox" id="gl-arcs" ' + (globe.showArcs ? 'checked' : '') + '> 显示弧线</label>' +
+    '<label class="chk" style="flex:0 0 auto"><input type="checkbox" id="gl-operator" ' + (globe.showOperator ? 'checked' : '') + '> 显示我的位置</label>' +
+    '</div>'
+  const rows = events.length ? events.slice().reverse().slice(0, 100).map((ev) => {
+    const g = ev.geo || {}
+    const where = g.known ? (g.city || '') + (g.city && g.country ? ', ' : '') + (g.country || '') : '未知位置'
+    const when = ev.at ? new Date(ev.at).toLocaleString('zh-CN', { hour12: false }) : ''
+    const color = ev.ok ? 'var(--accent,#0f9d8a)' : 'var(--danger)'
+    return '<tr><td><b>' + esc(ev.agent) + '</b> <span class="pill">' + (ev.kind === 'oauth' ? 'OAuth' : 'Token') + '</span></td>' +
+      '<td class="hint">' + esc(where) + '</td>' +
+      '<td class="hint">' + esc(ev.action || '') + '</td>' +
+      '<td style="color:' + color + '">' + (ev.ok ? '成功' : '失败') + '</td>' +
+      '<td class="hint">' + esc(when) + '</td></tr>'
+  }).join('') : ''
+  const body = '<div class="hint">我的位置（IP 估算）：<b>' + esc(opText) + '</b></div>' +
+    '<div class="hint" style="margin-top:4px">弧线表示：我 → Agent → 被访问国家；未记录我的位置时只画 Agent → 被访问国家。</div>' +
+    toggles +
+    (events.length ? '<div class="table-wrap"><table><tr><th>Agent</th><th>来源</th><th>操作</th><th>结果</th><th>时间</th></tr>' + rows + '</table></div>' : '<div class="hint">暂无真实访问记录</div>')
+  openModal('Agent Live Globe', body)
+  const arcsToggle = $('gl-arcs')
+  if (arcsToggle) arcsToggle.onchange = () => { globe.showArcs = arcsToggle.checked; refreshGlobe(true) }
+  const opToggle = $('gl-operator')
+  if (opToggle) opToggle.onchange = () => { globe.showOperator = opToggle.checked; refreshGlobe(true) }
 }
 function initGlobe() {
   if (!$('globe-box')) return
@@ -703,6 +734,10 @@ function initGlobe() {
     if (globe.instance) globe.instance.setPaused(globe.paused)
     syncGlobePolling()
   }
+  const expandBtn = $('globe-expand')
+  if (expandBtn) expandBtn.onclick = () => openGlobeModal()
+  const box = $('globe-box')
+  if (box) box.onclick = (event) => { if (event.target.tagName !== 'CANVAS' || event.shiftKey) return; openGlobeModal() }
   const hideBtn = $('globe-hide')
   if (hideBtn) hideBtn.onclick = () => {
     globe.hidden = !globe.hidden

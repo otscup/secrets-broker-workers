@@ -79,3 +79,7 @@ jobs:
         run: npm run test:geo-storage
       - name: Geo event capture (Miniflare)
         run: npm run test:geo-capture
+      - name: Globe UI (Miniflare)
+        run: npm run test:globe-ui
+      - name: Globe arcs (Miniflare)
+        run: npm run test:globe-arcs

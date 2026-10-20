@@ -141,6 +141,18 @@ export class BrokerState extends DurableObject {
       })
       return json(result)
     }
+    // Operator location: captured when an admin successfully authenticates, so
+    // the globe can draw "me -> agent -> node". Kept out of the event log.
+    if (url.pathname === '/geo/operator' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const geo = body && typeof body.geo === 'object' ? body.geo : null
+      if (!geo) return json({ ok: false })
+      await this.ctx.storage.put('geoOperator', { ...geo, at: nowIso() })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/geo/operator' && request.method === 'GET') {
+      return json({ operator: (await this.ctx.storage.get('geoOperator')) ?? null })
+    }
     // Internal-only reset used by tests and by an operator clearing the globe.
     // Reachable solely through the Durable Object binding, never from the edge.
     if (url.pathname === '/geo/reset' && request.method === 'POST') {
@@ -785,7 +797,11 @@ async function adminAuthorized(request, env) {
       try { if (new URL(origin).origin !== new URL(request.url).origin) return false } catch { return false }
     }
   }
-  return validCookie(request, env)
+  const ok = await validCookie(request, env)
+  // Refresh the operator's estimated location on each authenticated admin
+  // request so the globe knows where "me" is. Best-effort only.
+  if (ok) await recordOperatorLocation(env, request).catch(() => {})
+  return ok
 }
 
 function pluginAuthorized(request, env) {
@@ -1401,6 +1417,15 @@ function geoFromRequest(request) {
     lat: valid ? Math.round(lat * 100) / 100 : null,
     lon: valid ? Math.round(lon * 100) / 100 : null,
   }
+}
+
+async function recordOperatorLocation(env, request) {
+  if (!GEO_ENABLED(env)) return
+  try {
+    const geo = geoFromRequest(request)
+    if (!geo.known) return
+    await stateStub(env).fetch('https://state/geo/operator', { method: 'POST', body: JSON.stringify({ geo }) })
+  } catch {}
 }
 
 async function recordGeoEvent(env, request, ctx, { agent, kind, action, ok }) {
@@ -2438,7 +2463,12 @@ export default {
       const limit = Number(url.searchParams.get('limit') || 200)
       const response = await stateStub(env).fetch('https://state/geo/query', { method: 'POST', body: JSON.stringify({ windowMs, sinceSeq, limit }) })
       const payload = await response.json()
-      return json({ ok: true, enabled: true, range, events: payload.events ?? [], cursor: payload.cursor ?? 0, hasMore: payload.hasMore === true, total: payload.total ?? 0 })
+      let operator = null
+      try {
+        const opRes = await stateStub(env).fetch('https://state/geo/operator')
+        operator = (await opRes.json()).operator ?? null
+      } catch {}
+      return json({ ok: true, enabled: true, range, operator, events: payload.events ?? [], cursor: payload.cursor ?? 0, hasMore: payload.hasMore === true, total: payload.total ?? 0 })
     }
     if (url.pathname === '/api/state') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
