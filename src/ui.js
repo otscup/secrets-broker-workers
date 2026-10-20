@@ -51,6 +51,22 @@ input[type=checkbox]{width:auto;min-width:0;height:auto;flex:0 0 auto;padding:0;
 input:focus,select:focus{border-color:var(--ok)}
 button{border:0;border-radius:10px;padding:9px 13px;font:inherit;cursor:pointer;background:var(--btn);color:var(--text)}
 button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;color:var(--danger)}button.small{padding:5px 9px;font-size:12px;white-space:nowrap}
+.agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}
+.agent-stat{background:var(--btn);border-radius:12px;padding:14px}
+.agent-stat b{display:block;font-size:22px;line-height:1.2}
+.agent-stat span{display:block;font-size:12px;color:var(--muted);margin-top:2px}
+.agent-stat i{display:block;font-size:11px;color:var(--muted);font-style:normal;margin-top:6px;opacity:.8}
+.agent-row{cursor:pointer}
+.agent-row:hover td{background:#f8fafc}
+.agent-health{font-size:12px;padding:3px 8px;border-radius:999px}
+.agent-health.ok{background:#e8f7f3;color:#0f9d8a}
+.agent-health.warn{background:#fff4e5;color:#c2760b}
+.agent-health.bad{background:#fdecec;color:var(--danger)}
+.agent-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px}
+.agent-detail-grid>div{display:flex;flex-direction:column;gap:2px}
+.agent-detail-grid span{font-size:11px;color:var(--muted)}
+.agent-detail-grid b{font-size:13px;font-weight:500}
+@media(max-width:720px){.agent-stats{grid-template-columns:1fr}.agent-detail-grid{grid-template-columns:1fr}}
 .row{display:flex;gap:9px;flex-wrap:wrap;align-items:end}.row>*{flex:1;min-width:140px}.row button{flex:0 0 auto}
 .hidden{display:none!important}.status{min-height:18px;font-size:12px;color:var(--muted);margin-top:8px}.error{color:var(--danger)}.ok{color:var(--ok)}
 .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
@@ -120,10 +136,30 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
   <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读），这里可以设置免审批策略和读取。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div></section>
 
   <section id="view-agents" class="view hidden">
-    <div class="card"><h2>新增 Agent</h2><div class="hint">token 只显示一次；创建后请保存。</div>
-      <div class="row" style="margin-top:10px"><input id="agent-name" placeholder="名称，如 dsh"><input id="agent-alias" placeholder="显示名（可选）"><input id="agent-allow" placeholder="可读条目，逗号分隔（留空=无权限）"><label class="chk" style="flex:0 0 auto;min-width:auto"><input type="checkbox" id="agent-allowall"> 允许全部条目</label><label class="chk" style="flex:0 0 auto;min-width:auto"><input type="checkbox" id="agent-write"> 允许写入（Agent 可调 /agent/items/save）</label><button class="primary" id="agent-create">创建</button></div><div class="status" id="agent-status"></div><div id="new-token" class="hidden"><div class="secret" id="new-token-value"></div><div style="margin-top:8px"><button id="copy-token">复制 token</button></div></div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div><h2 style="margin:0">Agents 管理中心</h2><div class="hint" style="margin-top:4px">最近活动依据审计记录计算，不等同于实时在线状态。</div></div>
+        <button class="primary" id="agent-new" style="flex:0 0 auto">新建 Agent</button>
+      </div>
+      <div class="agent-stats" id="agent-stats"></div>
+      <div class="row" style="margin-top:12px;gap:8px">
+        <input id="agent-search" placeholder="搜索名称、别名、备注…" style="flex:1;min-width:180px">
+        <select id="agent-type-filter" style="flex:0 0 auto">
+          <option value="">全部类型</option>
+          <option value="oauth">OAuth</option>
+          <option value="token">Token</option>
+        </select>
+        <select id="agent-sort" style="flex:0 0 auto">
+          <option value="default">默认排序</option>
+          <option value="expiry">按到期时间</option>
+          <option value="activity">按最近活动</option>
+          <option value="name">按名称</option>
+        </select>
+      </div>
+      <div id="agents-box" class="table-wrap" style="margin-top:10px"></div>
+      <div class="status" id="agent-status"></div>
     </div>
-    <div class="card"><h2>Agents</h2><div id="agents-box" class="table-wrap"></div></div>
+  </section>
   </section>
 
   <section id="view-grants" class="view hidden">
@@ -268,7 +304,7 @@ async function lock() {
 $('lock').onclick = lock; $('lock2').onclick = lock
 document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings(); if (view === 'profile') loadProfile() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('agent-create').onclick = createAgent; $('settings-save').onclick = saveSettings; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-discover').onclick = discoverOidc; $('oidc-save').onclick = saveSettings; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-discover').onclick = discoverOidc; $('oidc-save').onclick = saveSettings; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
 $('copy-token').onclick = async () => { try { await navigator.clipboard.writeText(app.token); toast('已复制 token') } catch { toast('复制失败', true) } }
 $('modal-close').onclick = () => show('modal', false)
@@ -277,7 +313,71 @@ $('modal-close-x').onclick = () => show('modal', false)
 $('modal').addEventListener('click', (event) => { if (event.target === $('modal')) show('modal', false) })
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('modal').classList.contains('hidden')) show('modal', false) })
 $('items-box').addEventListener('click', async (event) => { const grantEdit = event.target.closest('[data-item-grant]'); if (grantEdit) { openGrantMenu(grantEdit.dataset.agent, grantEdit.dataset.name); return } const menu = event.target.closest('[data-item-menu]'); if (menu) { openItemMenu(menu.dataset.itemMenu); return } const toggle = event.target.closest('[data-policy]'); if (toggle) { const item = app.items.find((entry) => entry.name === toggle.dataset.policy); if (!item) return; try { await api('/api/policies', { method: 'POST', body: JSON.stringify({ name: item.name, noApproval: !item.noApproval }) }); await loadItems(); toast('已更新免审批策略') } catch (error) { toast(error.message, true) } return } const read = event.target.closest('[data-read]'); if (read) reveal(read.dataset.read) })
-$('agents-box').addEventListener('click', (event) => { const extend = event.target.closest('[data-agent-extend]'); if (extend) { openExtendMenu(extend.dataset.agentExtend); return } const menu = event.target.closest('[data-agent-menu]'); if (menu) openAgentMenu(menu.dataset.agentMenu) })
+$('agents-box').addEventListener('click', (event) => {
+  const extend = event.target.closest('[data-agent-extend]')
+  if (extend) { event.stopPropagation(); openExtendMenu(extend.dataset.agentExtend); return }
+  const menu = event.target.closest('[data-agent-menu]')
+  if (menu) { event.stopPropagation(); openAgentMenu(menu.dataset.agentMenu); return }
+  const row = event.target.closest('[data-agent-open]')
+  if (row) openAgentDetail(row.dataset.agentOpen)
+})
+$('agent-new').onclick = openAgentCreate
+$('agent-search').oninput = renderAgents
+$('agent-type-filter').onchange = renderAgents
+$('agent-sort').onchange = renderAgents
+// Creation moved into a modal so it no longer pushes the list down.
+function openAgentCreate() {
+  openModal('新建 Agent', '<div class="hint">Token 只在创建后显示一次。</div>' +
+    '<label class="field">名称</label><input id="ac-name" placeholder="如 dsh">' +
+    '<label class="field">显示名（可选）</label><input id="ac-alias" placeholder="便于识别的名字">' +
+    '<label class="field">备注（可选）</label><input id="ac-note" placeholder="用途说明">' +
+    '<label class="field">可读条目（逗号分隔，留空=无权限）</label><input id="ac-allow" placeholder="item-a, item-b">' +
+    '<label class="chk" style="margin-top:8px"><input type="checkbox" id="ac-allowall"> 允许全部条目</label>' +
+    '<label class="chk" style="margin-top:8px"><input type="checkbox" id="ac-write"> 允许写入（可调 /agent/items/save）</label>' +
+    '<div class="row" style="margin-top:14px"><button class="primary" id="ac-create">创建</button></div>' +
+    '<div class="status" id="ac-status"></div><div class="secret hidden" id="ac-token"></div>')
+  $('ac-create').onclick = async () => {
+    const name = $('ac-name').value.trim()
+    if (!name) return status('ac-status', '请输入名称', 'error')
+    try {
+      status('ac-status', '创建中…')
+      const allow = $('ac-allow').value.split(',').map((value) => value.trim()).filter(Boolean)
+      const result = await api('/api/agents/create', { method: 'POST', body: JSON.stringify({ name, alias: $('ac-alias').value.trim(), note: $('ac-note').value.trim(), allow, allowAll: $('ac-allowall').checked, write: $('ac-write').checked }) })
+      $('ac-token').classList.remove('hidden')
+      $('ac-token').textContent = result.token
+      try { await navigator.clipboard.writeText(result.token); status('ac-status', '已创建，token 已复制到剪贴板', 'ok') } catch { status('ac-status', '已创建，请手动复制 token', 'ok') }
+      await loadState()
+    } catch (error) { status('ac-status', error.message, 'error') }
+  }
+}
+// Detail view: 概况 / 权限 / 授权 / 活动. Read-only display plus the existing actions.
+function openAgentDetail(name) {
+  const agent = ((app.data && app.data.agents) || []).find((entry) => entry.name === name)
+  if (!agent) return
+  const last = lastActivityFor(name)
+  const health = agentHealth(agent, last)
+  const kind = agent.oauth ? 'OAuth Agent' : 'Token Agent'
+  const scope = agent.allowAll ? '全部条目' : (agent.allow && agent.allow.length ? agent.allow.join(', ') : (agent.groups && agent.groups.length ? '分组：' + agent.groups.join(', ') : '无权限'))
+  const expiry = typeof agent.expiresAt === 'number' ? new Date(agent.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '长期有效'
+  const created = agent.createdAt ? new Date(agent.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-'
+  const recent = ((app.data && app.data.audit) || []).filter((entry) => entry.agent === name).slice(0, 5)
+  const activityRows = recent.length ? recent.map((entry) => '<div class="hint">' + esc(new Date(entry.time).toLocaleString('zh-CN', { hour12: false })) + ' · ' + esc(entry.event || '') + (entry.name ? ' · ' + esc(entry.name) : '') + '</div>').join('') : '<div class="hint">暂无读取记录</div>'
+  openModal(name, '<div class="row" style="justify-content:space-between;align-items:center"><div><b>' + esc(agent.alias || name) + '</b><div class="hint">' + kind + '</div></div><span class="agent-health ' + (health.level === 'ok' ? 'ok' : (health.level === 'warn' ? 'warn' : 'bad')) + '">' + esc(health.label) + '</span></div>' +
+    '<div class="agent-detail-grid" style="margin-top:14px">' +
+    '<div><span>账户</span><b>' + esc(agent.account || '-') + '</b></div>' +
+    '<div><span>连接方式</span><b>' + (agent.oauth ? 'OAuth' : 'Token') + '</b></div>' +
+    '<div><span>可读范围</span><b>' + esc(scope) + '</b></div>' +
+    '<div><span>写入权限</span><b>' + (agent.write ? '允许' : '不允许') + '</b></div>' +
+    '<div><span>授权到期</span><b>' + esc(expiry) + '</b></div>' +
+    '<div><span>最近读取记录</span><b>' + esc(relativeTime(last)) + '</b></div>' +
+    '<div><span>创建时间</span><b>' + esc(created) + '</b></div>' +
+    '</div>' +
+    '<div style="margin-top:14px"><b>最近活动</b>' + activityRows + '</div>' +
+    '<div class="row" style="margin-top:14px"><button class="primary" id="ad-extend">延长授权</button><button id="ad-edit">编辑配置</button><button id="ad-menu">更多操作</button></div>')
+  $('ad-extend').onclick = () => openExtendMenu(name)
+  $('ad-edit').onclick = () => openAgentMenu(name)
+  $('ad-menu').onclick = () => openAgentMenu(name)
+}
 async function extendAgent(name, days) {
   try {
     const result = await api('/api/agents/extend', { method: 'POST', body: JSON.stringify({ name, days }) })
@@ -467,9 +567,100 @@ function expiryLabel(expiresAt) {
   const text = days > 0 ? days + ' 天' : hours + ' 小时'
   return left < 86400e3 ? '<span style="color:var(--danger)">' + text + '</span>' : text
 }
+// Last read opportunity per agent, derived from the audit trail the server
+// already returns. This is "last recorded read", never a live-presence claim.
+function lastActivityFor(agentName) {
+  const audit = (app.data && app.data.audit) || []
+  let latest = 0
+  for (const entry of audit) {
+    if (entry.agent !== agentName) continue
+    const time = Date.parse(entry.time)
+    if (Number.isFinite(time) && time > latest) latest = time
+  }
+  return latest
+}
+function relativeTime(ms) {
+  if (!ms) return '无读取记录'
+  const diff = Date.now() - ms
+  if (diff < 60000) return '刚刚'
+  if (diff < 3600e3) return Math.floor(diff / 60000) + ' 分钟前'
+  if (diff < 86400e3) return Math.floor(diff / 3600e3) + ' 小时前'
+  return Math.floor(diff / 86400e3) + ' 天前'
+}
+// Health is a UI hint only: authorization still decides access.
+function agentHealth(agent, lastActivity) {
+  if (typeof agent.expiresAt === 'number' && agent.expiresAt <= Date.now()) {
+    return { level: 'danger', label: '已过期', detail: '授权已过期，需重新延长' }
+  }
+  if (typeof agent.expiresAt === 'number' && agent.expiresAt - Date.now() < 3 * 86400e3) {
+    return { level: 'warn', label: '即将到期', detail: expiryLabel(agent.expiresAt) + '后到期' }
+  }
+  if (!lastActivity || Date.now() - lastActivity > 7 * 86400e3) {
+    return { level: 'warn', label: '需关注', detail: lastActivity ? relativeTime(lastActivity) + '无读取记录' : '从未有读取记录' }
+  }
+  return { level: 'ok', label: '正常', detail: lastActivity ? '最近 ' + relativeTime(lastActivity) + '有活动' : '待首次使用' }
+}
+function renderAgentStats(agents) {
+  const box = $('agent-stats')
+  if (!box) return
+  let active = 0
+  let attention = 0
+  for (const agent of agents) {
+    const last = lastActivityFor(agent.name)
+    const health = agentHealth(agent, last)
+    if (last && Date.now() - last < 7 * 86400e3) active += 1
+    if (health.level !== 'ok') attention += 1
+  }
+  const cards = [
+    { label: 'Agent 总数', value: agents.length },
+    { label: '近期有活动', value: active, hint: '7 天内有读取记录' },
+    { label: '需要关注', value: attention, hint: '过期、将到期或长期闲置' },
+  ]
+  box.innerHTML = cards.map((card) => '<div class="agent-stat"><b>' + card.value + '</b><span>' + esc(card.label) + '</span>' + (card.hint ? '<i>' + esc(card.hint) + '</i>' : '') + '</div>').join('')
+}
 function renderAgents() {
-  const agents = app.data.agents || []
-  $('agents-box').innerHTML = agents.length ? '<table><tr><th>Agent</th><th>显示名 / 备注</th><th>绑定账户</th><th>可读范围</th><th>写入</th><th>到期</th><th>操作</th></tr>' + agents.map((agent) => '<tr><td><b>' + esc(agent.name) + '</b>' + (agent.oauth ? ' <span class="pill">OAuth</span>' : '') + '</td><td>' + esc(agent.alias || '') + (agent.note ? '<br><span class="hint">' + esc(agent.note) + '</span>' : '') + '</td><td class="hint">' + esc(agent.account || '-') + '</td><td class="hint">' + esc(agent.allowAll ? '全部' : (agent.allow && agent.allow.length ? agent.allow.join(', ') : (agent.groups && agent.groups.length ? '分组：' + agent.groups.join(', ') : '无权限'))) + '</td><td>' + (agent.write ? '开' : '关') + '</td><td class="hint">' + expiryLabel(agent.expiresAt) + '</td><td class="nowrap"><button class="small" data-agent-extend="' + esc(agent.name) + '" title="延长授权">延长</button><button class="small" data-agent-menu="' + esc(agent.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">还没有 Agent</div>'
+  const all = (app.data && app.data.agents) || []
+  renderAgentStats(all)
+  const query = String(($('agent-search') && $('agent-search').value) || '').trim().toLowerCase()
+  const typeFilter = String(($('agent-type-filter') && $('agent-type-filter').value) || '')
+  const sortBy = String(($('agent-sort') && $('agent-sort').value) || 'default')
+  let agents = all.filter((agent) => {
+    if (typeFilter === 'oauth' && !agent.oauth) return false
+    if (typeFilter === 'token' && agent.oauth) return false
+    if (!query) return true
+    return String(agent.name || '').toLowerCase().includes(query) || String(agent.alias || '').toLowerCase().includes(query) || String(agent.note || '').toLowerCase().includes(query)
+  })
+  if (sortBy === 'expiry') {
+    agents = agents.slice().sort((a, b) => {
+      const ae = typeof a.expiresAt === 'number' ? a.expiresAt : Infinity
+      const be = typeof b.expiresAt === 'number' ? b.expiresAt : Infinity
+      return ae - be
+    })
+  } else if (sortBy === 'activity') {
+    agents = agents.slice().sort((a, b) => lastActivityFor(b.name) - lastActivityFor(a.name))
+  } else if (sortBy === 'name') {
+    agents = agents.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))
+  }
+  const box = $('agents-box')
+  if (!box) return
+  if (!agents.length) {
+    box.innerHTML = '<div class="hint">' + (all.length ? '没有匹配的 Agent' : '还没有 Agent，点右上角「新建 Agent」创建') + '</div>'
+    return
+  }
+  const rows = agents.map((agent) => {
+    const last = lastActivityFor(agent.name)
+    const health = agentHealth(agent, last)
+    const kind = agent.oauth ? 'OAuth' : 'Token'
+    const dotClass = health.level === 'ok' ? 'ok' : (health.level === 'warn' ? 'warn' : 'bad')
+    return '<tr class="agent-row" data-agent-open="' + esc(agent.name) + '">' +
+      '<td><b>' + esc(agent.name) + '</b> <span class="pill">' + kind + '</span>' +
+      (agent.alias ? '<br><span class="hint">' + esc(agent.alias) + '</span>' : '') + '</td>' +
+      '<td class="hint">' + esc(health.detail) + (typeof agent.expiresAt === 'number' ? ' · 剩余 ' + Math.max(0, Math.ceil((agent.expiresAt - Date.now()) / 86400e3)) + ' 天' : ' · 长期') + '</td>' +
+      '<td class="nowrap"><span class="agent-health ' + dotClass + '">' + esc(health.label) + '</span></td>' +
+      '<td class="nowrap">' + '<button class="small" data-agent-extend="' + esc(agent.name) + '" title="延长授权">延长</button>' +
+      '<button class="small" data-agent-menu="' + esc(agent.name) + '" title="更多">⋮</button></td></tr>'
+  }).join('')
+  box.innerHTML = '<table><tr><th>Agent</th><th>最近活动 / 到期</th><th>状态</th><th>操作</th></tr>' + rows + '</table>'
 }
 function renderPending() {
   const pending = app.data.pending || []
@@ -677,6 +868,8 @@ async function changePassword() { try { await api('/api/security/password', { me
 async function setup2fa() { try { const data = await api('/api/2fa/setup', { method: 'POST' }); $('totp-secret').textContent = data.secret; $('totp-setup-box').classList.remove('hidden'); status('totp-message', '把密钥加入验证器后输入验证码', 'ok') } catch (error) { status('totp-message', error.message, 'error') } }
 async function enable2fa() { try { await api('/api/2fa/enable', { method: 'POST', body: JSON.stringify({ code: $('totp-enable-code').value }) }); $('totp-setup-box').classList.add('hidden'); $('totp-enable-code').value = ''; status('totp-message', '两步验证已启用', 'ok'); await loadSecurity() } catch (error) { status('totp-message', error.message, 'error') } }
 async function disable2fa() { const password = prompt('输入当前登录密码以关闭两步验证'); if (password === null) return; try { await api('/api/2fa/disable', { method: 'POST', body: JSON.stringify({ password }) }); status('totp-message', '两步验证已关闭', 'ok'); await loadSecurity() } catch (error) { status('totp-message', error.message, 'error') } }
-async function createAgent() { try { const name = $('agent-name').value.trim(); if (!name) return status('agent-status', '请输入名称', 'error'); const allow = $('agent-allow').value.split(',').map((value) => value.trim()).filter(Boolean); const result = await api('/api/agents/create', { method: 'POST', body: JSON.stringify({ name, alias: $('agent-alias').value.trim(), allow, allowAll: $('agent-allowall').checked, write: $('agent-write').checked }) }); app.token = result.token; $('new-token-value').textContent = result.token; show('new-token', true); $('agent-name').value = ''; $('agent-alias').value = ''; $('agent-allow').value = ''; $('agent-allowall').checked = false; $('agent-write').checked = false; status('agent-status', '已创建，token 只显示一次', 'ok'); await loadState() } catch (error) { status('agent-status', error.message, 'error') } }
+// Replaced by the create modal (openAgentCreate). Kept as a thin alias so any
+// stale inline handler still works.
+async function createAgent() { openAgentCreate() }
 boot()
 </script></body></html>`
