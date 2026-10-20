@@ -110,6 +110,61 @@ export class BrokerState extends DurableObject {
     // The mutator is not executable on the DO side, so the Worker sends a list
     // of declarative ops. Unknown ops are rejected; nothing is written unless
     // every op applies.
+    // ── Geo events (Agent Live Globe) ────────────────────────────────────
+    // Deliberately stored under its OWN storage key, never inside `state`: the
+    // main state is CAS-versioned and rewritten wholesale, and mixing a
+    // high-frequency append log into it would amplify every write.
+    // Appends are serialized per Durable Object, so concurrent requests cannot
+    // clobber each other, and the ring buffer enforces both caps.
+    const GEO_MAX_EVENTS = 2000
+    const GEO_MAX_AGE_MS = 7 * 86400e3
+    if (url.pathname === '/geo/append' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const event = body && typeof body.event === 'object' ? body.event : null
+      if (!event) return json({ ok: false, reason: 'invalid' })
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const store = (await txn.get('geoEvents')) ?? { seq: 0, events: [] }
+        const now = Date.now()
+        const seq = Number(store.seq ?? 0) + 1
+        // Monotonic sequence makes ordering stable even when timestamps collide.
+        const record = { ...event, seq, id: 'evt_' + seq }
+        let events = Array.isArray(store.events) ? store.events.slice() : []
+        events.push(record)
+        // Enforce both retention caps inside the same transaction.
+        if (events.length > GEO_MAX_EVENTS) events = events.slice(events.length - GEO_MAX_EVENTS)
+        events = events.filter((entry) => {
+          const at = Date.parse(entry && entry.at)
+          return !Number.isFinite(at) || now - at <= GEO_MAX_AGE_MS
+        })
+        await txn.put('geoEvents', { seq, events })
+        return { ok: true, id: record.id, seq, total: events.length }
+      })
+      return json(result)
+    }
+    // Internal-only reset used by tests and by an operator clearing the globe.
+    // Reachable solely through the Durable Object binding, never from the edge.
+    if (url.pathname === '/geo/reset' && request.method === 'POST') {
+      await this.ctx.storage.put('geoEvents', { seq: 0, events: [] })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/geo/query' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const windowMs = Math.max(60000, Math.min(GEO_MAX_AGE_MS, Number(body.windowMs) || 3600e3))
+      const sinceSeq = Number(body.sinceSeq ?? 0)
+      const limit = Math.max(1, Math.min(500, Number(body.limit) || 200))
+      const store = (await this.ctx.storage.get('geoEvents')) ?? { seq: 0, events: [] }
+      const now = Date.now()
+      const all = Array.isArray(store.events) ? store.events : []
+      const inWindow = all.filter((entry) => {
+        const at = Date.parse(entry && entry.at)
+        return Number.isFinite(at) && now - at <= windowMs
+      })
+      // Incremental fetch: everything newer than the client's cursor.
+      const fresh = sinceSeq > 0 ? inWindow.filter((entry) => Number(entry.seq ?? 0) > sinceSeq) : inWindow
+      const page = fresh.slice(0, limit)
+      const cursor = page.length ? Number(page[page.length - 1].seq ?? 0) : sinceSeq
+      return json({ ok: true, events: page, cursor, hasMore: fresh.length > page.length, total: inWindow.length })
+    }
     if (url.pathname === '/state/mutate' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
       const ops = Array.isArray(body.ops) ? body.ops : null
@@ -1318,6 +1373,55 @@ async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now()) 
   return { sent: tasks.length ? fresh.length : 0, reminders: reminders.length }
 }
 
+// ── Agent Live Globe: event capture ────────────────────────────────────────
+// Records where an *authenticated Agent* reached this broker from. Never stores
+// or returns a raw IP, token, cookie, secret value or sensitive URL parameter.
+// Any failure here is swallowed so capture can never affect authorization.
+const GEO_ENABLED = (env) => String(env?.GEO_ENABLED ?? '0') === '1'
+
+function geoFromRequest(request) {
+  const cf = (request && request.cf) || null
+  // Country/city/coords come from Cloudflare's IP geolocation. When the runtime
+  // does not provide them we record an explicit unknown rather than inventing
+  // coordinates. CF-RAY identifies the serving colo, NOT the caller, so it is
+  // never used as a location.
+  const country = cf && typeof cf.country === 'string' && cf.country.trim() ? cf.country.trim().toUpperCase().slice(0, 2) : ''
+  const city = cf && typeof cf.city === 'string' ? cf.city.trim().slice(0, 64) : ''
+  const asn = cf && Number.isFinite(Number(cf.asn)) ? Number(cf.asn) : null
+  const lat = cf && Number.isFinite(Number(cf.latitude)) ? Number(cf.latitude) : null
+  const lon = cf && Number.isFinite(Number(cf.longitude)) ? Number(cf.longitude) : null
+  const valid = lat !== null && lon !== null && Math.abs(lat) <= 90 && Math.abs(lon) <= 180 && !(lat === 0 && lon === 0)
+  if (!country && !valid) return { known: false, country: '', city: '', asn, lat: null, lon: null }
+  return {
+    known: true,
+    country,
+    city,
+    asn,
+    // ~1km precision is plenty for a globe dot and avoids pinpointing.
+    lat: valid ? Math.round(lat * 100) / 100 : null,
+    lon: valid ? Math.round(lon * 100) / 100 : null,
+  }
+}
+
+async function recordGeoEvent(env, request, ctx, { agent, kind, action, ok }) {
+  if (!GEO_ENABLED(env)) return
+  try {
+    if (!agent) return
+    const geo = geoFromRequest(request)
+    const event = {
+      at: nowIso(),
+      agent: String(agent).slice(0, 64),
+      kind: kind === 'oauth' ? 'oauth' : 'token',
+      action: String(action || '').slice(0, 40),
+      ok: ok === true,
+      geo,
+    }
+    await stateStub(env).fetch('https://state/geo/append', { method: 'POST', body: JSON.stringify({ event }) })
+  } catch {
+    // Capture is best-effort by design.
+  }
+}
+
 async function consumeOidcState(env, cookieValue, returned) {
   const response = await stateStub(env).fetch('https://state/oidc/state/consume', { method: 'POST', body: JSON.stringify({ cookie: cookieValue, state: returned }) })
   return response.json()
@@ -2311,6 +2415,20 @@ export default {
       await addAudit(env, { event: 'action-grant.revoke', agent: agentName, itemId, actions: revokedActions })
       return json({ ok: true, revoked: revokedActions })
     }
+    // Admin-only read of geo events. Returns already-sanitised records from the
+    // DO ring buffer; raw IPs, tokens and secret values are never stored, so
+    // there is nothing sensitive to leak here.
+    if (url.pathname === '/api/geo/events') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      if (!GEO_ENABLED(env)) return json({ ok: true, enabled: false, events: [], cursor: 0, hasMore: false, total: 0 })
+      const range = String(url.searchParams.get('range') || '24h')
+      const windowMs = range === '1h' ? 3600e3 : (range === '7d' ? 7 * 86400e3 : 24 * 3600e3)
+      const sinceSeq = Number(url.searchParams.get('sinceSeq') || 0)
+      const limit = Number(url.searchParams.get('limit') || 200)
+      const response = await stateStub(env).fetch('https://state/geo/query', { method: 'POST', body: JSON.stringify({ windowMs, sinceSeq, limit }) })
+      const payload = await response.json()
+      return json({ ok: true, enabled: true, range, events: payload.events ?? [], cursor: payload.cursor ?? 0, hasMore: payload.hasMore === true, total: payload.total ?? 0 })
+    }
     if (url.pathname === '/api/state') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const state = await loadState(env)
@@ -3183,8 +3301,15 @@ export default {
             const secretName = String(args.name ?? '')
             if (!secretName) return result(text('name is required', true))
             const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx })
-            if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
-            if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
+            if (access.status === 'pending') {
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
+              return result(text(`pending approval: ${access.approvalUrl}`))
+            }
+            if (access.status === 'forbidden' || access.status === 'notfound') {
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
+              return result(text(access.error, true))
+            }
+            await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: true })
             return result(text(access.value))
           }
           if (name === 'get_credential') {
@@ -3192,10 +3317,21 @@ export default {
             const secretName = String(args.name ?? '')
             if (!secretName) return result(text('name is required', true))
             const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx })
-            if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
-            if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
+            const credKind = resolved.agent.oauth ? 'oauth' : 'token'
+            if (access.status === 'pending') {
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
+              return result(text(`pending approval: ${access.approvalUrl}`))
+            }
+            if (access.status === 'forbidden' || access.status === 'notfound') {
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
+              return result(text(access.error, true))
+            }
             const found = await readSecretFromRows(env, env.NODEWARDEN_DB, session, secretName)
-            if (!found) return result(text('not found', true))
+            if (!found) {
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
+              return result(text('not found', true))
+            }
+            await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: true })
             return result(text(JSON.stringify({ username: found.username, password: found.value, totp: found.totp })))
           }
           if (name === 'request_credential') {
@@ -3221,9 +3357,19 @@ export default {
               pathname: parsedTarget.pathname || '/',
             }
             const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx, action: 'secret.use', target: useTarget })
-            if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
-            if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
-            if (access.status !== 'use-ok') return result(text('secret.use denied', true))
+            const useKind = resolved.agent.oauth ? 'oauth' : 'token'
+            if (access.status === 'pending') {
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: useKind, action: 'secret.use', ok: false })
+              return result(text(`pending approval: ${access.approvalUrl}`))
+            }
+            if (access.status === 'forbidden' || access.status === 'notfound') {
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: useKind, action: 'secret.use', ok: false })
+              return result(text(access.error, true))
+            }
+            if (access.status !== 'use-ok') {
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: useKind, action: 'secret.use', ok: false })
+              return result(text('secret.use denied', true))
+            }
             const method = String(args.method ?? 'GET').trim().toUpperCase()
             if (!method || method.length > 16) return result(text('invalid method (max 16 chars)', true))
             const secretHeaderAllow = { authorization: 'Authorization', 'x-api-key': 'X-Api-Key', 'api-key': 'Api-Key', 'x-auth-token': 'X-Auth-Token' }
@@ -3283,7 +3429,12 @@ export default {
             const init = { method, headers, redirect: 'manual', signal: AbortSignal.timeout(15000) }
             if (reqBody != null && !['GET', 'HEAD'].includes(method)) init.body = reqBody
             let response
-            try { response = await fetch(target.toString(), init) } catch (error) { return result(text(error?.name === 'TimeoutError' ? 'upstream request timed out (15s)' : `upstream fetch failed: ${String(error?.message ?? error).slice(0, 200)}`, true)) }
+            try { response = await fetch(target.toString(), init) } catch (error) {
+              // Record the real outcome: the call was authorized but the upstream
+              // request itself failed.
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: useKind, action: 'secret.use', ok: false })
+              return result(text(error?.name === 'TimeoutError' ? 'upstream request timed out (15s)' : `upstream fetch failed: ${String(error?.message ?? error).slice(0, 200)}`, true))
+            }
             const rawBody = (await response.text()).slice(0, 8000)
             // Defense-in-depth only: strip the exact injected value and common
             // echo forms. This is NOT a guarantee against arbitrary encoding,
@@ -3299,6 +3450,9 @@ export default {
             }
             const responseBody = scrub(rawBody)
             await addAudit(env, { event: 'secret.use', agent: resolved.name, name: secretName, via: 'http_request', method, host: normHost, path: target.pathname.slice(0, 200), status: response.status })
+            // A completed upstream call counts as a successful use regardless of
+            // the upstream status code: the broker did its job.
+            await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: useKind, action: 'secret.use', ok: true })
             return result(text(JSON.stringify({ status: response.status, ok: response.ok, body: responseBody })))
           }
           return rpcError('unknown tool')

@@ -75,3 +75,7 @@ jobs:
         run: npm run test:items
       - name: Scheduled reminder handler (Miniflare)
         run: npm run test:scheduled
+      - name: Geo event storage (Miniflare)
+        run: npm run test:geo-storage
+      - name: Geo event capture (Miniflare)
+        run: npm run test:geo-capture

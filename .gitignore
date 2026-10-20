@@ -33,6 +33,8 @@ test-*.mjs
 !test-mf-reminders.mjs
 !test-mf-items-activity.mjs
 !test-mf-scheduled.mjs
+!test-mf-geo-storage.mjs
+!test-mf-geo-capture.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs
