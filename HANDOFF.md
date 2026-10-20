@@ -38,7 +38,10 @@ The earlier audit looked for `a94fc38a` as a Git commit; use `b78e0db` instead.
 ## Known remaining work
 
 1. `http_request` method/path/header policy; host allowlist alone does not prevent DELETE/PATCH on the allowed host.
-2. OIDC ID-token signature / `aud` validation (currently issuer + userinfo sub).
+2. OIDC ID-token signature / `aud` validation — DONE in worktree (uncommitted):
+   `src/oidc.js` (JWKS verify, iss/aud/exp/nonce/azp, userinfo sub match,
+   replay registry) + `/oidc/callback` strict flow; 26/26 cases in
+   `test-oidc.mjs` / `docs/oidc-test-results.md`. Needs live-IdP login test.
 3. Automated security tests: permission matrix, expiration/concurrency, PKCE, cookie revocation, rate limits, XSS.
 4. Vault Provider abstraction (currently NodeWarden D1 coupled).
 5. DSH popup input stability after restart; verify visually.

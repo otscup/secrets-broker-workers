@@ -17,8 +17,11 @@ returns it only through the paths below.
 
 - OAuth 2.1 authorization-code + **PKCE S256 only**; DCR redirects are limited to
   HTTPS or loopback HTTP.
-- OIDC binding requires a matching issuer + subject; first unbound login needs an
-  existing admin session or `OIDC_ALLOWED_SUB` / `OIDC_ALLOWED_EMAIL`.
+- OIDC requires a JWKS-verified ID Token: exact `iss`, `aud` containing the client
+  ID, `exp`/`nbf` within 60s leeway, exact `nonce`, `azp` on multi-audience;
+  userinfo `sub` must equal the verified `sub`, state/nonce is single-use, and
+  the `oidc_state` cookie is cleared on every callback; any failure is a hard
+  reject with no userinfo-only fallback. Binding + first-login allowlist unchanged.
 - Legacy v1 admin cookies are rejected unless `ALLOW_LEGACY_ADMIN_COOKIE=1`.
 - Admin login/TOTP failures are limited to 8 attempts per 15 minutes per IP.
 - Grants are consumed atomically in the Durable Object (`/grant/consume`), so
@@ -38,7 +41,9 @@ returns it only through the paths below.
 - The broker can read plaintext after unlock; only `http_request` keeps values
   out of model context. A full action-proxy policy is future work.
 - Cloudflare account/WAF/Access compromise is outside the broker boundary.
-- OIDC still needs full `iss`/`aud` claim verification beyond userinfo/sub.
+- OIDC ID-token verification is implemented in the worktree (`src/oidc.js` +
+  `/oidc/callback`, 26/26 unit cases); still needs a live login against the
+  real IdP plus JWKS rotation/Discovery-outage tests.
 - Add automated tests for permission matrices, concurrency, expiry, rate limits,
   PKCE, cookie revocation, and XSS.
 - Add Vault Provider abstraction for non-NodeWarden deployments.

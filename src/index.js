@@ -5,6 +5,7 @@ import {
   b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, decryptStr, encryptStr, extractSecret, extractUsername, extractTotp,
   hmacToken, pbkdf2, sha256Base64, unwrapWithKek, wrapWithKek, bytesToB64,
 } from './crypto.js'
+import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, isUsedState, markUsedState } from './oidc.js'
 
 const encoder = new TextEncoder()
 const SESSION_COOKIE = 'broker_admin'
@@ -229,7 +230,7 @@ async function oidcConfig(env, request, state) {
 }
 
 async function oidcEndpoints(oidc) {
-  const needsDiscovery = !oidc.authorizationEndpoint || !oidc.tokenEndpoint || !oidc.userinfoEndpoint
+  const needsDiscovery = !oidc.authorizationEndpoint || !oidc.tokenEndpoint || !oidc.userinfoEndpoint || !oidc.jwksUri
   const discovered = needsDiscovery ? await oidcDiscovery(oidc.issuer) : {}
   return {
     authorization: oidc.authorizationEndpoint || discovered.authorization_endpoint,
@@ -242,12 +243,14 @@ async function oidcEndpoints(oidc) {
 async function oidcDiscovery(issuer) {
   const response = await fetch(`${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`)
   if (!response.ok) throw new Error('OIDC discovery failed')
-  return response.json()
+  const document = await response.json()
+  if (!document || typeof document.issuer !== 'string' || document.issuer.replace(/\/$/, '') !== issuer.replace(/\/$/, '')) throw new Error('OIDC discovery issuer mismatch')
+  return document
 }
 
-async function oidcStateCookie(env, state, verifier, next = '') {
+async function oidcStateCookie(env, state, verifier, next = '', nonce = '') {
   const expires = Date.now() + 10 * 60 * 1000
-  const payload = `${state}|${verifier}|${next}|${expires}`
+  const payload = `${state}|${verifier}|${nonce}|${next}|${expires}`
   const signature = await hmacToken(await cookieKey(env), payload)
   return encodeURIComponent(`${payload}|${signature}`)
 }
@@ -257,16 +260,17 @@ async function verifyOidcState(env, cookieValue) {
   let decoded = ''
   try { decoded = decodeURIComponent(cookieValue) } catch { return null }
   const parts = decoded.split('|')
-  if (parts.length < 5) return null
+  if (parts.length < 6) return null
   const signature = parts.pop()
   const expires = Number(parts.pop())
   const next = parts.pop()
+  const nonce = parts.pop()
   const verifier = parts.pop()
   const state = parts.join('|')
   if (!Number.isFinite(expires) || expires < Date.now()) return null
-  const payload = `${state}|${verifier}|${next}|${expires}`
+  const payload = `${state}|${verifier}|${nonce}|${next}|${expires}`
   const expected = await hmacToken(await cookieKey(env), payload)
-  return constantTimeEqual(encoder.encode(expected), encoder.encode(signature)) ? { state, verifier, next } : null
+  return constantTimeEqual(encoder.encode(expected), encoder.encode(signature)) ? { state, verifier, nonce, next } : null
 }
 
 function base64Url(bytes) {
@@ -1127,8 +1131,9 @@ export default {
         const state = randomToken()
         const verifier = base64Url(crypto.getRandomValues(new Uint8Array(32)))
         const challenge = base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(verifier))))
+        const nonce = randomToken()
         const next = url.searchParams.get('next') === 'profile' ? 'profile' : ''
-        const cookie = await oidcStateCookie(env, state, verifier, next)
+        const cookie = await oidcStateCookie(env, state, verifier, next, nonce)
         const target = new URL(endpoints.authorization)
         target.searchParams.set('client_id', oidc.clientId)
         target.searchParams.set('redirect_uri', oidc.redirectUri)
@@ -1137,63 +1142,76 @@ export default {
         target.searchParams.set('state', state)
         target.searchParams.set('code_challenge', challenge)
         target.searchParams.set('code_challenge_method', 'S256')
+        target.searchParams.set('nonce', nonce)
         const prompt = url.searchParams.get('prompt')
         if (prompt === 'login' || prompt === 'consent') target.searchParams.set('prompt', prompt)
         return new Response(null, { status: 302, headers: { location: target.toString(), 'set-cookie': `oidc_state=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600` } })
       } catch (error) { return fail(String(error.message ?? error), 502) }
     }
     if (url.pathname === '/oidc/callback') {
+      const clearOidcCookie = 'oidc_state=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0'
+      const failOidc = (message, status = 400) => json({ error: message }, status, { 'set-cookie': clearOidcCookie })
       const state = await loadState(env)
       const oidc = await oidcConfig(env, request, state)
       if (!oidc) return fail('OIDC is not configured', 503)
       const stateData = await verifyOidcState(env, readCookie(request, 'oidc_state'))
       const returned = url.searchParams.get('state') ?? ''
-      if (!stateData || stateData.state !== returned) return new Response('<meta charset="utf-8"><h2>OIDC 状态校验失败</h2><p>这个链接是回调地址，不能直接打开；请从「个人资料 → 使用 OIDC 登录 / 绑定」重新发起。</p><p><a href="/?view=profile">回到个人资料</a></p>', { status: 400, headers: { 'content-type': 'text/html; charset=utf-8' } })
+      if (!stateData || stateData.state !== returned) return new Response('<meta charset="utf-8"><h2>OIDC 状态校验失败</h2><p>这个链接是回调地址，不能直接打开；请从「个人资料 → 使用 OIDC 登录 / 绑定」重新发起。</p><p><a href="/?view=profile">回到个人资料</a></p>', { status: 400, headers: { 'content-type': 'text/html; charset=utf-8', 'set-cookie': clearOidcCookie } })
       const code = url.searchParams.get('code') ?? ''
-      if (!code) return fail('missing authorization code', 400)
+      if (!code) return failOidc('missing authorization code', 400)
+      if (isUsedState(state.oidcUsedStates, stateData.state)) return failOidc('OIDC state already used (replay)', 400)
+      await updateState(env, (next) => { next.oidcUsedStates = markUsedState(next.oidcUsedStates, stateData.state); return next })
       try {
         const endpoints = await oidcEndpoints(oidc)
-        if (!endpoints.token || !endpoints.userinfo) return fail('OIDC token/userinfo endpoint missing', 502)
+        if (!endpoints.token || !endpoints.userinfo || !endpoints.jwks) return failOidc('OIDC token/userinfo/jwks endpoint missing', 502)
         const body = new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: oidc.redirectUri, client_id: oidc.clientId, code_verifier: stateData.verifier })
         if (oidc.clientSecret) body.set('client_secret', oidc.clientSecret)
         const tokenResponse = await fetch(endpoints.token, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body })
         const tokens = await tokenResponse.json()
-        if (!tokenResponse.ok || !tokens.access_token) return fail(tokens.error_description || 'OIDC token exchange failed', 502)
+        if (!tokenResponse.ok || !tokens.access_token) return failOidc(tokens.error_description || 'OIDC token exchange failed', 502)
+        if (typeof tokens.id_token !== 'string' || !tokens.id_token) return failOidc('OIDC id_token missing from token response', 502)
+        const parsed = parseJwt(tokens.id_token)
+        const jwksResponse = await fetch(endpoints.jwks)
+        if (!jwksResponse.ok) return failOidc('OIDC jwks fetch failed', 502)
+        const jwks = await jwksResponse.json()
+        await verifyJwtSignature(parsed, jwks)
+        const claims = validateIdTokenClaims(parsed.payload, { issuer: oidc.issuer, clientId: oidc.clientId, nonce: stateData.nonce })
         const userResponse = await fetch(endpoints.userinfo, { headers: { authorization: `Bearer ${tokens.access_token}` } })
         const user = await userResponse.json()
-        if (!userResponse.ok) return fail('OIDC userinfo failed', 502)
-        const subject = String(user.sub ?? '')
-        if (!subject) return fail('OIDC subject missing', 502)
-        if (user.email_verified === false) return fail('OIDC email is not verified', 403)
+        if (!userResponse.ok) return failOidc('OIDC userinfo failed', 502)
+        try { checkUserinfoSub(user.sub, claims.sub) } catch (error) { return failOidc(error.message, 403) }
+        if (user.email_verified === false) return failOidc('OIDC email is not verified', 403)
+        if (user.iss != null && String(user.iss).replace(/\/$/, '') !== oidc.issuer) return failOidc('OIDC userinfo issuer mismatch', 403)
         const isAdmin = await adminAuthorized(request, env)
-        if (stateData.next === 'profile' && !isAdmin) return fail('请先在 Secrets Broker 登录后再绑定 OIDC', 401)
+        if (stateData.next === 'profile' && !isAdmin) return failOidc('请先在 Secrets Broker 登录后再绑定 OIDC', 401)
         const boundIssuer = String(state.profile?.oidcIssuer ?? '')
-        if (boundIssuer && boundIssuer !== oidc.issuer) return fail('OIDC issuer 与已绑定身份不一致', 403)
+        if (boundIssuer && boundIssuer !== oidc.issuer) return failOidc('OIDC issuer 与已绑定身份不一致', 403)
         const boundSub = String(state.profile?.oidcSub ?? '')
-        if (boundSub && subject !== boundSub) return fail('OIDC 身份与已绑定账户不一致', 403)
+        if (boundSub && claims.sub !== boundSub) return failOidc('OIDC 身份与已绑定账户不一致', 403)
         if (!boundSub && !isAdmin) {
           const allowedSub = String(env.OIDC_ALLOWED_SUB ?? '')
           const allowedEmail = String(env.OIDC_ALLOWED_EMAIL ?? '')
-          if (!allowedSub && !allowedEmail) return fail('首次 OIDC 登录需要管理员先登录绑定，或配置 OIDC_ALLOWED_SUB / OIDC_ALLOWED_EMAIL', 403)
-          if (allowedSub && subject !== allowedSub) return fail('OIDC 身份不在允许列表', 403)
-          if (allowedEmail && String(user.email ?? '').toLowerCase() !== allowedEmail.toLowerCase()) return fail('OIDC 邮箱不在允许列表', 403)
+          if (!allowedSub && !allowedEmail) return failOidc('首次 OIDC 登录需要管理员先登录绑定，或配置 OIDC_ALLOWED_SUB / OIDC_ALLOWED_EMAIL', 403)
+          if (allowedSub && claims.sub !== allowedSub) return failOidc('OIDC 身份不在允许列表', 403)
+          if (allowedEmail && String(user.email ?? '').toLowerCase() !== allowedEmail.toLowerCase()) return failOidc('OIDC 邮箱不在允许列表', 403)
         }
-        await updateState(env, (state) => {
-          state.profile ??= {}
-          state.profile.oidcIssuer = oidc.issuer
-          state.profile.oidcSub = subject
-          state.profile.oidcEmail = String(user.email ?? state.profile.email ?? '')
-          state.profile.name = String(user.name ?? user.preferred_username ?? state.profile.name ?? '')
-          state.profile.email = String(user.email ?? state.profile.email ?? '')
-          state.profile.avatarUrl = String(user.picture ?? state.profile.avatarUrl ?? '')
-          return state
+        await updateState(env, (next) => {
+          next.profile ??= {}
+          next.profile.oidcIssuer = oidc.issuer
+          next.profile.oidcSub = claims.sub
+          next.profile.oidcEmail = String(user.email ?? next.profile.email ?? '')
+          next.profile.name = String(user.name ?? user.preferred_username ?? next.profile.name ?? '')
+          next.profile.email = String(user.email ?? next.profile.email ?? '')
+          next.profile.avatarUrl = String(user.picture ?? next.profile.avatarUrl ?? '')
+          return next
         })
         const cookie = await createAdminCookie(env, request)
-        await addAudit(env, { event: 'admin.oidc-login', email: user.email ?? user.sub ?? '' })
+        await addAudit(env, { event: 'admin.oidc-login', email: user.email ?? claims.sub ?? '' })
         const headers = new Headers({ location: stateData.next === 'profile' ? '/?view=profile' : '/' })
         headers.append('set-cookie', `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`)
+        headers.append('set-cookie', clearOidcCookie)
         return new Response(null, { status: 302, headers })
-      } catch (error) { return fail(String(error.message ?? error), 502) }
+      } catch (error) { return failOidc(String(error.message ?? error), 502) }
     }
     if (url.pathname === '/api/bootstrap') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -1913,7 +1931,7 @@ export default {
           { name: 'get_secret', description: 'Read a secret value after approval. Disabled unless MCP_ALLOW_READ=1.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'get_credential', description: 'Read username, password and TOTP for a login item after approval.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'request_credential', description: 'Create a secure one-time link for a human to fill in a missing credential; the broker stores it and grants this agent access.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Suggested item name' }, description: { type: 'string', description: 'What the credential is for' } }, required: ['name'] } },
-          { name: 'http_request', description: 'Make an HTTPS request with a secret injected server-side. The secret is never returned to the caller.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' }, url: { type: 'string', description: 'HTTPS target URL' }, method: { type: 'string', description: 'HTTP method (default GET)' }, headers: { type: 'object', description: 'Extra headers' }, body: { type: 'string', description: 'Request body' }, headerName: { type: 'string', description: 'Header to inject the secret into (default Authorization)' }, authPrefix: { type: 'string', description: 'Prefix before the secret (default "Bearer ")' } }, required: ['name', 'url'] } },
+          { name: 'http_request', description: 'Make an HTTPS request with a secret injected server-side. Method allowlist (default GET/POST, extend via HTTP_ALLOW_METHODS; max 16 chars). Path prefix allowlist via HTTP_ALLOW_PATHS (empty = no path restriction). headerName allowlist: Authorization, X-Api-Key, Api-Key, X-Auth-Token (case-insensitive); authPrefix max 32 chars, no CR/LF. Custom headers sanitized (name /^[A-Za-z0-9-]+$/, value <=4KB, max 20; host/content-length/connection/cookie/set-cookie/authorization and other sensitive hops filtered). Body <=64KB as string; GET/HEAD must not send body. Only https, no userinfo, default port 443 or HTTP_ALLOWED_PORTS. The secret is never returned to the caller.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' }, url: { type: 'string', description: 'HTTPS target URL (no userinfo; path must match HTTP_ALLOW_PATHS prefixes when set; port 443 or HTTP_ALLOWED_PORTS)' }, method: { type: 'string', description: 'HTTP method, uppercased (default GET; non-GET/POST requires HTTP_ALLOW_METHODS; max 16 chars)' }, headers: { type: 'object', description: 'Extra headers (sanitized: name /^[A-Za-z0-9-]+$/, value <=4KB, max 20; sensitive/hop headers filtered and cannot override the injected secret header)' }, body: { type: 'string', description: 'Request body as string (<=64KB; GET/HEAD must not include body)' }, headerName: { type: 'string', description: 'Header to inject the secret into (allowlist: Authorization, X-Api-Key, Api-Key, X-Auth-Token; default Authorization)' }, authPrefix: { type: 'string', description: 'Prefix before the secret (default "Bearer ", max 32 chars, no CR/LF)' } }, required: ['name', 'url'] } },
         ] })
       }
       if (body.method === 'tools/call') {
@@ -1964,23 +1982,68 @@ export default {
             const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx })
             if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
             if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
+            const method = String(args.method ?? 'GET').trim().toUpperCase()
+            if (!method || method.length > 16) return result(text('invalid method (max 16 chars)', true))
+            const allowedMethods = new Set(['GET', 'POST', ...String(env.HTTP_ALLOW_METHODS ?? '').split(',').map((value) => value.trim().toUpperCase()).filter(Boolean)])
+            if (!allowedMethods.has(method)) return result(text('http method is not allowed; extend HTTP_ALLOW_METHODS to permit it', true))
+            const secretHeaderAllow = { authorization: 'Authorization', 'x-api-key': 'X-Api-Key', 'api-key': 'Api-Key', 'x-auth-token': 'X-Auth-Token' }
+            const rawHeaderName = String(args.headerName ?? 'Authorization').trim()
+            const headerName = secretHeaderAllow[rawHeaderName.toLowerCase()]
+            if (!headerName) return result(text('headerName is not allowed (use Authorization, X-Api-Key, Api-Key or X-Auth-Token)', true))
+            const authPrefix = String(args.authPrefix ?? 'Bearer ')
+            if (authPrefix.length > 32 || /[\r\n]/.test(authPrefix)) return result(text('invalid authPrefix (max 32 chars, no CR/LF)', true))
+            const rawHeaders = args.headers && typeof args.headers === 'object' ? args.headers : {}
+            if (Object.keys(rawHeaders).length > 20) return result(text('too many headers (max 20)', true))
+            const blockedHeaders = new Set(['host', 'content-length', 'connection', 'cookie', 'set-cookie', 'authorization', 'proxy-authorization', 'proxy-authenticate', 'x-api-key', 'api-key', 'x-auth-token', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'keep-alive', 'expect'])
+            const headers = Object.create(null)
+            for (const [rawKey, rawValue] of Object.entries(rawHeaders)) {
+              const key = String(rawKey)
+              const value = String(rawValue ?? '')
+              if (!/^[A-Za-z0-9-]+$/.test(key)) return result(text(`invalid header name (allowed: /^[A-Za-z0-9-]+$/): ${key.slice(0, 64)}`, true))
+              if (blockedHeaders.has(key.toLowerCase())) continue
+              if (value.length > 4096) return result(text(`header value too long (max 4KB): ${key.slice(0, 64)}`, true))
+              headers[key] = value
+              if (Object.keys(headers).length > 20) return result(text('too many headers (max 20)', true))
+            }
+            let reqBody = null
+            if (args.body != null) {
+              reqBody = String(args.body)
+              if (reqBody.length > 65536) return result(text('body too large (max 64KB)', true))
+              if (['GET', 'HEAD'].includes(method) && reqBody.length > 0) return result(text('GET/HEAD must not include a body', true))
+            }
             let target
             try { target = new URL(String(args.url ?? '')) } catch { return result(text('invalid url', true)) }
             if (target.protocol !== 'https:') return result(text('only https targets are allowed', true))
+            if (target.username || target.password) return result(text('userinfo in target url is not allowed', true))
+            const port = String(target.port ?? '')
+            if (port && port !== '443') {
+              const allowedPorts = new Set(String(env.HTTP_ALLOWED_PORTS ?? '').split(',').map((value) => value.trim()).filter(Boolean))
+              if (!allowedPorts.has(port)) return result(text('target port is not allowed (use 443 or HTTP_ALLOWED_PORTS)', true))
+            }
+            const allowPaths = String(env.HTTP_ALLOW_PATHS ?? '').split(',').map((value) => value.trim()).filter(Boolean)
+            const pathAllowed = (pathname, prefix) => pathname === prefix || (prefix.endsWith('/') ? pathname.startsWith(prefix) : pathname.startsWith(prefix + '/'))
+            if (allowPaths.length > 0 && !allowPaths.some((prefix) => pathAllowed(target.pathname, prefix))) return result(text('target path is not allowed by HTTP_ALLOW_PATHS', true))
             const host = target.hostname.toLowerCase()
-            if (host === 'localhost' || host.endsWith('.local') || /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host) || host === '::1') return result(text('private/local targets are not allowed', true))
-            const allowedHosts = new Set(String(env.HTTP_ALLOWED_HOSTS ?? '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean))
-            try { if (access.url) allowedHosts.add(new URL(access.url).hostname.toLowerCase()) } catch {}
-            if (!allowedHosts.has(host)) return result(text('target host is not allowed for this credential; set the item URL or HTTP_ALLOWED_HOSTS', true))
-            const method = String(args.method ?? 'GET').toUpperCase()
-            const headers = { ...(args.headers && typeof args.headers === 'object' ? args.headers : {}) }
-            const headerName = String(args.headerName ?? 'Authorization')
-            headers[headerName] = String(args.authPrefix ?? 'Bearer ') + access.value
-            const init = { method, headers, redirect: 'manual' }
-            if (args.body != null && !['GET', 'HEAD'].includes(method)) init.body = String(args.body)
-            const response = await fetch(target.toString(), init)
+            const normHost = host.endsWith('.') ? host.slice(0, -1).toLowerCase() : host
+            const deBracket = normHost.startsWith('[') && normHost.endsWith(']') ? normHost.slice(1, -1).toLowerCase() : normHost
+            const isAllNumericIp = (() => {
+              const parts = normHost.split('.')
+              if (parts.length >= 1 && parts.length <= 4 && parts.every((part) => /^(0x[0-9a-f]+|0[0-7]*|[0-9]+)$/i.test(part) && part.length > 0)) return true
+              return false
+            })()
+            const isMappedV6 = deBracket === '::1' || deBracket === '::' || deBracket.startsWith('::ffff:') || deBracket.startsWith('0:0:0:0:0:ffff:') || deBracket.startsWith('fe80:') || deBracket.startsWith('fc00:') || deBracket.startsWith('fd00:')
+            if (isAllNumericIp || isMappedV6) return result(text('private/local targets are not allowed', true))
+            if (normHost === 'localhost' || normHost.endsWith('.local') || /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(normHost) || normHost === '::1' || normHost === '[::1]') return result(text('private/local targets are not allowed', true))
+            const allowedHosts = new Set(String(env.HTTP_ALLOWED_HOSTS ?? '').split(',').map((value) => { const v = value.trim().toLowerCase(); return v.endsWith('.') ? v.slice(0, -1) : v }).filter(Boolean))
+            try { if (access.url) { const itemHost = new URL(access.url).hostname.toLowerCase(); allowedHosts.add(itemHost.endsWith('.') ? itemHost.slice(0, -1) : itemHost) } } catch {}
+            if (!allowedHosts.has(normHost)) return result(text('target host is not allowed for this credential; set the item URL or HTTP_ALLOWED_HOSTS', true))
+            headers[headerName] = authPrefix + access.value
+            const init = { method, headers, redirect: 'manual', signal: AbortSignal.timeout(15000) }
+            if (reqBody != null && !['GET', 'HEAD'].includes(method)) init.body = reqBody
+            let response
+            try { response = await fetch(target.toString(), init) } catch (error) { return result(text(error?.name === 'TimeoutError' ? 'upstream request timed out (15s)' : `upstream fetch failed: ${String(error?.message ?? error).slice(0, 200)}`, true)) }
             const responseBody = (await response.text()).slice(0, 8000)
-            await addAudit(env, { event: 'secret.use', agent: resolved.name, name: secretName, via: 'http_request', status: response.status })
+            await addAudit(env, { event: 'secret.use', agent: resolved.name, name: secretName, via: 'http_request', method, host: normHost, path: target.pathname.slice(0, 200), status: response.status })
             return result(text(JSON.stringify({ status: response.status, ok: response.ok, body: responseBody })))
           }
           return rpcError('unknown tool')
