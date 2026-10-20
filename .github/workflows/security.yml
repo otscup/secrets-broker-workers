@@ -39,3 +39,5 @@ jobs:
         run: npm run test:capabilities
       - name: Capability admin API (Miniflare)
         run: npm run test:capabilities-admin
+      - name: Independent review regression (Miniflare)
+        run: npm run test:review-fixes

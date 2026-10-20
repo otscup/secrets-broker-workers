@@ -116,9 +116,11 @@ const noApproval = () => ({ [ITEM]: { noApproval: true } })
   const wins = out.filter((r) => textOf(r).includes('cap-secret')).length
   const refused = out.filter((r) => /not allowed|denied|no longer valid|exhausted/i.test(textOf(r))).length
   const st = await getState()
-  const gone = !st.capabilities[KEY(AGENT, ITEM_ID) + '\u0000secret.read']
-  if (wins === 1 && refused === 19 && gone) pass('C5 maxUses=1 20-way: 1 plaintext, 19 refused, capability removed')
-  else fail('C5', 'wins=' + wins + ' refused=' + refused + ' gone=' + gone)
+  // Exhaustion keeps a tombstone (no resurrection via lazy migration).
+  const tomb = st.capabilities[KEY(AGENT, ITEM_ID) + '\u0000secret.read']
+  const tombOk = tomb && tomb.usedCount === 1 && tomb.maxUses === 1 && typeof tomb.exhaustedAt === 'string'
+  if (wins === 1 && refused === 19 && tombOk) pass('C5 maxUses=1 20-way: 1 plaintext, 19 refused, tombstone kept')
+  else fail('C5', 'wins=' + wins + ' refused=' + refused + ' tomb=' + JSON.stringify(tomb))
 }
 // C6: maxUses=3, 20 concurrent -> exactly 3 plaintext
 {

@@ -15,6 +15,7 @@ test-*.mjs
 !test-mf-admin-api.mjs
 !test-mf-capabilities.mjs
 !test-mf-capabilities-admin.mjs
+!test-mf-review-fixes.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs

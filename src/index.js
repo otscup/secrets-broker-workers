@@ -68,8 +68,13 @@ export class BrokerState extends DurableObject {
         if (cap.expiresAt != null && cap.expiresAt <= Date.now()) return { ok: false, reason: 'expired' }
         if (cap.maxUses != null && (cap.usedCount ?? 0) >= cap.maxUses) return { ok: false, reason: 'exhausted' }
         cap.usedCount = (cap.usedCount ?? 0) + 1
-        if (cap.maxUses != null && cap.usedCount >= cap.maxUses) delete store.capabilities[key]
-        else store.capabilities[key] = cap
+        // Tombstone on exhaustion: keep the record so capabilityStatus stays
+        // 'exhausted' and lazy migration can never resurrect it with a reset
+        // counter. Only an admin-issued grant may replace it.
+        if (cap.maxUses != null && cap.usedCount >= cap.maxUses) {
+          cap.exhaustedAt = new Date().toISOString()
+          store.capabilities[key] = cap
+        } else store.capabilities[key] = cap
         await txn.put('state', store)
         return { ok: true, usedCount: cap.usedCount, capabilityId: cap.id ?? key }
       })
@@ -504,14 +509,14 @@ function grantKey(agent, name) { return `${agent}\u0000${name}` }
 
 function activeGrant(state, agent, name) {
   const grant = state.grants[grantKey(agent, name)]
-  if (!grant || grant.revokedAt) return null
+  if (!grant || grant.revokedAt || grant.migratedToCapability) return null
   if (grant.expiresAt && grant.expiresAt < Date.now()) return null
   if (grant.maxReads != null && (grant.reads ?? 0) >= grant.maxReads) return null
   return grant
 }
 
-function findPending(state, agent, name) {
-  return Object.entries(state.pending).find(([, entry]) => entry.agent === agent && entry.name === name)?.[0] ?? null
+function findPending(state, agent, name, action) {
+  return Object.entries(state.pending).find(([, entry]) => entry.agent === agent && entry.name === name && (!action || !entry.action || entry.action === action))?.[0] ?? null
 }
 
 async function vaultEmail(env, db, state) {
@@ -793,24 +798,24 @@ async function decidePending(env, id, decision, source = 'web') {
     const mode = ['once', '1h', '24h', '7d', 'always'].includes(decision) ? decision : 'once'
     const expiresAt = mode === '1h' ? Date.now() + 3600e3 : mode === '24h' ? Date.now() + 86400e3 : mode === '7d' ? Date.now() + 7 * 86400e3 : 0
     state.grants[grantKey(entry.agent, entry.name)] = { agent: entry.agent, name: entry.name, mode, createdAt: nowIso(), expiresAt, reads: 0, maxReads: mode === 'once' ? 1 : null, revokedAt: null, account: entry.account ?? '' }
-    // Temporary capability for secret.read, linked to this approval. The
-    // legacy grant above is kept as a mirror; the capability is authoritative
-    // for counting (see /capability/consume).
+    // Temporary capability bound to the pending entry's action. Approving
+    // secret.use never mints secret.read and vice versa.
+    const entryAction = entry.action === 'secret.use' ? 'secret.use' : 'secret.read'
     const itemId = state.itemIds?.[entry.name] ?? ''
     if (itemId) {
-      const key = capabilityKey(entry.agent, itemId, 'secret.read')
+      const key = capabilityKey(entry.agent, itemId, entryAction)
       const ttl = APPROVAL_DURATIONS[mode]
       state.capabilities ??= {}
       state.capabilities[key] = {
         id: key, subjectId: entry.agent, accountId: entry.account ?? '', itemId,
-        itemName: entry.name, action: 'secret.read', mode: 'temporary',
+        itemName: entry.name, action: entryAction, mode: 'temporary',
         createdAt: nowIso(), createdBy: 'approval:' + id,
         expiresAt: ttl == null || ttl === 0 ? null : Date.now() + ttl,
         maxUses: mode === 'once' ? 1 : null, usedCount: 0,
         revokedAt: null, revokedBy: null, approvalId: id, policyVersion: 1,
       }
     }
-    outcome = { agent: entry.agent, name: entry.name, mode }
+    outcome = { agent: entry.agent, name: entry.name, mode, action: entryAction }
     return state
   })
   if (!outcome) return null
@@ -898,6 +903,10 @@ function migrateLegacyCapability(state, { subjectId, accountId, itemId, itemName
   const oldGrant = state.grants?.[`${subjectId}\u0000${itemName}`] ?? null
   const oldAction = state.actionGrants?.[actionGrantKey(subjectId, itemId)] ?? null
   const actionAllowed = (oldAction?.actions ?? []).includes(action)
+  // secret.use is NEVER synthesized from a legacy grant: it requires an
+  // explicit admin-issued capability (action + usePolicy). Legacy grants
+  // migrate to secret.read only; allow/groups/noApproval never imply use.
+  if (action === 'secret.use' && !state.capabilities?.[key]) return null
   if (!oldGrant && !(actionAllowed && noApproval)) return null
   // Validate the legacy source before migrating: revoked/expired/exhausted
   // legacy grants must NOT resurrect as capabilities.
@@ -919,6 +928,11 @@ function migrateLegacyCapability(state, { subjectId, accountId, itemId, itemName
   }
   state.capabilities ??= {}
   state.capabilities[key] = cap
+  // Retire the legacy mirror: the capability owns counting from here on.
+  // activeGrant() ignores migrated grants, so the old counter can never
+  // become authoritative again.
+  const legacyKey = `${subjectId}\u0000${itemName}`
+  if (state.grants?.[legacyKey]) state.grants[legacyKey].migratedToCapability = key
   return cap
 }
 
@@ -1032,8 +1046,11 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
       else if (!targetAllowed(policy, target)) { ok = false; reason = 'target-denied' }
       else { ok = true; reason = 'capability' }
     }
-  } else if (legacyDecision) {
-    // Compatibility: legacy agents keep secret.read only.
+  } else if (legacyDecision && !cap) {
+    // Compatibility: legacy agents keep secret.read ONLY when no capability
+    // exists for this (subject, item, action). Once a capability exists —
+    // valid, expired, revoked or exhausted — its verdict is final and the
+    // legacy path must not resurrect access.
     ok = true
     reason = 'legacy-scope'
   }
@@ -1108,11 +1125,11 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   // carries mode/approvalId; temporary grants always come from an approval.
   const legacyGrant = activeGrant(state, agentName, name)
   if (!policy?.noApproval && !decision.capability && !legacyGrant) {
-    let pendingId = findPending(state, agentName, name)
+    let pendingId = findPending(state, agentName, name, action)
     if (!pendingId) {
       pendingId = crypto.randomUUID()
-      const entry = { id: pendingId, agent: agentName, name, account: session.email, createdAt: nowIso() }
-      await updateState(env, (next) => { next.pending[pendingId] = entry; return next })
+      const entry = { id: pendingId, agent: agentName, name, account: session.email, action, createdAt: nowIso() }
+      await updateState(env, (next) => { next.pending[pendingId] = entry; if (itemId) { next.itemIds ??= {}; next.itemIds[name] = itemId } return next })
       await addAudit(env, { event: 'request.create', agent: agentName, name })
       await notifyPending(env, origin, entry, ctx)
     }
@@ -1121,7 +1138,9 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   // Unified atomic consume: capability is the sole counter. Checks passed
   // above; consume now, before decrypt/fetch, inside the DO transaction.
   // Failed upstream calls still count (no infinite failure-retry bypass).
-  if (consumeRead && decision.capabilityKey && !decision.legacy) {
+  // Whenever a capability exists it is the sole counter — including for
+  // legacy agents. The legacy path never skips consumption.
+  if (consumeRead && decision.capability) {
     const consumed = await consumeCapability(env, decision.capabilityKey, session.email, action)
     if (!consumed?.ok) return { status: 'forbidden', error: `capability no longer valid: ${consumed?.reason ?? 'unknown'}` }
   } else if (legacyGrant && consumeRead) {
@@ -1702,12 +1721,14 @@ export default {
       const parsedTerms = {}
       for (const action of actions) {
         const t = (terms[action] && typeof terms[action] === 'object' ? terms[action] : {})
-        const duration = ['1d', '7d', '30d', 'permanent'].includes(t.duration) ? t.duration : 'permanent'
+        if (t.duration != null && !['1d', '7d', '30d', 'permanent'].includes(t.duration)) return fail('duration must be 1d, 7d, 30d or permanent', 400)
+        const duration = t.duration ?? 'permanent'
         let maxUses = null
         if (t.maxUses != null && t.maxUses !== 'unlimited') {
-          const n = Math.floor(Number(t.maxUses))
-          if (!Number.isFinite(n) || n < 1 || n > 1000000) return fail('maxUses must be a positive integer or "unlimited"', 400)
-          maxUses = n
+          // Strict integer: reject floats, strings and out-of-range values
+          // instead of silently flooring them into a different grant.
+          if (typeof t.maxUses !== 'number' || !Number.isInteger(t.maxUses) || t.maxUses < 1 || t.maxUses > 1000000) return fail('maxUses must be a positive integer or "unlimited"', 400)
+          maxUses = t.maxUses
         }
         parsedTerms[action] = { duration, maxUses }
       }
@@ -1777,6 +1798,9 @@ export default {
     if (url.pathname === '/api/migration-report' && request.method === 'GET') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
+      // Locked vault => no account scope => refuse rather than leak a global
+      // cross-account report.
+      if (!session) return fail('locked', 423)
       const state = await loadState(env)
       const account = (session?.email ?? '').toLowerCase()
       const report = { account: session?.email ?? '', agents: [], capabilities: [], legacyGrants: [] }
@@ -1812,7 +1836,9 @@ export default {
       let error = ''
       await updateState(env, (state) => {
         if (state.agents[name]) { error = 'agent already exists'; return state }
-        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), note: String(body.note ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], allowAll: body.allowAll === true, write: body.write === true, account, createdAt: nowIso() }
+        // New agents are never legacy: only pre-existing records without an
+        // explicit flag are treated as legacy by the loadState default.
+        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), note: String(body.note ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], allowAll: body.allowAll === true, write: body.write === true, legacy: false, account, createdAt: nowIso() }
         return state
       })
       if (error) return fail(error, 409)
@@ -1844,6 +1870,14 @@ export default {
         delete state.agents[name]
         for (const key of Object.keys(state.grants)) if (state.grants[key].agent === name) delete state.grants[key]
         for (const [id, entry] of Object.entries(state.pending)) if (entry.agent === name) delete state.pending[id]
+        // Revoke (not delete) capabilities + drop actionGrants so a later
+        // same-name recreate cannot silently inherit the old subject's grants.
+        const now = new Date().toISOString()
+        for (const cap of Object.values(state.capabilities ?? {})) {
+          if (cap.subjectId === name && !cap.revokedAt) { cap.revokedAt = now; cap.revokedBy = 'agent-delete' }
+        }
+        for (const key of Object.keys(state.actionGrants ?? {})) if (state.actionGrants[key].subjectId === name) delete state.actionGrants[key]
+        for (const [hash, token] of Object.entries(state.oauthTokens ?? {})) if (token.agent === name) delete state.oauthTokens[hash]
         return state
       })
       await addAudit(env, { event: 'agent.delete', agent: name })
@@ -1894,6 +1928,14 @@ export default {
           grant.subjectId = newName
           grant.id = actionGrantKey(newName, grant.itemId)
           state.actionGrants[actionGrantKey(newName, grant.itemId)] = grant
+        }
+        // capabilities are keyed by subjectId + itemId + action; same carry.
+        for (const [key, cap] of Object.entries(state.capabilities ?? {})) {
+          if (cap.subjectId !== name) continue
+          delete state.capabilities[key]
+          cap.subjectId = newName
+          cap.id = capabilityKey(newName, cap.itemId, cap.action)
+          state.capabilities[capabilityKey(newName, cap.itemId, cap.action)] = cap
         }
         return state
       })
@@ -2001,8 +2043,18 @@ export default {
             } catch (error) { errors.push({ agent: agentName, item, error: String(error.message ?? error) }) }
             continue
           }
+          // seconds/maxReads are honored (not ignored): same-account shares
+          // write both the legacy mirror and a preapproved read capability.
+          const shareExpiresAt = seconds > 0 ? Date.now() + seconds * 1000 : null
+          const shareMaxUses = maxReads
+          const shareItemId = state.itemIds?.[item] ?? ''
           await updateState(env, (next) => {
-            next.grants[grantKey(agentName, item)] = { agent: agentName, name: item, mode: 'share', createdAt: nowIso(), expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, noApproval: true, account: session.email }
+            next.grants[grantKey(agentName, item)] = { agent: agentName, name: item, mode: 'share', createdAt: nowIso(), expiresAt: shareExpiresAt ?? 0, reads: 0, maxReads: shareMaxUses, revokedAt: null, noApproval: true, account: session.email }
+            if (shareItemId) {
+              next.capabilities ??= {}
+              const ckey = capabilityKey(agentName, shareItemId, 'secret.read')
+              next.capabilities[ckey] = { id: ckey, subjectId: agentName, accountId: session.email, itemId: shareItemId, itemName: item, action: 'secret.read', mode: 'preapproved', createdAt: nowIso(), createdBy: 'admin:' + session.email, expiresAt: shareExpiresAt, maxUses: shareMaxUses, usedCount: 0, revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1 }
+            }
             return next
           })
           await addAudit(env, { event: 'grant.share', agent: agentName, name: item, account: session.email })
@@ -2046,8 +2098,15 @@ export default {
           } catch (error) { errors.push({ agent: agentName, error: String(error.message ?? error) }) }
           continue
         }
+        const oneExpiresAt = seconds > 0 ? Date.now() + seconds * 1000 : null
+        const oneItemId = state.itemIds?.[name] ?? ''
         await updateState(env, (next) => {
-          next.grants[grantKey(agentName, name)] = { agent: agentName, name, mode: 'share', createdAt: nowIso(), expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, noApproval: true, account: session.email }
+          next.grants[grantKey(agentName, name)] = { agent: agentName, name, mode: 'share', createdAt: nowIso(), expiresAt: oneExpiresAt ?? 0, reads: 0, maxReads, revokedAt: null, noApproval: true, account: session.email }
+          if (oneItemId) {
+            next.capabilities ??= {}
+            const ckey = capabilityKey(agentName, oneItemId, 'secret.read')
+            next.capabilities[ckey] = { id: ckey, subjectId: agentName, accountId: session.email, itemId: oneItemId, itemName: name, action: 'secret.read', mode: 'preapproved', createdAt: nowIso(), createdBy: 'admin:' + session.email, expiresAt: oneExpiresAt, maxUses, usedCount: 0, revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1 }
+          }
           return next
         })
         await addAudit(env, { event: 'grant.share', name, agents: [agentName], account: session.email })
@@ -2373,7 +2432,7 @@ export default {
         delete next.oauthCodes[code]
         next.oauthTokens[hash] = { hash, agent: agentName, clientId: entry.clientId, account, createdAt: nowIso(), expiresAt }
         next.oauthAgentProfiles ??= {}
-        if (!next.oauthAgentProfiles[agentName]) next.oauthAgentProfiles[agentName] = { alias: next.oauthClients?.[entry.clientId]?.clientName ?? '', note: '', allow: [], groups: [], allowAll: false, write: false }
+        if (!next.oauthAgentProfiles[agentName]) next.oauthAgentProfiles[agentName] = { alias: next.oauthClients?.[entry.clientId]?.clientName ?? '', note: '', allow: [], groups: [], allowAll: false, write: false, legacy: false }
         return next
       })
       await addAudit(env, { event: 'oauth.token-issue', agent: agentName, clientId: entry.clientId })
