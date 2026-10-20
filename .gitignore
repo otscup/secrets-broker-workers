@@ -35,6 +35,7 @@ test-*.mjs
 !test-mf-scheduled.mjs
 !test-mf-geo-storage.mjs
 !test-mf-geo-capture.mjs
+!test-mf-globe-ui.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs

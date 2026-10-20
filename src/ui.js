@@ -64,6 +64,11 @@ button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;
 .notice-bar[data-level="notice"]{background:#eef4ff;border-color:#cddcf7;color:#2b4f8a}
 .notice-bar[data-level="notice"] .notice-dot{background:#3f6ec4}
 .notice-bar .notice-more{flex:0 0 auto;font-size:12px;opacity:.75}
+.globe-box{position:relative;height:320px;margin-top:12px;border-radius:12px;overflow:hidden;background:radial-gradient(circle at 50% 45%,#0d2233,#081420)}
+.globe-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8ea4bd;font-size:13px}
+.globe-box canvas{display:block;max-width:100%}
+@media(max-width:720px){.globe-box{height:220px}}
+@media (prefers-reduced-motion: reduce){}#globe-card .globe-box{scroll-behavior:auto}}
 .agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}
 .agent-stat{background:var(--btn);border-radius:12px;padding:14px}
 .agent-stat b{display:block;font-size:22px;line-height:1.2}
@@ -138,6 +143,18 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div class="toolbar"><div class="seg" id="range-row"><button data-range="24h" class="on">24 小时</button><button data-range="7d">7 天</button><button data-range="30d">30 天</button></div><span class="spacer"></span><span class="hint" id="updated"></span></div>
     <div id="notice-bar" class="notice-bar hidden" role="button" tabindex="0" title="点击查看全部通知"></div>
     <div id="kpis" class="kpis"></div>
+    <div class="card" id="globe-card">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div><h2 style="margin:0">Agent Live Globe</h2><div class="hint" style="margin-top:4px">基于真实访问记录的 IP 估算位置，不代表实际物理位置。</div></div>
+        <div class="row" style="flex:0 0 auto;gap:8px">
+          <div class="seg" id="globe-range"><button data-grange="1h">1 小时</button><button data-grange="24h" class="on">24 小时</button><button data-grange="7d">7 天</button></div>
+          <button class="small" id="globe-pause" title="暂停动画">暂停</button>
+          <button class="small" id="globe-hide" title="隐藏地球">隐藏</button>
+        </div>
+      </div>
+      <div id="globe-box" class="globe-box"><div class="globe-empty" id="globe-empty">暂无访问记录</div></div>
+      <div class="hint" id="globe-status" style="margin-top:8px"></div>
+    </div>
     <div class="grid2">
       <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box"></div></div>
       <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
@@ -457,7 +474,8 @@ async function checkPendingNotifications() {
   } catch {}
 }
 function startPendingPolling() { updateBrowserNotifyStatus(); if (pendingTimer) return; checkPendingNotifications(); pendingTimer = setInterval(checkPendingNotifications, 15000) }
-async function loadState() { try { app.data = await api('/api/state'); renderNoticeBar(); renderAgents(); renderPending(); renderGrants(); renderOauthClients(); renderTransfers(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
+let globeBooted = false
+async function loadState() { try { app.data = await api('/api/state'); renderNoticeBar(); if (!globeBooted) { globeBooted = true; try { initGlobe() } catch {} } renderAgents(); renderPending(); renderGrants(); renderOauthClients(); renderTransfers(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
 async function loadItems() { status('item-status', '加载中…'); try { const result = await api('/api/items'); app.items = result.items || []; renderItems(); status('item-status', '共 ' + app.items.length + ' 个条目'); if (result.completedTransfers?.length) { toast('已自动复制：' + result.completedTransfers.join('、')); await loadState() } } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } else status('item-status', error.message, 'error') } }
 async function loadStats() { try { app.stats = await api('/api/stats?range=' + app.range); renderStats() } catch {} }
 async function loadSettings() {
@@ -594,6 +612,109 @@ function expiryLabel(expiresAt) {
   const hours = Math.floor((left % 86400e3) / 3600e3)
   const text = days > 0 ? days + ' 天' : hours + ' 小时'
   return left < 86400e3 ? '<span style="color:var(--danger)">' + text + '</span>' : text
+}
+// ── Agent Live Globe (P3/P4) ────────────────────────────────────────────────
+// Loaded lazily and entirely optional: any failure hides the globe and leaves
+// the rest of the console untouched.
+const globe = { instance: null, loading: false, failed: false, range: '24h', cursor: 0, events: [], timer: null, paused: false, hidden: false, reduceMotion: false }
+function globeVisible() {
+  return !globe.hidden && !document.hidden && !globe.paused
+}
+function stopGlobePolling() {
+  if (globe.timer) { clearInterval(globe.timer); globe.timer = null }
+}
+async function fetchGlobeEvents(reset) {
+  const since = reset ? 0 : globe.cursor
+  const response = await api('/api/geo/events?range=' + encodeURIComponent(globe.range) + '&sinceSeq=' + since + '&limit=300')
+  if (!response.enabled) return { disabled: true, events: [] }
+  if (reset) globe.events = []
+  // De-duplicate by id so a retried poll cannot double-plot.
+  const seen = new Set(globe.events.map((e) => e.id))
+  for (const ev of response.events || []) if (!seen.has(ev.id)) { globe.events.push(ev); seen.add(ev.id) }
+  globe.cursor = Math.max(globe.cursor, Number(response.cursor || 0))
+  return { disabled: false, events: globe.events }
+}
+function renderGlobeStatus(count) {
+  const box = $('globe-status')
+  if (!box) return
+  box.textContent = count ? '共 ' + count + ' 条真实访问记录 · 每 5 秒增量更新' : '暂无真实访问记录'
+}
+async function ensureGlobe() {
+  if (globe.instance || globe.loading || globe.failed || globe.hidden) return globe.instance
+  globe.loading = true
+  try {
+    const mod = await import('/globe.js')
+    globe.instance = mod.mountGlobe($('globe-box'), { reduceMotion: globe.reduceMotion })
+    if (globe.paused) globe.instance.setPaused(true)
+    return globe.instance
+  } catch (error) {
+    // Never let the globe break the console.
+    globe.failed = true
+    const box = $('globe-box')
+    if (box) box.innerHTML = '<div class="globe-empty">地球组件不可用（不影响其他功能）</div>'
+    return null
+  } finally { globe.loading = false }
+}
+async function refreshGlobe(reset) {
+  if (globe.hidden || globe.failed) return
+  try {
+    const result = await fetchGlobeEvents(reset)
+    if (result.disabled) {
+      const box = $('globe-box')
+      if (box) box.innerHTML = '<div class="globe-empty">全球态势未启用</div>'
+      const st = $('globe-status'); if (st) st.textContent = '功能开关 GEO_ENABLED 未开启'
+      stopGlobePolling()
+      return
+    }
+    const events = result.events || []
+    const empty = $('globe-empty')
+    if (empty) empty.style.display = events.length ? 'none' : 'flex'
+    renderGlobeStatus(events.length)
+    if (!events.length) return
+    const instance = await ensureGlobe()
+    if (!instance) return
+    instance.setPoints(events, 0, 0)
+  } catch { /* polling is best-effort */ }
+}
+function syncGlobePolling() {
+  stopGlobePolling()
+  if (!globeVisible() || globe.failed) return
+  refreshGlobe(false)
+  // 5s incremental polling, paused whenever the page or globe is hidden.
+  globe.timer = setInterval(() => { if (globeVisible()) refreshGlobe(false) }, 5000)
+}
+function initGlobe() {
+  if (!$('globe-box')) return
+  globe.reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  if (globe.reduceMotion) { globe.paused = true; const b = $('globe-pause'); if (b) b.textContent = '继续' }
+  const rangeRow = $('globe-range')
+  if (rangeRow) rangeRow.onclick = (event) => {
+    const button = event.target.closest('[data-grange]')
+    if (!button) return
+    rangeRow.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === button))
+    globe.range = button.dataset.grange
+    globe.cursor = 0
+    refreshGlobe(true)
+  }
+  const pauseBtn = $('globe-pause')
+  if (pauseBtn) pauseBtn.onclick = () => {
+    globe.paused = !globe.paused
+    pauseBtn.textContent = globe.paused ? '继续' : '暂停'
+    if (globe.instance) globe.instance.setPaused(globe.paused)
+    syncGlobePolling()
+  }
+  const hideBtn = $('globe-hide')
+  if (hideBtn) hideBtn.onclick = () => {
+    globe.hidden = !globe.hidden
+    const box = $('globe-box'); const st = $('globe-status')
+    if (box) box.style.display = globe.hidden ? 'none' : ''
+    if (st) st.style.display = globe.hidden ? 'none' : ''
+    hideBtn.textContent = globe.hidden ? '显示' : '隐藏'
+    syncGlobePolling()
+  }
+  document.addEventListener('visibilitychange', syncGlobePolling)
+  refreshGlobe(true)
+  syncGlobePolling()
 }
 // Home banner: pending approvals win, otherwise show authorization reminders.
 // A single line scrolls through every outstanding item; clicking expands the

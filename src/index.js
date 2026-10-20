@@ -1908,6 +1908,17 @@ export default {
       const outcome = await decidePending(env, String(body.id), String(body.decision ?? 'once'), 'dsh-plugin')
       return json({ ok: true, outcome })
     }
+    // Lazily loaded 3D globe island. Served as a static asset so it never
+    // inflates the Worker script itself; same-origin keeps CSP at 'self'.
+    if (url.pathname === '/globe.js') {
+      const asset = env.ASSETS && typeof env.ASSETS.fetch === 'function' ? await env.ASSETS.fetch(new Request(new URL('/globe.js', url.origin), request)) : null
+      if (!asset || !asset.ok) return fail('globe asset unavailable', 404)
+      const headers = new Headers(asset.headers)
+      headers.set('content-type', 'text/javascript; charset=utf-8')
+      headers.set('cache-control', 'public, max-age=86400, immutable')
+      headers.set('x-content-type-options', 'nosniff')
+      return new Response(asset.body, { status: 200, headers })
+    }
     if (url.pathname === '/api/status') {
       return json({ ok: true, name: 'secrets-broker-workers', bindings: { d1: Boolean(env.NODEWARDEN_DB), durableObject: Boolean(env.BROKER_STATE) } })
     }
