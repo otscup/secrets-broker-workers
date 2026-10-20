@@ -145,7 +145,13 @@ export class BrokerState extends DurableObject {
           if (legacy.migratedToCapability) return { ok: false, reason: 'legacy-already-migrated' }
           if (legacy.expiresAt && legacy.expiresAt < Date.now()) return { ok: false, reason: 'legacy-expired' }
           if (legacy.maxReads != null && (legacy.reads ?? 0) >= legacy.maxReads) return { ok: false, reason: 'legacy-exhausted' }
-          if (accountId && legacy.account && String(legacy.account).toLowerCase() !== accountId.toLowerCase()) return { ok: false, reason: 'legacy-cross-account' }
+          // Same rule for grant-sourced migrations: the grant must name an
+          // account and it must match the caller's, otherwise the derived
+          // capability would be account-agnostic.
+          const legacyAccount = typeof legacy.account === 'string' ? legacy.account.trim() : ''
+          if (!isWellFormedAccountId(legacyAccount)) return { ok: false, reason: 'legacy-account-missing' }
+          if (!isWellFormedAccountId(accountId)) return { ok: false, reason: 'caller-account-missing' }
+          if (legacyAccount.toLowerCase() !== accountId.toLowerCase()) return { ok: false, reason: 'legacy-cross-account' }
           source = 'legacy-grant'
         } else {
           // No legacy grant: a noApproval policy alone is NOT sufficient
@@ -156,7 +162,14 @@ export class BrokerState extends DurableObject {
           if (!grantEntry) return { ok: false, reason: 'no-action-grant' }
           if (!(grantEntry.actions ?? []).includes('secret.read')) return { ok: false, reason: 'action-grant-mismatch' }
           if (grantEntry.subjectId !== subjectId || grantEntry.itemId !== itemId) return { ok: false, reason: 'action-grant-subject-mismatch' }
-          if (accountId && grantEntry.accountId && String(grantEntry.accountId).toLowerCase() !== accountId.toLowerCase()) return { ok: false, reason: 'action-grant-cross-account' }
+          // The actionGrant must carry an explicit, well-formed accountId and
+          // the caller's vault account must match it exactly. An absent/blank
+          // account would otherwise mint an account-agnostic capability that
+          // the consume gate treats as "no account restriction".
+          const grantAccount = typeof grantEntry.accountId === 'string' ? grantEntry.accountId.trim() : ''
+          if (!isWellFormedAccountId(grantAccount)) return { ok: false, reason: 'action-grant-account-missing' }
+          if (!isWellFormedAccountId(accountId)) return { ok: false, reason: 'caller-account-missing' }
+          if (grantAccount.toLowerCase() !== accountId.toLowerCase()) return { ok: false, reason: 'action-grant-cross-account' }
           source = 'no-approval-policy'
         }
 
@@ -187,7 +200,9 @@ export class BrokerState extends DurableObject {
           approvalId: null,
           policyVersion: 1,
         }
-        if (derived.accountId && accountId && derived.accountId.toLowerCase() !== accountId.toLowerCase()) return { ok: false, reason: 'derived-cross-account' }
+        // Final guard: never persist a capability without a concrete account.
+        if (!isWellFormedAccountId(derived.accountId)) return { ok: false, reason: 'derived-account-missing' }
+        if (derived.accountId.toLowerCase() !== accountId.toLowerCase()) return { ok: false, reason: 'derived-cross-account' }
         if (source === 'legacy-grant') {
           legacy.migratedToCapability = key
           // Record the immutable identity binding the first time a migration is
@@ -616,7 +631,11 @@ async function resolveAgent(request, env) {
   const state = await loadState(env)
   const hash = await sha256Base64(token)
   for (const [name, agent] of Object.entries(state.agents)) {
-    if (constantTimeEqual(encoder.encode(agent.hash), encoder.encode(hash))) return { name, agent, state }
+    if (!constantTimeEqual(encoder.encode(agent.hash), encoder.encode(hash))) continue
+    // Static agents may carry an authorization window (set via
+    // /api/agents/extend). expiresAt null/undefined = permanent.
+    if (typeof agent.expiresAt === 'number' && agent.expiresAt < Date.now()) return null
+    return { name, agent, state }
   }
   for (const tokenEntry of Object.values(state.oauthTokens ?? {})) {
     if (tokenEntry.expiresAt && tokenEntry.expiresAt < Date.now()) continue
@@ -885,7 +904,7 @@ async function createCipher(env, db, session, fields, folderNameOverride) {
 }
 
 function publicState(state) {
-  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], allowAll: agent.allowAll === true, write: agent.write === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '' }))
+  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], allowAll: agent.allowAll === true, write: agent.write === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '', expiresAt: typeof agent.expiresAt === 'number' ? agent.expiresAt : null }))
   const seen = new Set(agents.map((agent) => agent.name))
   const now = Date.now()
   for (const token of Object.values(state.oauthTokens ?? {})) {
@@ -893,7 +912,7 @@ function publicState(state) {
     if (token.expiresAt && token.expiresAt <= now) continue
     seen.add(token.agent)
     const profile = state.oauthAgentProfiles?.[token.agent] ?? {}
-    agents.push({ name: token.agent, alias: profile.alias ?? '', note: profile.note ?? '', allow: profile.allow ?? [], groups: profile.groups ?? [], allowAll: profile.allowAll === true, write: profile.write === true, account: token.account ?? '', oauth: true, createdAt: token.createdAt ?? '' })
+    agents.push({ name: token.agent, alias: profile.alias ?? '', note: profile.note ?? '', allow: profile.allow ?? [], groups: profile.groups ?? [], allowAll: profile.allowAll === true, write: profile.write === true, account: token.account ?? '', oauth: true, createdAt: token.createdAt ?? '', expiresAt: typeof token.expiresAt === 'number' ? token.expiresAt : null })
   }
   return {
     agents,
@@ -935,6 +954,14 @@ async function decidePending(env, id, decision, source = 'web') {
     // secret.use never mints secret.read and vice versa.
     const entryAction = entry.action === 'secret.use' ? 'secret.use' : 'secret.read'
     const itemId = entry.itemId || state.itemIds?.[entry.name] || ''
+    // A capability must never be issued without a concrete account: the consume
+    // gate treats a blank accountId as "no account restriction". Refuse instead
+    // of minting an account-agnostic grant.
+    const entryAccount = typeof entry.account === 'string' ? entry.account.trim() : ''
+    if (!isWellFormedAccountId(entryAccount)) {
+      outcome = { agent: entry.agent, name: entry.name, mode, action: entryAction, error: 'account-missing' }
+      return state
+    }
     if (itemId) {
       const key = capabilityKey(entry.agent, itemId, entryAction)
       const ttl = APPROVAL_DURATIONS[mode]
@@ -951,7 +978,7 @@ async function decidePending(env, id, decision, source = 'web') {
         }
       }
       state.capabilities[key] = {
-        id: key, subjectId: entry.agent, accountId: entry.account ?? '', itemId,
+        id: key, subjectId: entry.agent, accountId: entryAccount, itemId,
         itemName: entry.name, action: entryAction, mode: 'temporary',
         createdAt: nowIso(), createdBy: 'approval:' + id,
         expiresAt: ttl == null || ttl === 0 ? null : Date.now() + ttl,
@@ -1129,6 +1156,14 @@ const CAPABILITY_DURATIONS = { '1d': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 864
 const CAPABILITY_MODES = new Set(['preapproved', 'temporary'])
 
 function capabilityKey(subjectId, itemId, action) { return `${subjectId}\u0000${itemId}\u0000${action}` }
+
+// A capability account must be a concrete vault identity. Blank, whitespace or
+// obviously malformed values are rejected so no account-agnostic capability can
+// ever be minted (the consume gate skips the account check when it is empty).
+const ACCOUNT_ID_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+function isWellFormedAccountId(value) {
+  return typeof value === 'string' && ACCOUNT_ID_PATTERN.test(value.trim())
+}
 
 export function capabilityStatus(cap, now = Date.now()) {
   if (!cap) return 'missing'
@@ -1883,6 +1918,10 @@ export default {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
       if (!session) return fail('locked', 423)
+      // Capabilities bind to a concrete vault account; never issue with a blank
+      // scope (the consume gate would treat it as account-agnostic).
+      const adminAccount = String(session.email ?? '').trim()
+      if (!isWellFormedAccountId(adminAccount)) return fail('account scope unavailable', 403)
       const body = await request.json().catch(() => ({}))
       const agentName = String(body.agent ?? '').trim()
       const itemName = String(body.item ?? '').trim()
@@ -1912,15 +1951,15 @@ export default {
       await updateState(env, (state) => {
         state.actionGrants ??= {}
         const key = actionGrantKey(agentName, itemId)
-        state.actionGrants[key] = { id: key, subjectId: agentName, accountId: session.email, itemId, itemName, actions, legacy: false, createdAt: nowIso() }
+        state.actionGrants[key] = { id: key, subjectId: agentName, accountId: adminAccount, itemId, itemName, actions, legacy: false, createdAt: nowIso() }
         state.capabilities ??= {}
         const now = Date.now()
         for (const action of actions) {
           const { duration, maxUses } = parsedTerms[action]
           const ckey = capabilityKey(agentName, itemId, action)
           state.capabilities[ckey] = {
-            id: ckey, subjectId: agentName, accountId: session.email, itemId, itemName, action,
-            mode: 'preapproved', createdAt: new Date(now).toISOString(), createdBy: 'admin:' + session.email,
+            id: ckey, subjectId: agentName, accountId: adminAccount, itemId, itemName, action,
+            mode: 'preapproved', createdAt: new Date(now).toISOString(), createdBy: 'admin:' + adminAccount,
             expiresAt: CAPABILITY_DURATIONS[duration] == null ? null : now + CAPABILITY_DURATIONS[duration],
             maxUses, usedCount: 0, revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1,
           }
@@ -2154,6 +2193,48 @@ export default {
       if (!found) return fail('agent not found', 404)
       return json({ ok: true })
     }
+    // Manually extend an Agent's authorization window. Works for both static
+    // Agents (state.agents[].expiresAt) and OAuth-connected Agents (every live
+    // oauthTokens entry for that subject). Admin session required.
+    if (url.pathname === '/api/agents/extend' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '').trim()
+      if (!name) return fail('name required', 400)
+      // duration: number of days, or 'permanent' for no expiry.
+      const raw = body.days ?? body.duration
+      let expiresAt = null
+      if (raw !== 'permanent') {
+        const days = Number(raw)
+        if (!Number.isFinite(days) || days <= 0 || days > 3650) return fail('days must be 1-3650 or "permanent"', 400)
+        const current = Date.now()
+        expiresAt = current + Math.floor(days * 86400e3)
+      }
+      let found = false
+      let extendedTokens = 0
+      await updateState(env, (state) => {
+        const agent = state.agents?.[name]
+        if (agent) {
+          if (agent.account && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) return state
+          agent.expiresAt = expiresAt === null ? null : expiresAt
+          found = true
+        }
+        // OAuth subjects keep their window on the token records.
+        for (const token of Object.values(state.oauthTokens ?? {})) {
+          if (token.agent !== name) continue
+          if (token.account && String(token.account).toLowerCase() !== String(session.email).toLowerCase()) continue
+          token.expiresAt = expiresAt
+          extendedTokens += 1
+          found = true
+        }
+        return state
+      })
+      if (!found) return fail('agent not found', 404)
+      await addAudit(env, { event: 'agent.extend', agent: name, expiresAt, days: raw === 'permanent' ? 'permanent' : Number(raw), tokens: extendedTokens })
+      return json({ ok: true, name, expiresAt, permanent: expiresAt === null, oauthTokens: extendedTokens })
+    }
     if (url.pathname === '/api/agents/token' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const body = await request.json().catch(() => ({}))
@@ -2177,30 +2258,63 @@ export default {
     }
     if (url.pathname === '/api/grants/revoke' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      // An unlocked vault is the only trustworthy source of the account scope.
+      if (!session) return fail('locked', 423)
       const body = await request.json().catch(() => ({}))
       const agentName = String(body.agent ?? '')
       const itemName = String(body.name ?? '')
+      if (!agentName || !itemName) return fail('agent and name required', 400)
+      const sessionAccount = String(session.email ?? '').trim()
+      if (!isWellFormedAccountId(sessionAccount)) return fail('account scope unavailable', 403)
       const key = grantKey(agentName, itemName)
       let found = false
+      let skippedOtherAccount = 0
       const revokedCapabilities = []
+      let grantItemId = ''
       await updateState(env, (state) => {
-        if (state.grants[key]) { state.grants[key].revokedAt = nowIso(); found = true }
-        // Revocation must also cover capabilities already migrated from this
-        // grant — otherwise revoking the legacy record leaves a live grant the
-        // broker keeps serving. Match by subject+name and account.
+        const grant = state.grants?.[key] ?? null
+        if (grant) {
+          // Refuse to touch a grant that belongs to a different vault account
+          // instead of guessing: the caller cannot revoke across accounts.
+          const grantAccount = typeof grant.account === 'string' ? grant.account.trim() : ''
+          if (isWellFormedAccountId(grantAccount) && grantAccount.toLowerCase() !== sessionAccount.toLowerCase()) {
+            skippedOtherAccount += 1
+          } else if (!isWellFormedAccountId(grantAccount)) {
+            // Legacy grant with no trustworthy account: refusing is the safe
+            // action (we cannot prove it belongs to this vault).
+            skippedOtherAccount += 1
+          } else {
+            grant.revokedAt = nowIso()
+            found = true
+            if (typeof grant.itemId === 'string') grantItemId = grant.itemId
+          }
+        }
+        // Revoke capabilities migrated from this grant. Matching is by the
+        // trusted session account plus a stable identity: the grant's itemId
+        // when present, otherwise the recorded immutable name->itemId binding.
+        // Subject+name alone would revoke a same-named item owned by another
+        // account.
         const now = nowIso()
+        const binding = state.legacyItemBindings?.[`${agentName}\u0000${itemName}`] ?? null
+        const boundItemId = grantItemId || (binding && typeof binding.itemId === 'string' ? binding.itemId : '')
         for (const [ckey, cap] of Object.entries(state.capabilities ?? {})) {
           if (!cap || cap.revokedAt) continue
           if (cap.subjectId !== agentName) continue
           if (cap.itemName !== itemName) continue
+          if (String(cap.accountId ?? '').toLowerCase() !== sessionAccount.toLowerCase()) continue
+          if (boundItemId && cap.itemId !== boundItemId) continue
           cap.revokedAt = now
           cap.revokedBy = 'admin:grant-revoke'
           revokedCapabilities.push(ckey)
         }
         return state
       })
-      if (!found && !revokedCapabilities.length) return fail('grant not found', 404)
-      await addAudit(env, { event: 'grant.revoke', agent: agentName, name: itemName, source: 'web', capabilities: revokedCapabilities.length })
+      if (!found && !revokedCapabilities.length) {
+        if (skippedOtherAccount) return fail('grant belongs to another account', 403)
+        return fail('grant not found', 404)
+      }
+      await addAudit(env, { event: 'grant.revoke', agent: agentName, name: itemName, account: sessionAccount, source: 'web', capabilities: revokedCapabilities.length })
       return json({ ok: true, revokedCapabilities: revokedCapabilities.length })
     }
     if (url.pathname === '/api/grants/sync' && request.method === 'POST') {

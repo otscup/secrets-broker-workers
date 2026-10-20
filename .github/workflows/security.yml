@@ -49,3 +49,7 @@ jobs:
         run: npm run test:legacy-scope
       - name: Migration identity + real revoke (Miniflare)
         run: npm run test:identity-revoke
+      - name: Account scoping (Miniflare)
+        run: npm run test:account-scope
+      - name: Agent authorization extension (Miniflare)
+        run: npm run test:agent-extend

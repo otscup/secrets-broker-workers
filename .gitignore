@@ -20,6 +20,8 @@ test-*.mjs
 !test-mf-ensure-authority.mjs
 !test-mf-legacy-scope.mjs
 !test-mf-identity-revoke.mjs
+!test-mf-account-scope.mjs
+!test-mf-agent-extend.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs

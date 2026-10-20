@@ -276,7 +276,25 @@ $('modal-close-x').onclick = () => show('modal', false)
 $('modal').addEventListener('click', (event) => { if (event.target === $('modal')) show('modal', false) })
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('modal').classList.contains('hidden')) show('modal', false) })
 $('items-box').addEventListener('click', async (event) => { const grantEdit = event.target.closest('[data-item-grant]'); if (grantEdit) { openGrantMenu(grantEdit.dataset.agent, grantEdit.dataset.name); return } const menu = event.target.closest('[data-item-menu]'); if (menu) { openItemMenu(menu.dataset.itemMenu); return } const toggle = event.target.closest('[data-policy]'); if (toggle) { const item = app.items.find((entry) => entry.name === toggle.dataset.policy); if (!item) return; try { await api('/api/policies', { method: 'POST', body: JSON.stringify({ name: item.name, noApproval: !item.noApproval }) }); await loadItems(); toast('已更新免审批策略') } catch (error) { toast(error.message, true) } return } const read = event.target.closest('[data-read]'); if (read) reveal(read.dataset.read) })
-$('agents-box').addEventListener('click', (event) => { const menu = event.target.closest('[data-agent-menu]'); if (menu) openAgentMenu(menu.dataset.agentMenu) })
+$('agents-box').addEventListener('click', (event) => { const extend = event.target.closest('[data-agent-extend]'); if (extend) { openExtendMenu(extend.dataset.agentExtend); return } const menu = event.target.closest('[data-agent-menu]'); if (menu) openAgentMenu(menu.dataset.agentMenu) })
+async function extendAgent(name, days) {
+  try {
+    const result = await api('/api/agents/extend', { method: 'POST', body: JSON.stringify({ name, days }) })
+    show('modal', false)
+    await loadState()
+    toast(result.permanent ? '已设为永久' : '已延长到 ' + new Date(result.expiresAt).toLocaleString('zh-CN', { hour12: false }))
+  } catch (error) { toast(error.message, true) }
+}
+function openExtendMenu(name) {
+  const agent = (app.data.agents || []).find((entry) => entry.name === name)
+  if (!agent) return
+  const opts = [['1', '1 天'], ['7', '7 天'], ['30', '30 天'], ['90', '90 天'], ['365', '365 天'], ['permanent', '永久']]
+  const now = typeof agent.expiresAt === 'number' ? new Date(agent.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久'
+  openModal('延长授权 · ' + name, '<div class="hint">当前到期：' + now + (agent.oauth ? '（OAuth 连接）' : '') + '</div><div class="hint" style="margin-top:6px">从<strong>现在</strong>起算，重新计时。</div><div class="row" style="margin-top:12px;flex-wrap:wrap;gap:8px">' + opts.map(([value, label]) => '<button class="small" data-extend-days="' + value + '">' + label + '</button>').join('') + '</div>')
+  document.querySelectorAll('[data-extend-days]').forEach((button) => {
+    button.onclick = () => extendAgent(name, button.dataset.extendDays === 'permanent' ? 'permanent' : Number(button.dataset.extendDays))
+  })
+}
 $('kpis').addEventListener('click', (event) => {
   const card = event.target.closest('[data-kpi]'); if (!card) return
   openKpiModal(card.dataset.kpi)
@@ -427,9 +445,19 @@ function renderItems() {
   updateBulkBar()
 }
 function updateBulkBar() { const bar = $('bulk-bar'); if (!bar) return; bar.classList.toggle('hidden', selectedItems.size === 0); $('bulk-count').textContent = '已选择 ' + selectedItems.size + ' 个条目' }
+// null/undefined = permanent; past = expired; soon (<24h) flagged.
+function expiryLabel(expiresAt) {
+  if (typeof expiresAt !== 'number') return '永久'
+  const left = expiresAt - Date.now()
+  if (left <= 0) return '<span style="color:var(--danger)">已过期</span>'
+  const days = Math.floor(left / 86400e3)
+  const hours = Math.floor((left % 86400e3) / 3600e3)
+  const text = days > 0 ? days + ' 天' : hours + ' 小时'
+  return left < 86400e3 ? '<span style="color:var(--danger)">' + text + '</span>' : text
+}
 function renderAgents() {
   const agents = app.data.agents || []
-  $('agents-box').innerHTML = agents.length ? '<table><tr><th>Agent</th><th>显示名 / 备注</th><th>绑定账户</th><th>可读范围</th><th>写入</th><th>操作</th></tr>' + agents.map((agent) => '<tr><td><b>' + esc(agent.name) + '</b>' + (agent.oauth ? ' <span class="pill">OAuth</span>' : '') + '</td><td>' + esc(agent.alias || '') + (agent.note ? '<br><span class="hint">' + esc(agent.note) + '</span>' : '') + '</td><td class="hint">' + esc(agent.account || '-') + '</td><td class="hint">' + esc(agent.allowAll ? '全部' : (agent.allow && agent.allow.length ? agent.allow.join(', ') : (agent.groups && agent.groups.length ? '分组：' + agent.groups.join(', ') : '无权限'))) + '</td><td>' + (agent.write ? '开' : '关') + '</td><td><button class="small" data-agent-menu="' + esc(agent.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">还没有 Agent</div>'
+  $('agents-box').innerHTML = agents.length ? '<table><tr><th>Agent</th><th>显示名 / 备注</th><th>绑定账户</th><th>可读范围</th><th>写入</th><th>到期</th><th>操作</th></tr>' + agents.map((agent) => '<tr><td><b>' + esc(agent.name) + '</b>' + (agent.oauth ? ' <span class="pill">OAuth</span>' : '') + '</td><td>' + esc(agent.alias || '') + (agent.note ? '<br><span class="hint">' + esc(agent.note) + '</span>' : '') + '</td><td class="hint">' + esc(agent.account || '-') + '</td><td class="hint">' + esc(agent.allowAll ? '全部' : (agent.allow && agent.allow.length ? agent.allow.join(', ') : (agent.groups && agent.groups.length ? '分组：' + agent.groups.join(', ') : '无权限'))) + '</td><td>' + (agent.write ? '开' : '关') + '</td><td class="hint">' + expiryLabel(agent.expiresAt) + '</td><td class="nowrap"><button class="small" data-agent-extend="' + esc(agent.name) + '" title="延长授权">延长</button><button class="small" data-agent-menu="' + esc(agent.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">还没有 Agent</div>'
 }
 function renderPending() {
   const pending = app.data.pending || []
