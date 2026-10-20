@@ -2710,6 +2710,23 @@ export default {
       await addAudit(env, { event: 'oauth.revoke', clientId: body.clientId ?? '', agent: body.agent ?? '' })
       return json({ ok: true })
     }
+    // Unauthenticated OAuth diagnostics: counts and masked prefixes only, so an
+    // operator can tell whether a client registration exists without exposing
+    // tokens. Never returns hashes, secrets or full IDs.
+    if (url.pathname === '/oauth/status') {
+      const state = await loadState(env)
+      const mask = (id) => String(id ?? '').slice(0, 12) + (String(id ?? '').length > 12 ? '…' : '')
+      const clients = Object.values(state.oauthClients ?? {})
+      const tokens = Object.values(state.oauthTokens ?? {})
+      const now = Date.now()
+      return json({
+        clients: clients.length,
+        clientPrefixes: clients.slice(0, 20).map((c) => ({ id: mask(c.clientId), name: String(c.clientName ?? '').slice(0, 40), redirects: (c.redirectUris ?? []).length })),
+        tokens: tokens.length,
+        liveTokens: tokens.filter((t) => !t.expiresAt || t.expiresAt > now).length,
+        agents: Object.keys(state.agents ?? {}).length,
+      })
+    }
     if (url.pathname === '/.well-known/oauth-protected-resource' || url.pathname === '/.well-known/oauth-protected-resource/mcp') {
       return json({ resource: `${url.origin}/mcp`, authorization_servers: [url.origin], scopes_supported: ['secrets.read'] })
     }
@@ -2744,7 +2761,24 @@ export default {
       const clientId = String(params.get('client_id') ?? '')
       const redirectUri = String(params.get('redirect_uri') ?? '')
       const client = state.oauthClients[clientId]
-      if (!client) return fail('unknown client', 400)
+      if (!client) {
+        // The client registration is gone (revoked, cleared, or lost before
+        // registrations were written atomically). A bare JSON 400 leaves the
+        // user with no way forward, so explain and offer the manual retry page.
+        const known = Object.keys(state.oauthClients ?? {}).length
+        return new Response(
+          '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+          '<title>OAuth 客户端未注册</title>' +
+          '<div style="font:14px/1.7 system-ui;max-width:560px;margin:40px auto;padding:0 16px;color:#152033">' +
+          '<h2 style="font-size:18px">这个客户端 ID 已失效</h2>' +
+          '<p>服务端找不到 <code style="background:#eef1f6;padding:2px 5px;border-radius:5px">' + escapeHtml(clientId.slice(0, 40) || '(空)') + '</code>，所以无法继续授权。</p>' +
+          '<p style="color:#6b7890;font-size:13px">常见原因：客户端早前注册过，但注册记录在升级前丢失，或被管理员撤销。</p>' +
+          '<p><strong>解决办法：在客户端里断开这个连接，重新发起一次授权。</strong>客户端会重新注册一个新的 ID，就能正常授权了。</p>' +
+          '<p style="color:#6b7890;font-size:13px">当前已注册客户端数量：' + known + '</p>' +
+          '</div>',
+          { status: 400, headers: { 'content-type': 'text/html; charset=utf-8' } },
+        )
+      }
       if (!client.redirectUris.includes(redirectUri)) return fail('invalid redirect_uri', 400)
       if (!params.get('code_challenge') || params.get('code_challenge_method') !== 'S256') return fail('PKCE S256 is required', 400)
       if (!(await adminAuthorized(request, env))) {
