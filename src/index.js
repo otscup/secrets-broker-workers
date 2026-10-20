@@ -2799,9 +2799,18 @@ export default {
       if (!params.get('code_challenge') || params.get('code_challenge_method') !== 'S256') return fail('PKCE S256 is required', 400)
       if (!(await adminAuthorized(request, env))) {
         // Bounce through the login page and come back to this exact authorize
-        // URL. A bare 401 forces the user to copy the link by hand, which is
-        // why approving keeps looking like "login again".
-        const returnTo = url.pathname + url.search
+        // request. For POST the form parameters live in the BODY, so rebuilding
+        // the return target from url.search alone yields a bare
+        // /oauth/authorize (no client_id) — after logging in the user then sees
+        // a bogus "client ID invalid" page. Rebuild from the actual params and
+        // resume with GET, which carries everything in the query string; the
+        // user simply re-confirms on the consent page.
+        const resume = new URLSearchParams()
+        for (const [key, value] of params.entries()) {
+          if (key === 'decision') continue
+          resume.append(key, value)
+        }
+        const returnTo = url.pathname + (resume.toString() ? '?' + resume.toString() : '')
         const loginUrl = new URL('/login', url.origin)
         loginUrl.searchParams.set('next', returnTo)
         if (request.method === 'POST') {
