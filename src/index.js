@@ -24,6 +24,19 @@ export class BrokerState extends DurableObject {
         return json({ ok: true })
       }
     }
+    if (url.pathname === '/grant/consume' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const state = (await this.ctx.storage.get('state')) ?? null
+      const key = `${String(body.agent ?? '')}\u0000${String(body.name ?? '')}`
+      const grant = state?.grants?.[key]
+      if (!grant || grant.revokedAt) return json({ ok: false, reason: 'no-grant' })
+      if (grant.expiresAt && grant.expiresAt < Date.now()) return json({ ok: false, reason: 'expired' })
+      if (grant.maxReads != null && (grant.reads ?? 0) >= grant.maxReads) return json({ ok: false, reason: 'exhausted' })
+      grant.reads = (grant.reads ?? 0) + 1
+      if (grant.maxReads != null && grant.reads >= grant.maxReads) delete state.grants[key]
+      await this.ctx.storage.put('state', state)
+      return json({ ok: true, reads: grant.reads })
+    }
     if (url.pathname === '/session') {
       if (request.method === 'GET') {
         const session = await this.ctx.storage.get('session')
@@ -105,6 +118,7 @@ async function validCookie(request, env) {
     return true
   }
   if (!value.startsWith('v1.')) return false
+  if (env.ALLOW_LEGACY_ADMIN_COOKIE !== '1') return false
   const [, expiresText, signature] = value.split('.')
   const expires = Number(expiresText)
   if (!Number.isFinite(expires) || expires < Date.now()) return false
@@ -149,7 +163,13 @@ async function loadState(env) {
   state.transfers ??= []
   state.credentialRequests ??= {}
   const defaultAgentAccount = state.settings?.vaultEmail || env.VAULT_EMAIL || ''
-  for (const agent of Object.values(state.agents ?? {})) if (!agent.account && defaultAgentAccount) agent.account = defaultAgentAccount
+  for (const agent of Object.values(state.agents ?? {})) {
+    if (!agent.account && defaultAgentAccount) agent.account = defaultAgentAccount
+    if (agent.allowAll === undefined) agent.allowAll = (agent.allow ?? []).length === 0 && (agent.groups ?? []).length === 0
+  }
+  for (const profile of Object.values(state.oauthAgentProfiles ?? {})) {
+    if (profile.allowAll === undefined) profile.allowAll = (profile.allow ?? []).length === 0 && (profile.groups ?? []).length === 0
+  }
   state.pending ??= {}
   state.audit ??= []
   if (!state.agents || Object.keys(state.agents).length === 0) {
@@ -260,6 +280,26 @@ async function verifyAdminPassword(env, state, password) {
   return constantTimeEqual(encoder.encode(String(password)), encoder.encode(env.ADMIN_PASSWORD))
 }
 
+function loginBlocked(state, ip) {
+  const attempt = state.security?.loginAttempts?.[ip]
+  return Boolean(attempt && attempt.count >= 8 && Date.now() - attempt.first < 15 * 60 * 1000)
+}
+
+async function recordLoginFailure(env, ip) {
+  await updateState(env, (state) => {
+    state.security ??= {}
+    state.security.loginAttempts ??= {}
+    const now = Date.now()
+    const previous = state.security.loginAttempts[ip]
+    state.security.loginAttempts[ip] = { first: previous && now - previous.first < 15 * 60 * 1000 ? previous.first : now, count: (previous?.count ?? 0) + 1, last: now }
+    return state
+  })
+}
+
+async function clearLoginFailures(env, ip) {
+  await updateState(env, (state) => { if (state.security?.loginAttempts?.[ip]) delete state.security.loginAttempts[ip]; return state })
+}
+
 function base32Decode(text) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
   let bits = 0
@@ -368,7 +408,7 @@ async function resolveAgent(request, env) {
     if (tokenEntry.expiresAt && tokenEntry.expiresAt < Date.now()) continue
     if (constantTimeEqual(encoder.encode(tokenEntry.hash ?? ''), encoder.encode(hash))) {
       const profile = state.oauthAgentProfiles?.[tokenEntry.agent] ?? {}
-      return { name: tokenEntry.agent, agent: { allow: profile.allow ?? [], groups: profile.groups ?? [], write: profile.write === true, oauth: true, account: tokenEntry.account ?? '', alias: profile.alias ?? '', note: profile.note ?? '' }, state }
+      return { name: tokenEntry.agent, agent: { allow: profile.allow ?? [], groups: profile.groups ?? [], allowAll: profile.allowAll === true, write: profile.write === true, oauth: true, account: tokenEntry.account ?? '', alias: profile.alias ?? '', note: profile.note ?? '' }, state }
     }
   }
   return null
@@ -625,7 +665,7 @@ async function createCipher(env, db, session, fields, folderNameOverride) {
 }
 
 function publicState(state) {
-  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], write: agent.write === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '' }))
+  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], allowAll: agent.allowAll === true, write: agent.write === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '' }))
   const seen = new Set(agents.map((agent) => agent.name))
   const now = Date.now()
   for (const token of Object.values(state.oauthTokens ?? {})) {
@@ -633,7 +673,7 @@ function publicState(state) {
     if (token.expiresAt && token.expiresAt <= now) continue
     seen.add(token.agent)
     const profile = state.oauthAgentProfiles?.[token.agent] ?? {}
-    agents.push({ name: token.agent, alias: profile.alias ?? '', note: profile.note ?? '', allow: profile.allow ?? [], groups: profile.groups ?? [], write: profile.write === true, account: token.account ?? '', oauth: true, createdAt: token.createdAt ?? '' })
+    agents.push({ name: token.agent, alias: profile.alias ?? '', note: profile.note ?? '', allow: profile.allow ?? [], groups: profile.groups ?? [], allowAll: profile.allowAll === true, write: profile.write === true, account: token.account ?? '', oauth: true, createdAt: token.createdAt ?? '' })
   }
   return {
     agents,
@@ -726,13 +766,18 @@ async function notifyPending(env, origin, entry, ctx) {
   else await run
 }
 
-async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx }) {
+async function consumeGrant(env, agent, name) {
+  const response = await stateStub(env).fetch('https://state/grant/consume', { method: 'POST', body: JSON.stringify({ agent, name }) })
+  return response.json()
+}
+
+async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx, consumeRead = true }) {
   if (agent.account && session.email && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) return { status: 'forbidden', error: 'agent is bound to another vault account' }
   const group = state.itemGroups?.[name] ?? ''
   const allow = agent.allow ?? []
   const groups = agent.groups ?? []
   const hasScope = allow.length > 0 || groups.length > 0
-  const allowed = !hasScope || allow.includes(name) || groups.includes(group)
+  const allowed = hasScope ? (allow.includes(name) || groups.includes(group)) : agent.allowAll === true
   if (!allowed) return { status: 'forbidden', error: 'agent not allowed to read this item' }
   const policy = state.policies?.[name]
   const grant = activeGrant(state, agentName, name)
@@ -749,16 +794,12 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   }
   const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
   if (!result) return { status: 'notfound', error: 'not found' }
-  if (grant) {
-    await updateState(env, (next) => {
-      const current = activeGrant(next, agentName, name)
-      if (current) current.reads = (current.reads ?? 0) + 1
-      if (current?.maxReads != null && (current.reads ?? 0) >= current.maxReads) delete next.grants[grantKey(agentName, name)]
-      return next
-    })
+  if (grant && consumeRead) {
+    const consumed = await consumeGrant(env, agentName, name)
+    if (!consumed?.ok) return { status: 'forbidden', error: 'grant is no longer valid' }
   }
   await addAudit(env, { event: 'secret.read', agent: agentName, name, mode: policy?.noApproval ? 'no-approval' : 'grant', via: 'agent' })
-  return { status: 'ok', value: result.value }
+  return { status: 'ok', value: result.value, url: result.url }
 }
 
 function statsFor(state, range) {
@@ -929,19 +970,27 @@ export default {
     if (url.pathname === '/api/login' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
       const state = await loadState(env)
+      const ip = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-forwarded-for') ?? 'unknown'
+      if (loginBlocked(state, ip)) return fail('登录尝试过多，请 15 分钟后再试', 429)
       let passwordValid = await verifyAdminPassword(env, state, body.password)
       if (!passwordValid && env.ADMIN_PASSWORD && constantTimeEqual(encoder.encode(String(body.password ?? '')), encoder.encode(env.ADMIN_PASSWORD))) passwordValid = true
       if (!passwordValid) {
-        await addAudit(env, { event: 'admin.login-fail' })
+        await recordLoginFailure(env, ip)
+        await addAudit(env, { event: 'admin.login-fail', ip })
         return fail('密码错误', 401)
       }
       if (state.security?.totpEnabled) {
         if (!body.code) return json({ totpRequired: true }, 401)
         const secret = await totpSecret(env, state)
-        if (!secret || !(await verifyTotp(secret, body.code))) return json({ totpRequired: true, error: '两步验证码错误' }, 401)
+        if (!secret || !(await verifyTotp(secret, body.code))) {
+          await recordLoginFailure(env, ip)
+          await addAudit(env, { event: 'admin.totp-fail', ip })
+          return json({ totpRequired: true, error: '两步验证码错误' }, 401)
+        }
       }
+      await clearLoginFailures(env, ip)
       const cookie = await createAdminCookie(env, request)
-      await addAudit(env, { event: 'admin.login' })
+      await addAudit(env, { event: 'admin.login', ip })
       return json({ ok: true }, 200, { 'set-cookie': `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800` })
     }
     if (url.pathname === '/api/logout' && request.method === 'POST') {
@@ -1098,9 +1147,23 @@ export default {
         const userResponse = await fetch(endpoints.userinfo, { headers: { authorization: `Bearer ${tokens.access_token}` } })
         const user = await userResponse.json()
         if (!userResponse.ok) return fail('OIDC userinfo failed', 502)
+        const subject = String(user.sub ?? '')
+        if (!subject) return fail('OIDC subject missing', 502)
+        if (user.email_verified === false) return fail('OIDC email is not verified', 403)
+        const isAdmin = await adminAuthorized(request, env)
+        if (stateData.next === 'profile' && !isAdmin) return fail('请先在 Secrets Broker 登录后再绑定 OIDC', 401)
+        const boundSub = String(state.profile?.oidcSub ?? '')
+        if (boundSub && subject !== boundSub) return fail('OIDC 身份与已绑定账户不一致', 403)
+        if (!boundSub && !isAdmin) {
+          const allowedSub = String(env.OIDC_ALLOWED_SUB ?? '')
+          const allowedEmail = String(env.OIDC_ALLOWED_EMAIL ?? '')
+          if (!allowedSub && !allowedEmail) return fail('首次 OIDC 登录需要管理员先登录绑定，或配置 OIDC_ALLOWED_SUB / OIDC_ALLOWED_EMAIL', 403)
+          if (allowedSub && subject !== allowedSub) return fail('OIDC 身份不在允许列表', 403)
+          if (allowedEmail && String(user.email ?? '').toLowerCase() !== allowedEmail.toLowerCase()) return fail('OIDC 邮箱不在允许列表', 403)
+        }
         await updateState(env, (state) => {
           state.profile ??= {}
-          state.profile.oidcSub = String(user.sub ?? '')
+          state.profile.oidcSub = subject
           state.profile.oidcEmail = String(user.email ?? state.profile.email ?? '')
           state.profile.name = String(user.name ?? user.preferred_username ?? state.profile.name ?? '')
           state.profile.email = String(user.email ?? state.profile.email ?? '')
@@ -1256,7 +1319,7 @@ export default {
       let error = ''
       await updateState(env, (state) => {
         if (state.agents[name]) { error = 'agent already exists'; return state }
-        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), note: String(body.note ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], write: body.write === true, account, createdAt: nowIso() }
+        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), note: String(body.note ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], allowAll: body.allowAll === true, write: body.write === true, account, createdAt: nowIso() }
         return state
       })
       if (error) return fail(error, 409)
@@ -1350,6 +1413,7 @@ export default {
           if (typeof body.note === 'string') agent.note = body.note.trim()
           if (Array.isArray(body.allow)) agent.allow = body.allow.map(String).filter(Boolean)
           if (Array.isArray(body.groups)) agent.groups = body.groups.map(String).filter(Boolean)
+          if (typeof body.allowAll === 'boolean') agent.allowAll = body.allowAll
           if (typeof body.write === 'boolean') agent.write = body.write
           return state
         }
@@ -1362,6 +1426,7 @@ export default {
         if (typeof body.note === 'string') profile.note = body.note.trim()
         if (Array.isArray(body.allow)) profile.allow = body.allow.map(String).filter(Boolean)
         if (Array.isArray(body.groups)) profile.groups = body.groups.map(String).filter(Boolean)
+        if (typeof body.allowAll === 'boolean') profile.allowAll = body.allowAll
         if (typeof body.write === 'boolean') profile.write = body.write
         return state
       })
@@ -1737,6 +1802,8 @@ export default {
       const body = await request.json().catch(() => ({}))
       const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris.map(String).filter(Boolean) : []
       if (!redirectUris.length) return fail('redirect_uris required', 400)
+      const validRedirect = (value) => { try { const target = new URL(value); if (target.hash) return false; if (target.protocol === 'https:') return true; return target.protocol === 'http:' && (target.hostname === '127.0.0.1' || target.hostname === 'localhost' || target.hostname === '[::1]') } catch { return false } }
+      if (!redirectUris.every(validRedirect)) return fail('redirect_uri must be https or a loopback http URL', 400)
       const clientId = 'mcp_' + base64Url(crypto.getRandomValues(new Uint8Array(18)))
       await updateState(env, (state) => {
         state.oauthClients[clientId] = { clientId, clientName: String(body.client_name ?? 'MCP client'), redirectUris, createdAt: nowIso() }
@@ -1753,15 +1820,21 @@ export default {
       const client = state.oauthClients[clientId]
       if (!client) return fail('unknown client', 400)
       if (!client.redirectUris.includes(redirectUri)) return fail('invalid redirect_uri', 400)
+      if (!params.get('code_challenge') || params.get('code_challenge_method') !== 'S256') return fail('PKCE S256 is required', 400)
       if (!(await adminAuthorized(request, env))) return new Response('<meta charset="utf-8"><p>请先在 <a href="/">Secrets Broker</a> 登录，然后再打开这个授权链接。</p>', { status: 401, headers: { 'content-type': 'text/html; charset=utf-8' } })
       if (request.method === 'POST' && params.get('decision') === 'deny') {
         const target = new URL(redirectUri); target.searchParams.set('error', 'access_denied'); if (params.get('state')) target.searchParams.set('state', params.get('state'))
         return Response.redirect(target.toString(), 302)
       }
       if (request.method === 'POST' && params.get('decision') === 'allow') {
+        const challenge = String(params.get('code_challenge') ?? '')
+        const method = String(params.get('code_challenge_method') ?? '')
+        if (!challenge || method !== 'S256') return fail('PKCE S256 is required', 400)
+        const session = await getSession(env)
+        const account = session?.email || await vaultEmail(env, env.NODEWARDEN_DB, state)
         const code = randomToken()
         await updateState(env, (next) => {
-          next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: String(params.get('code_challenge') ?? ''), scope: String(params.get('scope') ?? 'secrets.read'), createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000 }
+          next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', scope: String(params.get('scope') ?? 'secrets.read'), account, createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000 }
           return next
         })
         await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId })
@@ -1778,7 +1851,8 @@ export default {
       const entry = state.oauthCodes[code]
       if (!entry || entry.expiresAt < Date.now()) return json({ error: 'invalid_grant' }, 400)
       if (String(form.get('client_id') ?? '') !== entry.clientId || String(form.get('redirect_uri') ?? '') !== entry.redirectUri) return json({ error: 'invalid_grant' }, 400)
-      if (entry.codeChallenge) {
+      if (!entry.codeChallenge || entry.codeChallengeMethod !== 'S256') return json({ error: 'invalid_grant', error_description: 'PKCE S256 is required' }, 400)
+      {
         const verifier = String(form.get('code_verifier') ?? '')
         const challenge = base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(verifier))))
         if (challenge !== entry.codeChallenge) return json({ error: 'invalid_grant', error_description: 'PKCE verification failed' }, 400)
@@ -1788,12 +1862,12 @@ export default {
       const agentName = 'oauth:' + entry.clientId
       const expiresAt = Date.now() + 24 * 3600 * 1000
       const session = await getSession(env)
-      const account = session?.email || await vaultEmail(env, env.NODEWARDEN_DB, state)
+      const account = entry.account || session?.email || await vaultEmail(env, env.NODEWARDEN_DB, state)
       await updateState(env, (next) => {
         delete next.oauthCodes[code]
         next.oauthTokens[hash] = { hash, agent: agentName, clientId: entry.clientId, account, createdAt: nowIso(), expiresAt }
         next.oauthAgentProfiles ??= {}
-        if (!next.oauthAgentProfiles[agentName]) next.oauthAgentProfiles[agentName] = { alias: next.oauthClients?.[entry.clientId]?.clientName ?? '', note: '', allow: [], groups: [], write: false }
+        if (!next.oauthAgentProfiles[agentName]) next.oauthAgentProfiles[agentName] = { alias: next.oauthClients?.[entry.clientId]?.clientName ?? '', note: '', allow: [], groups: [], allowAll: false, write: false }
         return next
       })
       await addAudit(env, { event: 'oauth.token-issue', agent: agentName, clientId: entry.clientId })
@@ -1830,12 +1904,13 @@ export default {
           if (name === 'list_secrets') {
             if (resolved.agent.account && String(resolved.agent.account).toLowerCase() !== String(session.email).toLowerCase()) return result(text('agent is bound to another vault account', true))
             const items = await listCiphers(env, env.NODEWARDEN_DB, session)
-            return result(text(items.map((item) => ({ name: item.name, url: item.url, noApproval: item.noApproval }))))
+            const visible = items.filter((item) => resolved.agent.allowAll === true || (resolved.agent.allow ?? []).includes(item.name) || (resolved.agent.groups ?? []).includes(item.group))
+            return result(text(visible.map((item) => ({ name: item.name, url: item.url, noApproval: item.noApproval }))))
           }
           if (name === 'request_access') {
             const secretName = String(args.name ?? '')
             if (!secretName) return result(text('name is required', true))
-            const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx })
+            const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx, consumeRead: false })
             if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
             if (access.status === 'forbidden') return result(text(access.error, true))
             if (access.status === 'notfound') return result(text(access.error, true))
@@ -1872,11 +1947,14 @@ export default {
             if (target.protocol !== 'https:') return result(text('only https targets are allowed', true))
             const host = target.hostname.toLowerCase()
             if (host === 'localhost' || host.endsWith('.local') || /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host) || host === '::1') return result(text('private/local targets are not allowed', true))
+            const allowedHosts = new Set(String(env.HTTP_ALLOWED_HOSTS ?? '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean))
+            try { if (access.url) allowedHosts.add(new URL(access.url).hostname.toLowerCase()) } catch {}
+            if (!allowedHosts.has(host)) return result(text('target host is not allowed for this credential; set the item URL or HTTP_ALLOWED_HOSTS', true))
             const method = String(args.method ?? 'GET').toUpperCase()
             const headers = { ...(args.headers && typeof args.headers === 'object' ? args.headers : {}) }
             const headerName = String(args.headerName ?? 'Authorization')
             headers[headerName] = String(args.authPrefix ?? 'Bearer ') + access.value
-            const init = { method, headers, redirect: 'follow' }
+            const init = { method, headers, redirect: 'manual' }
             if (args.body != null && !['GET', 'HEAD'].includes(method)) init.body = String(args.body)
             const response = await fetch(target.toString(), init)
             const responseBody = (await response.text()).slice(0, 8000)
