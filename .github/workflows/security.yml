@@ -83,3 +83,7 @@ jobs:
         run: npm run test:globe-ui
       - name: Globe arcs (Miniflare)
         run: npm run test:globe-arcs
+      - name: Globe visuals (Miniflare)
+        run: npm run test:globe-visuals
+      - name: Globe earth and danmaku (Miniflare)
+        run: npm run test:globe-earth

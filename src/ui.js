@@ -64,7 +64,25 @@ button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;
 .notice-bar[data-level="notice"]{background:#eef4ff;border-color:#cddcf7;color:#2b4f8a}
 .notice-bar[data-level="notice"] .notice-dot{background:#3f6ec4}
 .notice-bar .notice-more{flex:0 0 auto;font-size:12px;opacity:.75}
-.globe-box{position:relative;height:320px;margin-top:12px;border-radius:12px;overflow:hidden;background:radial-gradient(circle at 50% 45%,#0d2233,#081420)}
+.globe-box{position:relative;height:340px;margin-top:12px;border-radius:12px;overflow:hidden;background:radial-gradient(circle at 50% 45%,#eaf2fb,#dbe8f6);border:1px solid var(--line);touch-action:none}
+html[data-theme="dark"] .globe-box{background:radial-gradient(circle at 50% 45%,#12243a,#081420)}
+.globe-box.globe-full{position:fixed;inset:16px;z-index:60;height:auto;margin:0;border-radius:16px;box-shadow:0 24px 60px rgba(10,20,40,.35)}
+.globe-box.globe-full canvas{cursor:grab}
+.danmu-wrap{margin-top:14px}
+.danmu-title{font-size:12px;color:var(--muted);margin-bottom:6px}
+.danmu-feed{max-height:180px;overflow:hidden;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:var(--btn);display:flex;flex-direction:column-reverse}
+.danmu-row{display:flex;gap:8px;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px dashed var(--line);white-space:nowrap;overflow:hidden}
+.danmu-row:last-child{border-bottom:0}
+.danmu-time{color:var(--muted);flex:0 0 auto;font-variant-numeric:tabular-nums}
+.danmu-agent{flex:0 0 auto;max-width:96px;overflow:hidden;text-overflow:ellipsis}
+.danmu-where{flex:0 0 auto;color:var(--muted)}
+.danmu-act{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+.danmu-empty{font-size:12px;color:var(--muted);padding:6px 0}
+.danmu-new{animation:danmuIn .45s ease-out}
+@keyframes danmuIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion: reduce){.danmu-new{animation:none}}
+.globe-box canvas{cursor:grab}
+.globe-box canvas:active{cursor:grabbing}
 .globe-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8ea4bd;font-size:13px}
 .globe-box canvas{display:block;max-width:100%}
 @media(max-width:720px){.globe-box{height:220px}}
@@ -149,6 +167,7 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
         <div class="row" style="flex:0 0 auto;gap:8px">
           <div class="seg" id="globe-range"><button data-grange="1h">1 小时</button><button data-grange="24h" class="on">24 小时</button><button data-grange="7d">7 天</button></div>
           <button class="small" id="globe-pause" title="暂停动画">暂停</button>
+          <button class="small" id="globe-full" title="放大 / 缩小">放大</button>
           <button class="small" id="globe-expand" title="展开详情">详情</button>
           <button class="small" id="globe-hide" title="隐藏地球">隐藏</button>
         </div>
@@ -685,6 +704,55 @@ function syncGlobePolling() {
   // 5s incremental polling, paused whenever the page or globe is hidden.
   globe.timer = setInterval(() => { if (globeVisible()) refreshGlobe(false) }, 5000)
 }
+function toggleGlobeFullscreen() {
+  const box = $('globe-box')
+  const button = $('globe-full')
+  if (!box) return
+  const next = !box.classList.contains('globe-full')
+  box.classList.toggle('globe-full', next)
+  if (button) button.textContent = next ? '缩小' : '放大'
+  // Let the container settle before measuring for the new viewport size.
+  requestAnimationFrame(() => { try { window.dispatchEvent(new Event('resize')) } catch {} })
+}
+// Live connection feed: only shown while there are fresh connections, and it
+// scrolls like a danmaku stream. Each entry is a real captured event.
+let danmuTimer = null
+function stopDanmu() {
+  if (danmuTimer) { clearInterval(danmuTimer); danmuTimer = null }
+}
+function danmuLine(ev) {
+  const g = ev.geo || {}
+  const cc = g.country ? String(g.country).toUpperCase() : ''
+  const city = g.city ? String(g.city).split(',')[0] : ''
+  const where = [city, cc].filter(Boolean).join(' · ') || '未知位置'
+  const time = ev.at ? new Date(ev.at).toLocaleTimeString('zh-CN', { hour12: false }) : ''
+  const color = ev.ok ? 'var(--ok,#0f9d8a)' : 'var(--danger)'
+  return '<div class="danmu-row"><span class="danmu-time">' + esc(time) + '</span>' +
+    '<b class="danmu-agent">' + esc(ev.agent || '') + '</b>' +
+    '<span class="danmu-where">' + esc(where) + '</span>' +
+    '<span class="danmu-act">' + esc(ev.action || '') + '</span>' +
+    '<span style="color:' + color + '">' + (ev.ok ? '成功' : '失败') + '</span></div>'
+}
+function renderDanmu() {
+  const feed = $('globe-danmu')
+  if (!feed) { stopDanmu(); return }
+  const events = (globe.events || []).slice(-40)
+  if (!events.length) {
+    feed.innerHTML = '<div class="danmu-empty">暂无连接</div>'
+    stopDanmu()
+    return
+  }
+  feed.innerHTML = events.slice().reverse().map(danmuLine).join('')
+  // Animate new arrivals in from the bottom.
+  const first = feed.firstElementChild
+  if (first) first.classList.add('danmu-new')
+}
+function startDanmu() {
+  stopDanmu()
+  renderDanmu()
+  // Keep the feed live while the modal is open and the page is visible.
+  danmuTimer = setInterval(() => { if (!document.hidden) renderDanmu() }, 3000)
+}
 function openGlobeModal() {
   const events = globe.events || []
   const op = globe.operator
@@ -708,7 +776,10 @@ function openGlobeModal() {
     '<div class="hint" style="margin-top:4px">弧线表示：我 → Agent → 被访问国家；未记录我的位置时只画 Agent → 被访问国家。</div>' +
     toggles +
     (events.length ? '<div class="table-wrap"><table><tr><th>Agent</th><th>来源</th><th>操作</th><th>结果</th><th>时间</th></tr>' + rows + '</table></div>' : '<div class="hint">暂无真实访问记录</div>')
-  openModal('Agent Live Globe', body)
+  openModal('Agent Live Globe', body + '<div class="danmu-wrap"><div class="danmu-title">实时连接</div><div id="globe-danmu" class="danmu-feed"></div></div>')
+  startDanmu()
+  const closeBtn = document.querySelector('#modal [data-close], #modal .modal-close')
+  if (closeBtn) { const prev = closeBtn.onclick; closeBtn.onclick = (e) => { stopDanmu(); if (prev) prev.call(closeBtn, e) } }
   const arcsToggle = $('gl-arcs')
   if (arcsToggle) arcsToggle.onchange = () => { globe.showArcs = arcsToggle.checked; refreshGlobe(true) }
   const opToggle = $('gl-operator')
@@ -736,8 +807,8 @@ function initGlobe() {
   }
   const expandBtn = $('globe-expand')
   if (expandBtn) expandBtn.onclick = () => openGlobeModal()
-  const box = $('globe-box')
-  if (box) box.onclick = (event) => { if (event.target.tagName !== 'CANVAS' || event.shiftKey) return; openGlobeModal() }
+  const fullBtn = $('globe-full')
+  if (fullBtn) fullBtn.onclick = () => toggleGlobeFullscreen()
   const hideBtn = $('globe-hide')
   if (hideBtn) hideBtn.onclick = () => {
     globe.hidden = !globe.hidden
@@ -748,6 +819,13 @@ function initGlobe() {
     syncGlobePolling()
   }
   document.addEventListener('visibilitychange', syncGlobePolling)
+  // Keep the globe palette in step with the console theme.
+  if (window.MutationObserver) {
+    new MutationObserver(() => {
+      if (!globe.instance) return
+      try { globe.instance.setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light') } catch {}
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
+  }
   refreshGlobe(true)
   syncGlobePolling()
 }

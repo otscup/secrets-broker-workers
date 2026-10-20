@@ -1935,11 +1935,12 @@ export default {
     }
     // Lazily loaded 3D globe island. Served as a static asset so it never
     // inflates the Worker script itself; same-origin keeps CSP at 'self'.
-    if (url.pathname === '/globe.js') {
-      const asset = env.ASSETS && typeof env.ASSETS.fetch === 'function' ? await env.ASSETS.fetch(new Request(new URL('/globe.js', url.origin), request)) : null
-      if (!asset || !asset.ok) return fail('globe asset unavailable', 404)
+    if (url.pathname === '/globe.js' || url.pathname === '/earth.jpg') {
+      const isJs = url.pathname === '/globe.js'
+      const asset = env.ASSETS && typeof env.ASSETS.fetch === 'function' ? await env.ASSETS.fetch(new Request(new URL(url.pathname, url.origin), request)) : null
+      if (!asset || !asset.ok) return fail('asset unavailable', 404)
       const headers = new Headers(asset.headers)
-      headers.set('content-type', 'text/javascript; charset=utf-8')
+      headers.set('content-type', isJs ? 'text/javascript; charset=utf-8' : 'image/jpeg')
       headers.set('cache-control', 'public, max-age=86400, immutable')
       headers.set('x-content-type-options', 'nosniff')
       return new Response(asset.body, { status: 200, headers })

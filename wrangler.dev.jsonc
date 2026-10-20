@@ -1,0 +1,32 @@
+{
+  "name": "secrets-broker-dev",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-19",
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "vars": {
+    "VAULT_EMAIL": "agent@otscup.com",
+    "MCP_ALLOW_READ": "1",
+    "GEO_ENABLED": "1",
+    "ADMIN_PASSWORD": "dev-local-only",
+    "SESSION_KEK": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "BROKER_STATE", "class_name": "BrokerState" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["BrokerState"] }
+  ],
+  "d1_databases": [
+    {
+      "binding": "NODEWARDEN_DB",
+      "database_name": "nodewarden-db",
+      "database_id": "eaacc23f-8c2a-4a9a-a8c8-bfbd3c5e0140"
+    }
+  ]
+}

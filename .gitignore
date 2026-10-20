@@ -37,6 +37,8 @@ test-*.mjs
 !test-mf-geo-capture.mjs
 !test-mf-globe-ui.mjs
 !test-mf-globe-arcs.mjs
+!test-mf-globe-visuals.mjs
+!test-mf-globe-earth.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs
