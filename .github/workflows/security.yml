@@ -65,3 +65,5 @@ jobs:
         run: npm run test:session
       - name: State write safety (Miniflare)
         run: npm run test:state-write
+      - name: Stale cookie clearing (Miniflare)
+        run: npm run test:cookie-clearing

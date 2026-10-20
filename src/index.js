@@ -385,33 +385,44 @@ async function createAdminCookie(env, request) {
   return `${payload}.${signature}`
 }
 
-async function validCookie(request, env) {
+// Session cookie helpers. `clearable` reports whether the presented cookie is a
+// stale/legacy form that must be deleted client-side, so it cannot survive a
+// successful re-login and keep shadowing the fresh cookie.
+const SESSION_COOKIE_ATTRS = 'Path=/; HttpOnly; Secure; SameSite=None'
+const COOKIE_CLEAR_HEADER = `${SESSION_COOKIE}=; ${SESSION_COOKIE_ATTRS}; Max-Age=0`
+
+async function validCookieDetailed(request, env) {
   const value = readCookie(request, SESSION_COOKIE)
+  if (!value) return { ok: false, clearable: false }
   if (value.startsWith('v2.')) {
     const [version, id, expiresText, signature] = value.split('.')
     const expires = Number(expiresText)
-    if (!id || !Number.isFinite(expires) || expires < Date.now()) return false
+    // A malformed v2 cookie can never become valid: drop it so the browser
+    // stops presenting it on every subsequent request.
+    if (!id || !Number.isFinite(expires) || expires < Date.now()) return { ok: false, clearable: true }
     const payload = `${version}.${id}.${expiresText}`
     const expected = await hmacToken(await cookieKey(env), payload)
-    if (!constantTimeEqual(encoder.encode(expected), encoder.encode(signature ?? ''))) return false
+    if (!constantTimeEqual(encoder.encode(expected), encoder.encode(signature ?? ''))) return { ok: false, clearable: true }
     const state = await loadState(env)
     const record = state.adminSessions?.[id]
-    if (!record || (record.expiresAt && record.expiresAt < Date.now())) return false
+    if (!record) return { ok: false, clearable: true }
+    if (record.expiresAt && record.expiresAt < Date.now()) return { ok: false, clearable: true }
     if (!record.lastSeen || Date.now() - Date.parse(record.lastSeen) > 300000) {
-      // Touch lastSeen atomically. A read-modify-write of the whole state here
-      // would frequently clobber concurrent writes (including a just-created
-      // session record), which shows up as random logouts.
+      // Touch lastSeen atomically; a whole-state read-modify-write here would
+      // clobber concurrent writes (including a just-created session).
       await mutateState(env, [{ op: 'set', path: ['adminSessions', id, 'lastSeen'], value: nowIso() }]).catch(() => {})
     }
-    return true
+    return { ok: true, clearable: false }
   }
-  if (!value.startsWith('v1.')) return false
-  if (env.ALLOW_LEGACY_ADMIN_COOKIE !== '1') return false
-  const [, expiresText, signature] = value.split('.')
-  const expires = Number(expiresText)
-  if (!Number.isFinite(expires) || expires < Date.now()) return false
-  const expected = await hmacToken(await cookieKey(env), String(expires))
-  return constantTimeEqual(encoder.encode(expected), encoder.encode(signature ?? ''))
+  // Legacy v1 cookies are always rejected unless explicitly enabled, and must
+  // always be cleared: leaving one in place makes every later request look
+  // authenticated-or-poisoned while the server refuses it, which produces the
+  // login <-> authorize ping-pong.
+  return { ok: false, clearable: true }
+}
+
+async function validCookie(request, env) {
+  return (await validCookieDetailed(request, env)).ok
 }
 
 async function kekBytes(env) {
@@ -1687,12 +1698,16 @@ export default {
       await clearLoginFailures(env, ip)
       const cookie = await createAdminCookie(env, request)
       await addAudit(env, { event: 'admin.login', ip })
-      return json({ ok: true }, 200, { 'set-cookie': `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800` })
+      // SameSite=None so the cookie is sent on the cross-site POST that the
+      // OAuth consent form performs (meta.ai -> this origin). With Lax the
+      // browser withholds it on POST, validCookie sees no cookie, and the user
+      // is bounced back to /login forever.
+      return json({ ok: true }, 200, { 'set-cookie': `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=604800` })
     }
     if (url.pathname === '/api/logout' && request.method === 'POST') {
       const sessionId = cookieSessionId(request)
       if (sessionId) await updateState(env, (state) => { if (state.adminSessions?.[sessionId]) delete state.adminSessions[sessionId]; return state })
-      return json({ ok: true }, 200, { 'set-cookie': `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0` })
+      return json({ ok: true }, 200, { 'set-cookie': `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0` })
     }
     if (url.pathname === '/api/sessions' && request.method === 'GET') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -1889,7 +1904,7 @@ export default {
         const cookie = await createAdminCookie(env, request)
         await addAudit(env, { event: 'admin.oidc-login', email: user.email ?? claims.sub ?? '' })
         const headers = new Headers({ location: stateData.next === 'profile' ? '/?view=profile' : '/' })
-        headers.append('set-cookie', `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800`)
+        headers.append('set-cookie', `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=604800`)
         headers.append('set-cookie', clearOidcCookie)
         return new Response(null, { status: 302, headers })
       } catch (error) { return failOidc(String(error.message ?? error), 502) }
@@ -2862,7 +2877,11 @@ export default {
       }
       if (!client.redirectUris.includes(redirectUri)) return fail('invalid redirect_uri', 400)
       if (!params.get('code_challenge') || params.get('code_challenge_method') !== 'S256') return fail('PKCE S256 is required', 400)
-      if (!(await adminAuthorized(request, env))) {
+      const cookieCheck = await validCookieDetailed(request, env)
+      if (!cookieCheck.ok) {
+        // Clear a stale/legacy cookie before bouncing, otherwise the same bad
+        // value is presented on every retry and the loop never ends.
+        const clearHeaders = cookieCheck.clearable ? { 'set-cookie': COOKIE_CLEAR_HEADER } : {}
         // Bounce through the login page and come back to this exact authorize
         // request. For POST the form parameters live in the BODY, so rebuilding
         // the return target from url.search alone yields a bare
@@ -2888,9 +2907,15 @@ export default {
         const loginUrl = new URL('/login', url.origin)
         loginUrl.searchParams.set('next', returnTo)
         if (request.method === 'POST') {
-          return new Response('<meta charset="utf-8"><p>登录状态已过期，请 <a href="' + escapeHtml(loginUrl.pathname + loginUrl.search) + '">重新登录</a> 后再次点「允许」。</p>', { status: 401, headers: { 'content-type': 'text/html; charset=utf-8' } })
+          const body = '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+            '<p style="font:14px/1.7 system-ui;max-width:560px;margin:40px auto;padding:0 16px">登录状态已过期。' +
+            '<a href="' + escapeHtml(loginUrl.pathname + loginUrl.search) + '">点此登录</a>，登录后会自动回到授权页，再点一次「允许」即可。' +
+            '<br><span style="font-size:12px;color:#6b7890">旧的登录凭据已自动清除。</span></p>'
+          return new Response(body, { status: 401, headers: { 'content-type': 'text/html; charset=utf-8', ...clearHeaders } })
         }
-        return Response.redirect(loginUrl.toString(), 302)
+        // Build the redirect manually: Response.redirect() yields immutable
+        // headers, so a stale cookie could not be cleared alongside it.
+        return new Response(null, { status: 302, headers: { location: loginUrl.toString(), ...clearHeaders } })
       }
       if (request.method === 'POST' && params.get('decision') === 'deny') {
         const target = new URL(redirectUri); target.searchParams.set('error', 'access_denied'); if (params.get('state')) target.searchParams.set('state', params.get('state'))
