@@ -71,3 +71,5 @@ jobs:
         run: npm run test:ui
       - name: Authorization reminders (Miniflare)
         run: npm run test:reminders
+      - name: Item activity columns (Miniflare)
+        run: npm run test:items

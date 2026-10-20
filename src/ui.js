@@ -569,7 +569,16 @@ function renderStats() {
 }
 function renderItems() {
   const query = ($('item-filter')?.value || '').trim().toLowerCase(); const items = (app.items || []).filter((item) => !query || item.name.toLowerCase().includes(query) || String(item.url || '').toLowerCase().includes(query) || String(item.group || '').toLowerCase().includes(query))
-  $('items-box').innerHTML = items.length ? '<table><tr><th><input type="checkbox" id="select-all-items"></th><th>名称</th><th>用户名</th><th>分组</th><th>网址</th><th>类型</th><th>创建时间</th><th class="nowrap">免审批</th><th class="nowrap">操作</th></tr>' + items.map((item) => '<tr><td><input type="checkbox" class="item-select" data-name="' + esc(item.name) + '" ' + (selectedItems.has(item.name) ? 'checked' : '') + '></td><td><b>' + esc(item.name) + '</b></td><td class="hint">' + esc(item.username || '') + '</td><td class="hint">' + esc(item.group || '') + '</td><td class="hint">' + esc(item.url || '') + '</td><td>' + item.type + '</td><td class="hint">' + esc(item.createdAt ? new Date(item.createdAt).toLocaleDateString('zh-CN') : '-') + '</td><td class="nowrap"><button class="small ' + (item.noApproval ? 'primary' : '') + '" data-policy="' + esc(item.name) + '">' + (item.noApproval ? '免审批' : '需审批') + '</button></td><td class="actions"><button class="small" data-read="' + esc(item.name) + '">读取</button><button class="small" data-item-menu="' + esc(item.name) + '" title="更多">⋮</button></td></tr>').join('') + '</table>' : '<div class="hint">没有条目</div>'
+  $('items-box').innerHTML = items.length ? '<table><tr><th><input type="checkbox" id="select-all-items"></th><th>名称</th><th>最后活动</th><th>最后操作</th><th class="nowrap">免审批</th><th class="nowrap">操作</th></tr>' + items.map((item) => {
+    const when = item.lastActivityAt ? relativeTime(Date.parse(item.lastActivityAt)) : '无记录'
+    const who = item.lastActor || '-'
+    return '<tr><td><input type="checkbox" class="item-select" data-name="' + esc(item.name) + '" ' + (selectedItems.has(item.name) ? 'checked' : '') + '></td>' +
+      '<td><b>' + esc(item.name) + '</b></td>' +
+      '<td class="hint">' + esc(when) + '</td>' +
+      '<td class="hint">' + esc(who) + '</td>' +
+      '<td class="nowrap"><button class="small ' + (item.noApproval ? 'primary' : '') + '" data-policy="' + esc(item.name) + '">' + (item.noApproval ? '免审批' : '需审批') + '</button></td>' +
+      '<td class="actions"><button class="small" data-read="' + esc(item.name) + '">读取</button><button class="small" data-item-menu="' + esc(item.name) + '" title="更多">⋮</button></td></tr>'
+  }).join('') + '</table>' : '<div class="hint">没有条目</div>'
   const all = $('select-all-items')
   if (all) all.onchange = () => { if (all.checked) items.forEach((item) => selectedItems.add(item.name)); else items.forEach((item) => selectedItems.delete(item.name)); renderItems() }
   $('items-box').querySelectorAll('.item-select').forEach((box) => { box.onchange = () => { if (box.checked) selectedItems.add(box.dataset.name); else selectedItems.delete(box.dataset.name); updateBulkBar(); const allBox = $('select-all-items'); if (allBox) allBox.checked = items.every((item) => selectedItems.has(item.name)) } })

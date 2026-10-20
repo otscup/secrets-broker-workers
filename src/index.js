@@ -2141,7 +2141,36 @@ export default {
       const session = await getSession(env)
       if (!session) return fail('locked', 423)
       const completedTransfers = await processTransfers(env, session)
-      try { return json({ items: await listCiphers(env, env.NODEWARDEN_DB, session), completedTransfers }) } catch (error) { return fail(String(error.message ?? error), 500) }
+      try {
+        const items = await listCiphers(env, env.NODEWARDEN_DB, session)
+        // Enrich each item with the most recent activity recorded in the audit
+        // trail, plus who performed it. Used by the list view so operators do
+        // not have to open every item to see whether it is still in use.
+        const state = await loadState(env)
+        const latest = new Map()
+        for (const entry of state.audit ?? []) {
+          const item = entry.name || entry.oldName
+          if (!item) continue
+          const time = Date.parse(entry.time)
+          if (!Number.isFinite(time)) continue
+          const current = latest.get(item)
+          if (!current || time > current.time) {
+            // Admin/console activity has no agent; label it explicitly rather
+            // than pretending an agent did it.
+            latest.set(item, { time, actor: entry.agent || '', via: entry.via || (entry.agent ? 'agent' : 'web'), event: entry.event || '' })
+          }
+        }
+        const enriched = items.map((item) => {
+          const hit = latest.get(item.name)
+          return {
+            ...item,
+            lastActivityAt: hit ? new Date(hit.time).toISOString() : '',
+            lastActor: hit ? (hit.actor || '管理员') : '',
+            lastEvent: hit ? hit.event : '',
+          }
+        })
+        return json({ items: enriched, completedTransfers })
+      } catch (error) { return fail(String(error.message ?? error), 500) }
     }
     if (url.pathname === '/api/policies' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)

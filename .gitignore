@@ -31,6 +31,7 @@ test-*.mjs
 !test-mf-cookie-clearing.mjs
 !test-mf-ui-smoke.mjs
 !test-mf-reminders.mjs
+!test-mf-items-activity.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs
