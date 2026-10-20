@@ -1,0 +1,41 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  security-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm install --no-audit --no-fund
+      # Pure unit suites (no runtime required).
+      - name: OIDC unit tests
+        run: npm run test:oidc
+      - name: R1/R6 atomic + scope predicate
+        run: npm run test:r1-r6
+      # workerd-backed suites: real Durable Object storage/transaction semantics.
+      - name: OIDC state replay (Miniflare)
+        run: npm run test:mcp-oidc
+      - name: maxReads concurrency (Miniflare)
+        run: npm run test:maxreads
+      - name: Agent permission matrix (Miniflare)
+        run: npm run test:permissions
+      - name: Hybrid secret.read/use model (Miniflare)
+        run: npm run test:actions
+      - name: Approval pipeline bypass (Miniflare)
+        run: npm run test:approval
+      - name: Admin API authorization (Miniflare)
+        run: npm run test:admin-api
+      - name: Unified capabilities (Miniflare)
+        run: npm run test:capabilities
+      - name: Capability admin API (Miniflare)
+        run: npm run test:capabilities-admin

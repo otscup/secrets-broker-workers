@@ -5,9 +5,21 @@
   "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "test:oidc": "node test-oidc.mjs",
+    "test:mcp-oidc": "node test-mf-oidc.mjs",
+    "test:r1-r6": "node --import ./test-support/register.mjs test-r1-r6.mjs",
+    "test:maxreads": "node test-mf-maxreads.mjs",
+    "test:permissions": "node test-mf-permissions.mjs",
+    "test:actions": "node test-mf-actions.mjs",
+    "test:approval": "node test-mf-approval.mjs",
+    "test:admin-api": "node test-mf-admin-api.mjs",
+    "test:capabilities": "node test-mf-capabilities.mjs",
+    "test:capabilities-admin": "node test-mf-capabilities-admin.mjs",
+    "test:security": "npm run test:oidc && npm run test:r1-r6 && npm run test:mcp-oidc && npm run test:maxreads && npm run test:permissions && npm run test:actions && npm run test:approval && npm run test:admin-api && npm run test:capabilities && npm run test:capabilities-admin"
   },
   "devDependencies": {
+    "miniflare": "^4.20260730.0",
     "wrangler": "^4.151.1"
   }
 }

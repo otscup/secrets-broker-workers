@@ -8,6 +8,13 @@ test-*.mjs
 !test-oidc.mjs
 !test-r1-r6.mjs
 !test-mf-oidc.mjs
+!test-mf-maxreads.mjs
+!test-mf-permissions.mjs
+!test-mf-actions.mjs
+!test-mf-approval.mjs
+!test-mf-admin-api.mjs
+!test-mf-capabilities.mjs
+!test-mf-capabilities-admin.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs

@@ -45,6 +45,36 @@ export class BrokerState extends DurableObject {
       await this.ctx.storage.put('state', state)
       return json({ ok: true, reads: grant.reads })
     }
+    // Atomic capability check-and-consume. The counter mutation runs inside
+    // storage.transaction() with exclusive access per Durable Object, so
+    // concurrent callers cannot both observe usedCount < maxUses. The
+    // transaction is short: pure checks + counter write only, never held
+    // across external HTTP. A consumed use counts even if the upstream call
+    // later fails (prevents infinite failure-retry bypass); safe retry needs
+    // a separate idempotency key (future work). Revocation takes effect for
+    // all NEW requests; a request already past this gate keeps its slot.
+    if (url.pathname === '/capability/consume' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const key = String(body.key ?? '')
+      const accountId = String(body.accountId ?? '')
+      const action = String(body.action ?? '')
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const store = (await txn.get('state')) ?? {}
+        const cap = store.capabilities?.[key] ?? null
+        if (!cap) return { ok: false, reason: 'no-capability' }
+        if (!cap.subjectId || !cap.itemId || cap.action !== action) return { ok: false, reason: 'mismatch' }
+        if (accountId && cap.accountId && cap.accountId.toLowerCase() !== accountId.toLowerCase()) return { ok: false, reason: 'cross-account' }
+        if (cap.revokedAt) return { ok: false, reason: 'revoked' }
+        if (cap.expiresAt != null && cap.expiresAt <= Date.now()) return { ok: false, reason: 'expired' }
+        if (cap.maxUses != null && (cap.usedCount ?? 0) >= cap.maxUses) return { ok: false, reason: 'exhausted' }
+        cap.usedCount = (cap.usedCount ?? 0) + 1
+        if (cap.maxUses != null && cap.usedCount >= cap.maxUses) delete store.capabilities[key]
+        else store.capabilities[key] = cap
+        await txn.put('state', store)
+        return { ok: true, usedCount: cap.usedCount, capabilityId: cap.id ?? key }
+      })
+      return json(result)
+    }
     // Atomic OIDC state check-and-consume. The state mutation runs inside
     // storage.transaction(), which Cloudflare executes with exclusive access
     // against every other transaction on the same Durable Object (SQLite
@@ -212,13 +242,22 @@ async function loadState(env) {
   }
   state.transfers ??= []
   state.credentialRequests ??= {}
+  // Phase-1 hybrid permission model. Additive only: nothing here is consulted
+  // by the legacy path unless authorizeSecretAction() is called explicitly.
+  state.actionGrants ??= {}
+  state.usePolicies ??= {}
   const defaultAgentAccount = state.settings?.vaultEmail || env.VAULT_EMAIL || ''
   for (const agent of Object.values(state.agents ?? {})) {
     if (!agent.account && defaultAgentAccount) agent.account = defaultAgentAccount
     if (agent.allowAll === undefined) agent.allowAll = (agent.allow ?? []).length === 0 && (agent.groups ?? []).length === 0
+    // Legacy agents predate the action model. Mark them so secret.read can
+    // keep working via the old scope rules, while secret.use stays denied
+    // until an explicit action grant exists.
+    if (agent.legacy === undefined) agent.legacy = true
   }
   for (const profile of Object.values(state.oauthAgentProfiles ?? {})) {
     if (profile.allowAll === undefined) profile.allowAll = (profile.allow ?? []).length === 0 && (profile.groups ?? []).length === 0
+    if (profile.legacy === undefined) profile.legacy = true
   }
   state.pending ??= {}
   state.audit ??= []
@@ -539,7 +578,7 @@ async function readSecretFromRows(env, db, session, name) {
     if (folderId && candidate.folder_id !== folderId) continue
     const decrypted = await decryptCipherRow(candidate, session)
     if (decrypted.name !== name) continue
-    return { value: extractSecret(decrypted), username: extractUsername(decrypted), totp: extractTotp(decrypted), type: decrypted.type, url: cipherUrl(decrypted.data) }
+    return { value: extractSecret(decrypted), username: extractUsername(decrypted), totp: extractTotp(decrypted), type: decrypted.type, url: cipherUrl(decrypted.data), id: candidate.id }
   }
   return null
 }
@@ -737,6 +776,10 @@ function publicState(state) {
   }
 }
 
+// Approval durations for temporary capabilities. 'always' maps to a
+// permanent capability (expiresAt null); the legacy grant mirror keeps its
+// old expiresAt: 0 convention for backward compatibility.
+const APPROVAL_DURATIONS = { once: 0, '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, always: null }
 async function decidePending(env, id, decision, source = 'web') {
   let outcome = null
   await updateState(env, (state) => {
@@ -750,6 +793,23 @@ async function decidePending(env, id, decision, source = 'web') {
     const mode = ['once', '1h', '24h', '7d', 'always'].includes(decision) ? decision : 'once'
     const expiresAt = mode === '1h' ? Date.now() + 3600e3 : mode === '24h' ? Date.now() + 86400e3 : mode === '7d' ? Date.now() + 7 * 86400e3 : 0
     state.grants[grantKey(entry.agent, entry.name)] = { agent: entry.agent, name: entry.name, mode, createdAt: nowIso(), expiresAt, reads: 0, maxReads: mode === 'once' ? 1 : null, revokedAt: null, account: entry.account ?? '' }
+    // Temporary capability for secret.read, linked to this approval. The
+    // legacy grant above is kept as a mirror; the capability is authoritative
+    // for counting (see /capability/consume).
+    const itemId = state.itemIds?.[entry.name] ?? ''
+    if (itemId) {
+      const key = capabilityKey(entry.agent, itemId, 'secret.read')
+      const ttl = APPROVAL_DURATIONS[mode]
+      state.capabilities ??= {}
+      state.capabilities[key] = {
+        id: key, subjectId: entry.agent, accountId: entry.account ?? '', itemId,
+        itemName: entry.name, action: 'secret.read', mode: 'temporary',
+        createdAt: nowIso(), createdBy: 'approval:' + id,
+        expiresAt: ttl == null || ttl === 0 ? null : Date.now() + ttl,
+        maxUses: mode === 'once' ? 1 : null, usedCount: 0,
+        revokedAt: null, revokedBy: null, approvalId: id, policyVersion: 1,
+      }
+    }
     outcome = { agent: entry.agent, name: entry.name, mode }
     return state
   })
@@ -821,6 +881,47 @@ async function consumeOidcState(env, cookieValue, returned) {
   return response.json()
 }
 
+async function consumeCapability(env, key, accountId, action) {
+  const response = await stateStub(env).fetch('https://state/capability/consume', { method: 'POST', body: JSON.stringify({ key, accountId, action }) })
+  return response.json()
+}
+
+// Lazy migration: ONLY live approval state migrates — a valid legacy grant
+// or a noApproval policy. A bare actionGrant (needs approval) must NOT
+// synthesize a capability, otherwise the approval gate in agentAccess would
+// see decision.capability and skip pending. Approvals write real temporary
+// capabilities via decidePending; preapproved ones come from the admin API.
+// Never auto-creates permanent-unlimited from allowAll.
+function migrateLegacyCapability(state, { subjectId, accountId, itemId, itemName, action, createdBy, noApproval = false }) {
+  const key = capabilityKey(subjectId, itemId, action)
+  if (state.capabilities?.[key]) return state.capabilities[key]
+  const oldGrant = state.grants?.[`${subjectId}\u0000${itemName}`] ?? null
+  const oldAction = state.actionGrants?.[actionGrantKey(subjectId, itemId)] ?? null
+  const actionAllowed = (oldAction?.actions ?? []).includes(action)
+  if (!oldGrant && !(actionAllowed && noApproval)) return null
+  // Validate the legacy source before migrating: revoked/expired/exhausted
+  // legacy grants must NOT resurrect as capabilities.
+  if (oldGrant) {
+    if (oldGrant.revokedAt) return null
+    if (oldGrant.expiresAt && oldGrant.expiresAt < Date.now()) return null
+    if (oldGrant.maxReads != null && (oldGrant.reads ?? 0) >= oldGrant.maxReads) return null
+    if (accountId && oldGrant.account && oldGrant.account.toLowerCase() !== String(accountId).toLowerCase()) return null
+  }
+  if (oldAction && accountId && oldAction.accountId && oldAction.accountId.toLowerCase() !== String(accountId).toLowerCase()) return null
+  const now = Date.now()
+  const cap = {
+    id: key, subjectId, accountId: oldAction?.accountId ?? oldGrant?.account ?? accountId ?? '',
+    itemId, itemName: itemName ?? oldAction?.itemName ?? '', action,
+    mode: 'preapproved', createdAt: new Date(now).toISOString(), createdBy: createdBy ?? 'legacy-migration',
+    expiresAt: oldGrant?.expiresAt ? oldGrant.expiresAt : null,
+    maxUses: oldGrant?.maxReads ?? null, usedCount: oldGrant?.reads ?? 0,
+    revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1,
+  }
+  state.capabilities ??= {}
+  state.capabilities[key] = cap
+  return cap
+}
+
 async function consumeGrant(env, agent, name) {
   const response = await stateStub(env).fetch('https://state/grant/consume', { method: 'POST', body: JSON.stringify({ agent, name }) })
   return response.json()
@@ -837,12 +938,176 @@ export function agentInScope(agent, itemGroups, targetName, groupOverride) {
   return allow.includes(targetName) || (group !== '' && groups.includes(group))
 }
 
-async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx, consumeRead = true }) {
+// ── Phase-1 hybrid permission model ────────────────────────────────────────
+// secret.read and secret.use are independent actions. secret.read returns
+// plaintext; secret.use only lets the broker inject and execute. Neither
+// implies the other.
+const SECRET_ACTIONS = new Set(['secret.read', 'secret.use'])
+
+// ── Unified capability model (read/use share one authority) ───────────────
+// A capability is the SOLE authority for secret.read / secret.use grants:
+// key = subjectId + itemId + action. Legacy `state.grants` (approval temp
+// state) and `state.actionGrants` (permanent, no expiry/uses) are lazily
+// migrated into capabilities on first hit; their old counters are never
+// consulted again, so no double-counting path exists.
+// expiresAt: null = permanent (never use magic timestamps).
+// maxUses: null = unlimited (still bound by expiry/revoke/scope/target).
+const CAPABILITY_DURATIONS = { '1d': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, permanent: null }
+const CAPABILITY_MODES = new Set(['preapproved', 'temporary'])
+
+function capabilityKey(subjectId, itemId, action) { return `${subjectId}\u0000${itemId}\u0000${action}` }
+
+export function capabilityStatus(cap, now = Date.now()) {
+  if (!cap) return 'missing'
+  if (cap.revokedAt) return 'revoked'
+  if (cap.expiresAt != null && cap.expiresAt <= now) return 'expired'
+  if (cap.maxUses != null && (cap.usedCount ?? 0) >= cap.maxUses) return 'exhausted'
+  if (cap.expiresAt != null && cap.expiresAt - now <= 24 * 3600e3) return 'expiring'
+  return 'valid'
+}
+
+function actionGrantKey(subjectId, itemId) { return `${subjectId}\u0000${itemId}` }
+
+export function actionGrantFor(state, subjectId, itemId) {
+  return state.actionGrants?.[actionGrantKey(subjectId, itemId)] ?? null
+}
+
+function usePolicyFor(state, itemId, accountId) {
+  const policy = state.usePolicies?.[itemId] ?? null
+  if (!policy) return null
+  if (policy.accountId && accountId && String(policy.accountId).toLowerCase() !== String(accountId).toLowerCase()) return null
+  return policy
+}
+
+function targetAllowed(policy, target) {
+  if (!policy || !target) return false
+  const host = String(target.host ?? '').toLowerCase().replace(/\.$/, '')
+  const port = String(target.port ?? '443')
+  const method = String(target.method ?? 'GET').toUpperCase()
+  const pathname = String(target.pathname ?? '/')
+  const hosts = (policy.hosts ?? []).map((v) => String(v).toLowerCase().replace(/\.$/, ''))
+  if (!hosts.includes(host)) return false
+  if (!(policy.methods ?? []).map((v) => String(v).toUpperCase()).includes(method)) return false
+  if ((policy.ports ?? ['443']).map(String).includes(port) === false) return false
+  const prefixes = policy.pathPrefixes ?? []
+  if (prefixes.length > 0 && !prefixes.some((prefix) => pathname === prefix || pathname.startsWith(prefix.endsWith('/') ? prefix : prefix + '/'))) return false
+  return true
+}
+
+/**
+ * Unified authorization for secret.read / secret.use.
+ *
+ * Returns { ok, reason, legacy, shadow? }. Never returns secret material.
+ *
+ * secret.read:
+ *   - explicit actionGrants containing secret.read → allow
+ *   - legacy agent + old agentInScope → allow (marked legacy)
+ *   - otherwise deny
+ *
+ * secret.use:
+ *   - explicit actionGrants containing secret.use AND a matching usePolicy
+ *   - legacy fallback is deliberately NOT accepted
+ */
+export function authorizeSecretAction(state, { agent, agentName, itemId, itemName, action, target, accountId }) {
+  if (!SECRET_ACTIONS.has(action)) return { ok: false, reason: 'unknown-action' }
+  if (!itemId) return { ok: false, reason: 'no-item-id' }
+  const subjectId = agentName
+  const key = capabilityKey(subjectId, itemId, action)
+  let cap = state.capabilities?.[key] ?? null
+  if (!cap) cap = migrateLegacyCapability(state, { subjectId, accountId, itemId, itemName, action, createdBy: 'legacy-migration', noApproval: state.policies?.[itemName]?.noApproval === true })
+  const sameAccount = !cap || !cap.accountId || !accountId || String(cap.accountId).toLowerCase() === String(accountId).toLowerCase()
+  const legacyScope = Boolean(agent?.legacy) && agentInScope(agent, state.itemGroups, itemName)
+  const legacyDecision = action === 'secret.read' && legacyScope
+  let ok = false
+  let reason = 'no-capability'
+  if (cap && sameAccount) {
+    // Capability is the authority for expiry/uses/revoke; status here is a
+    // pre-check only — the atomic consume at execution time is decisive.
+    const status = capabilityStatus(cap)
+    if (status !== 'valid' && status !== 'expiring') { ok = false; reason = status }
+    else if (action === 'secret.read') { ok = true; reason = 'capability' }
+    else {
+      const policy = usePolicyFor(state, itemId, accountId)
+      if (!policy) { ok = false; reason = 'no-use-policy' }
+      else if (!targetAllowed(policy, target)) { ok = false; reason = 'target-denied' }
+      else { ok = true; reason = 'capability' }
+    }
+  } else if (legacyDecision) {
+    // Compatibility: legacy agents keep secret.read only.
+    ok = true
+    reason = 'legacy-scope'
+  }
+  // Capability-eligible but not yet issued (actionGrant without approval
+  // state): the approval gate in agentAccess must see this as pending, not
+  // as a hard deny — EXCEPT target-policy violations, which stay hard denies
+  // so mis-scoped use can never be approved into existence.
+  const grant = actionGrantFor(state, subjectId, itemId)
+  let grantEligible = Boolean(grant && (grant.actions ?? []).includes(action)
+    && (!grant.accountId || !accountId || String(grant.accountId).toLowerCase() === String(accountId).toLowerCase()))
+  if (grantEligible && action === 'secret.use') {
+    const policy = usePolicyFor(state, itemId, accountId)
+    if (!policy) { ok = false; reason = 'no-use-policy'; grantEligible = false }
+    else if (!targetAllowed(policy, target)) { ok = false; reason = 'target-denied'; grantEligible = false }
+    else { ok = false; reason = 'awaiting-approval' }
+  }
+  return { ok, reason, legacy: legacyDecision, grant: null, capability: cap, capabilityKey: key, grantEligible }
+}
+
+function shadowAudit(env, state, action, agentName, itemName, itemId, newDecision, legacyDecision) {
+  if (state.settings?.shadowPolicy !== true && env.POLICY_SHADOW !== '1') return
+  if (newDecision === legacyDecision) return
+  // Never include values, usernames, TOTP, request bodies or headers.
+  addAudit(env, {
+    event: 'policy.shadow-mismatch',
+    action,
+    agent: agentName,
+    name: itemName,
+    itemId: itemId ?? '',
+    new: newDecision ? 'allow' : 'deny',
+    legacy: legacyDecision ? 'allow' : 'deny',
+  }).catch(() => {})
+}
+
+function itemIdByName(state, name) {
+  return state.itemIds?.[name] ?? ''
+}
+
+// Resolve a stable NodeWarden cipher id for an item name. Used by the hybrid
+// action model, which binds grants to itemId rather than a renameable name.
+async function resolveItemId(env, db, session, name) {
+  const found = await findCipherRow(env, db, session, name)
+  return found?.row?.id ?? ''
+}
+
+
+async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx, consumeRead = true, action = 'secret.read', target = null }) {
   if (agent.account && session.email && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) return { status: 'forbidden', error: 'agent is bound to another vault account' }
-  if (!agentInScope(agent, state.itemGroups, name)) return { status: 'forbidden', error: 'agent not allowed to read this item' }
+  // Legacy scope is only a fallback for secret.read; it must not pre-block an
+  // explicit action grant (e.g. a new agent granted secret.use on one item).
+  if (agent.legacy && !agentInScope(agent, state.itemGroups, name)) {
+    // Keep going: authorizeSecretAction decides whether an action grant applies.
+  }
+  // Hybrid action check. Legacy agents keep secret.read; secret.use always
+  // requires an explicit action grant + per-item target policy.
+  if (!state.itemIds?.[name]) {
+    const resolved = await resolveItemId(env, env.NODEWARDEN_DB, session, name)
+    if (resolved) { state.itemIds ??= {}; state.itemIds[name] = resolved }
+  }
+  const itemId = state.itemIds?.[name] ?? ''
+  const decision = authorizeSecretAction(state, { agent, agentName, itemId, itemName: name, action, target, accountId: session.email })
+  shadowAudit(env, state, action, agentName, name, itemId, decision.ok, decision.legacy)
+  if (!decision.ok) {
+    if (decision.reason === 'no-use-policy' || decision.reason === 'target-denied') return { status: 'forbidden', error: `secret.use denied: ${decision.reason}` }
+    // Not capability-eligible at all -> hard deny. Eligible-but-unapproved
+    // falls through to the approval gate below (pending), never a bypass.
+    if (!decision.grantEligible && !decision.legacy) return { status: 'forbidden', error: 'agent not allowed to read this item' }
+  }
   const policy = state.policies?.[name]
-  const grant = activeGrant(state, agentName, name)
-  if (!policy?.noApproval && !grant) {
+  // Approval gate: noApproval items skip; otherwise a live capability (or a
+  // live legacy grant, which migrates into one) is required. The capability
+  // carries mode/approvalId; temporary grants always come from an approval.
+  const legacyGrant = activeGrant(state, agentName, name)
+  if (!policy?.noApproval && !decision.capability && !legacyGrant) {
     let pendingId = findPending(state, agentName, name)
     if (!pendingId) {
       pendingId = crypto.randomUUID()
@@ -853,13 +1118,23 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     }
     return { status: 'pending', requestId: pendingId, approvalUrl: `${origin}/#/grants` }
   }
-  if (grant && consumeRead) {
+  // Unified atomic consume: capability is the sole counter. Checks passed
+  // above; consume now, before decrypt/fetch, inside the DO transaction.
+  // Failed upstream calls still count (no infinite failure-retry bypass).
+  if (consumeRead && decision.capabilityKey && !decision.legacy) {
+    const consumed = await consumeCapability(env, decision.capabilityKey, session.email, action)
+    if (!consumed?.ok) return { status: 'forbidden', error: `capability no longer valid: ${consumed?.reason ?? 'unknown'}` }
+  } else if (legacyGrant && consumeRead) {
     const consumed = await consumeGrant(env, agentName, name)
     if (!consumed?.ok) return { status: 'forbidden', error: 'grant is no longer valid' }
   }
+  if (action === 'secret.use') {
+    // The caller (http_request) performs the fetch; this returns metadata only.
+    return { status: 'use-ok', itemId, url: (await readSecretFromRows(env, env.NODEWARDEN_DB, session, name))?.url ?? '' }
+  }
   const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
   if (!result) return { status: 'notfound', error: 'not found' }
-  await addAudit(env, { event: 'secret.read', agent: agentName, name, mode: policy?.noApproval ? 'no-approval' : 'grant', via: 'agent' })
+  await addAudit(env, { event: 'secret.read', agent: agentName, name, mode: policy?.noApproval ? 'no-approval' : 'grant', via: 'agent', legacy: decision.legacy === true })
   return { status: 'ok', value: result.value, url: result.url }
 }
 
@@ -1386,9 +1661,145 @@ export default {
       await addAudit(env, { event: 'policy.update', name, noApproval: body.noApproval === true })
       return json({ ok: true, state: publicState(state) })
     }
+    if (url.pathname === '/api/use-policies' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const itemName = String(body.item ?? '').trim()
+      if (!itemName) return fail('item required', 400)
+      const itemId = await resolveItemId(env, env.NODEWARDEN_DB, session, itemName)
+      if (!itemId) return fail('item not found', 404)
+      const hosts = (Array.isArray(body.hosts) ? body.hosts : []).map((v) => String(v).toLowerCase().replace(/\.$/, '')).filter(Boolean)
+      const methods = (Array.isArray(body.methods) ? body.methods : []).map((v) => String(v).toUpperCase()).filter(Boolean)
+      const pathPrefixes = (Array.isArray(body.pathPrefixes) ? body.pathPrefixes : []).map(String).filter(Boolean)
+      const ports = (Array.isArray(body.ports) ? body.ports : ['443']).map(String).filter(Boolean)
+      if (!hosts.length || !methods.length) return fail('hosts and methods are required', 400)
+      await updateState(env, (state) => {
+        state.usePolicies ??= {}
+        state.usePolicies[itemId] = { itemId, accountId: session.email, hosts, methods, pathPrefixes, ports, updatedAt: nowIso() }
+        return state
+      })
+      await addAudit(env, { event: 'use-policy.update', name: itemName, itemId, hosts, methods })
+      return json({ ok: true, itemId })
+    }
+    if (url.pathname === '/api/action-grants' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const agentName = String(body.agent ?? '').trim()
+      const itemName = String(body.item ?? '').trim()
+      const actions = (Array.isArray(body.actions) ? body.actions : []).map(String).filter((a) => SECRET_ACTIONS.has(a))
+      if (!agentName || !itemName || !actions.length) return fail('agent, item and actions required', 400)
+      const itemId = await resolveItemId(env, env.NODEWARDEN_DB, session, itemName)
+      if (!itemId) return fail('item not found', 404)
+      // Per-action terms: body.terms = { 'secret.read': { duration, maxUses }, 'secret.use': {...} }.
+      // duration: 1d | 7d | 30d | permanent (default permanent).
+      // maxUses: positive int | 'unlimited' (default unlimited).
+      // mode: preapproved (default) — temporary grants come from approvals.
+      const terms = (body.terms && typeof body.terms === 'object' ? body.terms : {})
+      const parsedTerms = {}
+      for (const action of actions) {
+        const t = (terms[action] && typeof terms[action] === 'object' ? terms[action] : {})
+        const duration = ['1d', '7d', '30d', 'permanent'].includes(t.duration) ? t.duration : 'permanent'
+        let maxUses = null
+        if (t.maxUses != null && t.maxUses !== 'unlimited') {
+          const n = Math.floor(Number(t.maxUses))
+          if (!Number.isFinite(n) || n < 1 || n > 1000000) return fail('maxUses must be a positive integer or "unlimited"', 400)
+          maxUses = n
+        }
+        parsedTerms[action] = { duration, maxUses }
+      }
+      await updateState(env, (state) => {
+        state.actionGrants ??= {}
+        const key = actionGrantKey(agentName, itemId)
+        state.actionGrants[key] = { id: key, subjectId: agentName, accountId: session.email, itemId, itemName, actions, legacy: false, createdAt: nowIso() }
+        state.capabilities ??= {}
+        const now = Date.now()
+        for (const action of actions) {
+          const { duration, maxUses } = parsedTerms[action]
+          const ckey = capabilityKey(agentName, itemId, action)
+          state.capabilities[ckey] = {
+            id: ckey, subjectId: agentName, accountId: session.email, itemId, itemName, action,
+            mode: 'preapproved', createdAt: new Date(now).toISOString(), createdBy: 'admin:' + session.email,
+            expiresAt: CAPABILITY_DURATIONS[duration] == null ? null : now + CAPABILITY_DURATIONS[duration],
+            maxUses, usedCount: 0, revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1,
+          }
+        }
+        return state
+      })
+      await addAudit(env, { event: 'action-grant.update', agent: agentName, name: itemName, itemId, actions, terms: parsedTerms })
+      return json({ ok: true, itemId, terms: parsedTerms })
+    }
+    if (url.pathname === '/api/action-grants/revoke' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const itemId = String(body.itemId ?? '')
+      const agentName = String(body.agent ?? '')
+      if (!itemId || !agentName) return fail('itemId and agent required', 400)
+      // Only revoke grants that belong to the currently unlocked vault account.
+      // Soft-revoke: capabilities keep revokedAt/revokedBy for status display;
+      // the consume gate rejects them. Optional body.action limits to one action.
+      const loaded = await loadState(env)
+      const existing = loaded.actionGrants?.[actionGrantKey(agentName, itemId)]
+      if (!existing) return fail('grant not found', 404)
+      if (existing.accountId && String(existing.accountId).toLowerCase() !== String(session.email).toLowerCase()) return fail('grant belongs to another account', 403)
+      const onlyAction = String(body.action ?? '')
+      if (onlyAction && !SECRET_ACTIONS.has(onlyAction)) return fail('unknown action', 400)
+      const revokedActions = onlyAction ? [onlyAction] : (existing.actions ?? [])
+      await updateState(env, (state) => {
+        const now = new Date().toISOString()
+        for (const action of revokedActions) {
+          const ckey = capabilityKey(agentName, itemId, action)
+          const cap = state.capabilities?.[ckey]
+          if (cap) { cap.revokedAt = now; cap.revokedBy = 'admin:' + session.email }
+        }
+        if (!onlyAction && state.actionGrants?.[actionGrantKey(agentName, itemId)]) delete state.actionGrants[actionGrantKey(agentName, itemId)]
+        else if (onlyAction && state.actionGrants?.[actionGrantKey(agentName, itemId)]) {
+          const rest = (state.actionGrants[actionGrantKey(agentName, itemId)].actions ?? []).filter((a) => a !== onlyAction)
+          if (rest.length) state.actionGrants[actionGrantKey(agentName, itemId)].actions = rest
+          else delete state.actionGrants[actionGrantKey(agentName, itemId)]
+        }
+        return state
+      })
+      await addAudit(env, { event: 'action-grant.revoke', agent: agentName, itemId, actions: revokedActions })
+      return json({ ok: true, revoked: revokedActions })
+    }
     if (url.pathname === '/api/state') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       return json(publicState(await loadState(env)))
+    }
+    // Read-only migration report: which agents still rely on legacy paths,
+    // what would break, and current capability terms. Never mutates.
+    if (url.pathname === '/api/migration-report' && request.method === 'GET') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      const state = await loadState(env)
+      const account = (session?.email ?? '').toLowerCase()
+      const report = { account: session?.email ?? '', agents: [], capabilities: [], legacyGrants: [] }
+      for (const [name, agent] of Object.entries(state.agents ?? {})) {
+        if (account && agent.account && String(agent.account).toLowerCase() !== account) continue
+        const caps = Object.values(state.capabilities ?? {}).filter((c) => c.subjectId === name)
+        const reads = caps.filter((c) => c.action === 'secret.read').map((c) => ({ status: capabilityStatus(c), expiresAt: c.expiresAt, maxUses: c.maxUses, usedCount: c.usedCount ?? 0 }))
+        const uses = caps.filter((c) => c.action === 'secret.use').map((c) => ({ status: capabilityStatus(c), expiresAt: c.expiresAt, maxUses: c.maxUses, usedCount: c.usedCount ?? 0 }))
+        report.agents.push({
+          agent: name, legacy: agent.legacy === true, allowAll: agent.allowAll === true,
+          needsUse: uses.length === 0, needsRead: reads.length === 0 && !agent.legacy,
+          readTerms: reads, useTerms: uses,
+        })
+      }
+      for (const cap of Object.values(state.capabilities ?? {})) {
+        if (account && cap.accountId && String(cap.accountId).toLowerCase() !== account) continue
+        report.capabilities.push({ id: cap.id, subjectId: cap.subjectId, itemId: cap.itemId, itemName: cap.itemName ?? '', action: cap.action, mode: cap.mode, status: capabilityStatus(cap), expiresAt: cap.expiresAt, maxUses: cap.maxUses, usedCount: cap.usedCount ?? 0, revokedAt: cap.revokedAt ?? null })
+      }
+      for (const grant of Object.values(state.grants ?? {})) {
+        if (account && grant.account && String(grant.account).toLowerCase() !== account) continue
+        report.legacyGrants.push({ agent: grant.agent, name: grant.name, mode: grant.mode, expiresAt: grant.expiresAt, maxReads: grant.maxReads, reads: grant.reads ?? 0, revokedAt: grant.revokedAt ?? null })
+      }
+      return json({ ok: true, report })
     }
     if (url.pathname === '/api/agents/create' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -1475,6 +1886,15 @@ export default {
         }
         for (const entry of Object.values(state.pending ?? {})) if (entry.agent === name) entry.agent = newName
         for (const entry of Object.values(state.transfers ?? [])) if (entry.agent === name) entry.agent = newName
+        // actionGrants are keyed by subjectId + itemId; a rename must carry
+        // them across or every new-model grant silently detaches.
+        for (const [key, grant] of Object.entries(state.actionGrants ?? {})) {
+          if (grant.subjectId !== name) continue
+          delete state.actionGrants[key]
+          grant.subjectId = newName
+          grant.id = actionGrantKey(newName, grant.itemId)
+          state.actionGrants[actionGrantKey(newName, grant.itemId)] = grant
+        }
         return state
       })
       if (error) return fail(error, 409)
@@ -2002,6 +2422,15 @@ export default {
             if (access.status === 'notfound') return result(text(access.error, true))
             return result(text('access already allowed; use get_secret'))
           }
+          if (name === 'get_secret') {
+            if (env.MCP_ALLOW_READ !== '1') return result(text('get_secret is disabled; set MCP_ALLOW_READ=1 to expose values', true))
+            const secretName = String(args.name ?? '')
+            if (!secretName) return result(text('name is required', true))
+            const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx })
+            if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
+            if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
+            return result(text(access.value))
+          }
           if (name === 'get_credential') {
             if (env.MCP_ALLOW_READ !== '1') return result(text('get_credential is disabled; set MCP_ALLOW_READ=1', true))
             const secretName = String(args.name ?? '')
@@ -2025,13 +2454,22 @@ export default {
           if (name === 'http_request') {
             const secretName = String(args.name ?? '')
             if (!secretName) return result(text('name is required', true))
-            const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx })
+            // secret.use is a distinct action from secret.read: it never
+            // returns plaintext and requires a per-item target policy.
+            let parsedTarget = null
+            try { parsedTarget = new URL(String(args.url ?? '')) } catch { return result(text('invalid url', true)) }
+            const useTarget = {
+              host: parsedTarget.hostname.toLowerCase().replace(/\.$/, ''),
+              port: String(parsedTarget.port || '443'),
+              method: String(args.method ?? 'GET').trim().toUpperCase(),
+              pathname: parsedTarget.pathname || '/',
+            }
+            const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx, action: 'secret.use', target: useTarget })
             if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
             if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
+            if (access.status !== 'use-ok') return result(text('secret.use denied', true))
             const method = String(args.method ?? 'GET').trim().toUpperCase()
             if (!method || method.length > 16) return result(text('invalid method (max 16 chars)', true))
-            const allowedMethods = new Set(['GET', 'POST', ...String(env.HTTP_ALLOW_METHODS ?? '').split(',').map((value) => value.trim().toUpperCase()).filter(Boolean)])
-            if (!allowedMethods.has(method)) return result(text('http method is not allowed; extend HTTP_ALLOW_METHODS to permit it', true))
             const secretHeaderAllow = { authorization: 'Authorization', 'x-api-key': 'X-Api-Key', 'api-key': 'Api-Key', 'x-auth-token': 'X-Auth-Token' }
             const rawHeaderName = String(args.headerName ?? 'Authorization').trim()
             const headerName = secretHeaderAllow[rawHeaderName.toLowerCase()]
@@ -2062,13 +2500,9 @@ export default {
             if (target.protocol !== 'https:') return result(text('only https targets are allowed', true))
             if (target.username || target.password) return result(text('userinfo in target url is not allowed', true))
             const port = String(target.port ?? '')
-            if (port && port !== '443') {
-              const allowedPorts = new Set(String(env.HTTP_ALLOWED_PORTS ?? '').split(',').map((value) => value.trim()).filter(Boolean))
-              if (!allowedPorts.has(port)) return result(text('target port is not allowed (use 443 or HTTP_ALLOWED_PORTS)', true))
-            }
-            const allowPaths = String(env.HTTP_ALLOW_PATHS ?? '').split(',').map((value) => value.trim()).filter(Boolean)
+            const allowPaths = [] // per-item usePolicies are the authority now
             const pathAllowed = (pathname, prefix) => pathname === prefix || (prefix.endsWith('/') ? pathname.startsWith(prefix) : pathname.startsWith(prefix + '/'))
-            if (allowPaths.length > 0 && !allowPaths.some((prefix) => pathAllowed(target.pathname, prefix))) return result(text('target path is not allowed by HTTP_ALLOW_PATHS', true))
+            if (allowPaths.length > 0 && !allowPaths.some((prefix) => pathAllowed(target.pathname, prefix))) return result(text('target path is not allowed', true))
             const host = target.hostname.toLowerCase()
             const normHost = host.endsWith('.') ? host.slice(0, -1).toLowerCase() : host
             const deBracket = normHost.startsWith('[') && normHost.endsWith(']') ? normHost.slice(1, -1).toLowerCase() : normHost
@@ -2081,14 +2515,33 @@ export default {
             if (isAllNumericIp || isMappedV6) return result(text('private/local targets are not allowed', true))
             if (normHost === 'localhost' || normHost.endsWith('.local') || /^(127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(normHost) || normHost === '::1' || normHost === '[::1]') return result(text('private/local targets are not allowed', true))
             const allowedHosts = new Set(String(env.HTTP_ALLOWED_HOSTS ?? '').split(',').map((value) => { const v = value.trim().toLowerCase(); return v.endsWith('.') ? v.slice(0, -1) : v }).filter(Boolean))
-            try { if (access.url) { const itemHost = new URL(access.url).hostname.toLowerCase(); allowedHosts.add(itemHost.endsWith('.') ? itemHost.slice(0, -1) : itemHost) } } catch {}
-            if (!allowedHosts.has(normHost)) return result(text('target host is not allowed for this credential; set the item URL or HTTP_ALLOWED_HOSTS', true))
-            headers[headerName] = authPrefix + access.value
+            // Per-item usePolicies already authorized the exact host above.
+            // HTTP_ALLOWED_HOSTS stays as an optional operator-level extra
+            // restriction when configured (intersection, not replacement).
+            if (allowedHosts.size > 0 && !allowedHosts.has(normHost)) return result(text('target host is not allowed by HTTP_ALLOWED_HOSTS', true))
+            // Broker-side decrypt for injection only. This value is never
+            // serialized into the MCP response.
+            const material = await readSecretFromRows(env, env.NODEWARDEN_DB, session, secretName)
+            if (!material || !material.value) return result(text('credential unavailable', true))
+            headers[headerName] = authPrefix + material.value
             const init = { method, headers, redirect: 'manual', signal: AbortSignal.timeout(15000) }
             if (reqBody != null && !['GET', 'HEAD'].includes(method)) init.body = reqBody
             let response
             try { response = await fetch(target.toString(), init) } catch (error) { return result(text(error?.name === 'TimeoutError' ? 'upstream request timed out (15s)' : `upstream fetch failed: ${String(error?.message ?? error).slice(0, 200)}`, true)) }
-            const responseBody = (await response.text()).slice(0, 8000)
+            const rawBody = (await response.text()).slice(0, 8000)
+            // Defense-in-depth only: strip the exact injected value and common
+            // echo forms. This is NOT a guarantee against arbitrary encoding,
+            // transforms or partial echoes - see SECURITY.md.
+            const scrub = (input) => {
+              if (typeof input !== 'string' || !material.value) return input
+              let out = input
+              out = out.split(material.value).join('[REDACTED]')
+              out = out.split(authPrefix + material.value).join('[REDACTED]')
+              out = out.split(encodeURIComponent(material.value)).join('[REDACTED]')
+              out = out.split(Buffer.from(material.value).toString('base64')).join('[REDACTED]')
+              return out
+            }
+            const responseBody = scrub(rawBody)
             await addAudit(env, { event: 'secret.use', agent: resolved.name, name: secretName, via: 'http_request', method, host: normHost, path: target.pathname.slice(0, 200), status: response.status })
             return result(text(JSON.stringify({ status: response.status, ok: response.ok, body: responseBody })))
           }
