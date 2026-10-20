@@ -69,3 +69,5 @@ jobs:
         run: npm run test:cookie-clearing
       - name: Admin UI smoke (Miniflare)
         run: npm run test:ui
+      - name: Authorization reminders (Miniflare)
+        run: npm run test:reminders

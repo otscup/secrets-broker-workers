@@ -30,6 +30,7 @@ test-*.mjs
 !test-mf-state-write-safety.mjs
 !test-mf-cookie-clearing.mjs
 !test-mf-ui-smoke.mjs
+!test-mf-reminders.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs

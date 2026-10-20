@@ -1196,6 +1196,127 @@ async function notifyPending(env, origin, entry, ctx) {
   else await run
 }
 
+
+// ── Authorization reminders ────────────────────────────────────────────────
+// Aggregates everything an operator needs to act on: agents whose authorization
+// expires within the reminder window, and agents that have gone quiet. Pending
+// approvals always take priority over reminders in the UI, but both are
+// returned so the banner can explain why it is showing one and not the other.
+const REMINDER_WINDOWS = [5, 3, 1]
+const IDLE_DAYS = 7
+
+function reminderSeverity(daysLeft) {
+  if (daysLeft <= 1) return 'critical'
+  if (daysLeft <= 3) return 'warning'
+  return 'notice'
+}
+
+function buildReminders(state, now = Date.now()) {
+  const reminders = []
+  const audit = state.audit ?? []
+  const lastActivity = new Map()
+  for (const entry of audit) {
+    if (!entry.agent) continue
+    const time = Date.parse(entry.time)
+    if (!Number.isFinite(time)) continue
+    if (!lastActivity.has(entry.agent) || time > lastActivity.get(entry.agent)) lastActivity.set(entry.agent, time)
+  }
+  const seen = new Set()
+  const consider = (name, oauth, expiresAt) => {
+    if (seen.has(name)) return
+    seen.add(name)
+    if (typeof expiresAt === 'number') {
+      const msLeft = expiresAt - now
+      if (msLeft <= 0) {
+        reminders.push({ kind: 'expired', agent: name, oauth, severity: 'critical', daysLeft: 0, expiresAt, message: '授权已过期' })
+      } else {
+        const daysLeft = Math.ceil(msLeft / 86400e3)
+        if (daysLeft <= 5) {
+          reminders.push({ kind: 'expiring', agent: name, oauth, severity: reminderSeverity(daysLeft), daysLeft, expiresAt, message: daysLeft <= 1 ? '授权将在 1 天内过期' : '授权将在 ' + daysLeft + ' 天内过期' })
+        }
+      }
+    }
+    const last = lastActivity.get(name)
+    if (!last || now - last > IDLE_DAYS * 86400e3) {
+      reminders.push({ kind: 'idle', agent: name, oauth, severity: 'notice', daysIdle: last ? Math.floor((now - last) / 86400e3) : null, lastActivityAt: last ? new Date(last).toISOString() : null, message: last ? '已 ' + Math.floor((now - last) / 86400e3) + ' 天无读取记录' : '从未有读取记录' })
+    }
+  }
+  for (const [name, agent] of Object.entries(state.agents ?? {})) consider(name, false, agent.expiresAt)
+  // OAuth subjects: their window lives on the token records.
+  const oauthExpiry = new Map()
+  for (const token of Object.values(state.oauthTokens ?? {})) {
+    if (!token.agent) continue
+    if (token.expiresAt && token.expiresAt < now) continue
+    const current = oauthExpiry.get(token.agent)
+    if (current === undefined || (typeof token.expiresAt === 'number' && token.expiresAt < current)) oauthExpiry.set(token.agent, typeof token.expiresAt === 'number' ? token.expiresAt : null)
+  }
+  for (const [agent, exp] of oauthExpiry.entries()) consider(agent, true, exp)
+  const order = { critical: 0, warning: 1, notice: 2 }
+  reminders.sort((a, b) => (order[a.severity] - order[b.severity]) || String(a.agent).localeCompare(String(b.agent)))
+  return reminders
+}
+
+// Notification body for a reminder batch. Deliberately excludes any secret
+// material and any token; it only carries agent names and day counts plus the
+// link back to the console where an admin can extend.
+function reminderMessage(reminders, origin) {
+  const lines = reminders.map((r) => {
+    const kind = r.oauth ? 'OAuth' : 'Token'
+    if (r.kind === 'expired') return '- ' + r.agent + ' (' + kind + ')：授权已过期'
+    if (r.kind === 'expiring') return '- ' + r.agent + ' (' + kind + ')：' + r.message + '，剩余 ' + r.daysLeft + ' 天'
+    return '- ' + r.agent + ' (' + kind + ')：' + r.message
+  })
+  return 'Secrets Broker 授权提醒\n\n' + lines.join('\n') + '\n\n前往延长：' + origin + '/#/agents'
+}
+
+// Send once per (agent, kind, threshold) so a 5-day reminder does not repeat on
+// every page load. State lives under state.reminderSent.
+async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now()) {
+  const reminders = buildReminders(state, now)
+  if (!reminders.length) return { sent: 0, reminders: 0 }
+  const sentMap = state.reminderSent ?? {}
+  const TTL = 20 * 3600e3
+  const fresh = reminders.filter((r) => {
+    const key = r.agent + '\u0000' + r.kind + '\u0000' + (r.kind === 'expiring' ? r.daysLeft : 'idle')
+    const last = sentMap[key]
+    return !(typeof last === 'number' && now - last < TTL)
+  })
+  if (!fresh.length) return { sent: 0, reminders: reminders.length }
+  const notifications = state.settings?.notifications ?? {}
+  const text = reminderMessage(fresh, origin)
+  const tasks = []
+  if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
+    tasks.push(fetch('https://api.telegram.org/bot' + notifications.telegram.botToken + '/sendMessage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: notifications.telegram.chatId, text, disable_web_page_preview: true }) }))
+  }
+  if (notifications.ntfy?.url && notifications.ntfy?.topic) {
+    tasks.push(fetch(String(notifications.ntfy.url).replace(/\/$/, '') + '/' + encodeURIComponent(notifications.ntfy.topic), { method: 'POST', headers: { 'title': 'Secrets Broker 授权提醒', tags: 'warning' }, body: text }))
+  }
+  if (notifications.gotify?.url && notifications.gotify?.token) {
+    tasks.push(fetch(String(notifications.gotify.url).replace(/\/$/, '') + '/message?token=' + encodeURIComponent(notifications.gotify.token), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Secrets Broker 授权提醒', message: text, priority: 6 }) }))
+  }
+  if (notifications.wxpush?.url && notifications.wxpush?.token) {
+    if (notifications.wxpush.format === 'json') {
+      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + notifications.wxpush.token }, body: JSON.stringify({ title: 'Secrets Broker 授权提醒', text, content: text }) }))
+    } else {
+      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ title: 'Secrets Broker 授权提醒', content: text, token: notifications.wxpush.token }) }))
+    }
+  }
+  if (tasks.length) {
+    const run = Promise.allSettled(tasks)
+    if (ctx?.waitUntil) ctx.waitUntil(run)
+    else await run
+  }
+  await updateState(env, (next) => {
+    next.reminderSent ??= {}
+    for (const r of fresh) {
+      const key = r.agent + '\u0000' + r.kind + '\u0000' + (r.kind === 'expiring' ? r.daysLeft : 'idle')
+      next.reminderSent[key] = now
+    }
+    return next
+  }).catch(() => {})
+  return { sent: tasks.length ? fresh.length : 0, reminders: reminders.length }
+}
+
 async function consumeOidcState(env, cookieValue, returned) {
   const response = await stateStub(env).fetch('https://state/oidc/state/consume', { method: 'POST', body: JSON.stringify({ cookie: cookieValue, state: returned }) })
   return response.json()
@@ -2151,7 +2272,12 @@ export default {
     }
     if (url.pathname === '/api/state') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
-      return json(publicState(await loadState(env)))
+      const state = await loadState(env)
+      const reminders = buildReminders(state)
+      // Fire the notification batch opportunistically on admin page loads; the
+      // helper de-duplicates per (agent, kind, threshold) so this cannot spam.
+      try { await dispatchReminderBatch(env, state, url.origin, ctx) } catch {}
+      return json({ ...publicState(state), reminders, pendingCount: Object.keys(state.pending ?? {}).length })
     }
     // Read-only migration report: which agents still rely on legacy paths,
     // what would break, and current capability terms. Never mutates.
