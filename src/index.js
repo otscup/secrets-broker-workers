@@ -351,11 +351,17 @@ async function createAdminCookie(env, request) {
   const signature = await hmacToken(await cookieKey(env), payload)
   const ip = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-forwarded-for') ?? ''
   const ua = request.headers.get('user-agent') ?? ''
-  await updateState(env, (state) => {
-    state.adminSessions ??= {}
-    state.adminSessions[id] = { id, ip, ua, createdAt: nowIso(), lastSeen: nowIso(), expiresAt: expires }
-    return state
-  })
+  // Write the session record atomically. A read-modify-write here races with any
+  // concurrent state write: the login could land in a snapshot that a parallel
+  // request then overwrites, leaving a signed cookie with no server-side record.
+  // validCookie() would reject it and the user would bounce between /login and
+  // /oauth/authorize forever.
+  const written = await mutateState(env, [{
+    op: 'set',
+    path: ['adminSessions', id],
+    value: { id, ip, ua, createdAt: nowIso(), lastSeen: nowIso(), expiresAt: expires },
+  }])
+  if (!written?.ok) throw new Error('could not persist admin session')
   return `${payload}.${signature}`
 }
 
@@ -372,7 +378,10 @@ async function validCookie(request, env) {
     const record = state.adminSessions?.[id]
     if (!record || (record.expiresAt && record.expiresAt < Date.now())) return false
     if (!record.lastSeen || Date.now() - Date.parse(record.lastSeen) > 300000) {
-      await updateState(env, (next) => { if (next.adminSessions?.[id]) next.adminSessions[id].lastSeen = nowIso(); return next })
+      // Touch lastSeen atomically. A read-modify-write of the whole state here
+      // would frequently clobber concurrent writes (including a just-created
+      // session record), which shows up as random logouts.
+      await mutateState(env, [{ op: 'set', path: ['adminSessions', id, 'lastSeen'], value: nowIso() }]).catch(() => {})
     }
     return true
   }

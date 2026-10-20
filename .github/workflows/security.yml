@@ -61,3 +61,5 @@ jobs:
         run: npm run test:oauth-clients
       - name: OAuth re-login resume (Miniflare)
         run: npm run test:oauth-resume
+      - name: Admin session durability (Miniflare)
+        run: npm run test:session
