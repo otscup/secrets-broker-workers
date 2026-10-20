@@ -80,6 +80,45 @@ export class BrokerState extends DurableObject {
       })
       return json(result)
     }
+    // Atomic read-modify-write for the whole broker state. The Worker's
+    // updateState() does load -> mutate -> save across three round trips, so two
+    // concurrent requests can each read the same snapshot and the later write
+    // silently discards the other's change (e.g. a freshly registered OAuth
+    // client vanishing). This endpoint performs the mutation inside a single
+    // serialized storage transaction instead.
+    //
+    // The mutator is not executable on the DO side, so the Worker sends a list
+    // of declarative ops. Unknown ops are rejected; nothing is written unless
+    // every op applies.
+    if (url.pathname === '/state/mutate' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const ops = Array.isArray(body.ops) ? body.ops : null
+      if (!ops) return json({ ok: false, reason: 'invalid' })
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const store = (await txn.get('state')) ?? {}
+        for (const op of ops) {
+          const kind = String(op?.op ?? '')
+          const path = Array.isArray(op?.path) ? op.path.map(String) : null
+          if (!path || !path.length) return { ok: false, reason: 'bad-path' }
+          // Walk to the parent container, creating plain objects as needed.
+          let cursor = store
+          for (let i = 0; i < path.length - 1; i += 1) {
+            const key = path[i]
+            if (cursor[key] === undefined) cursor[key] = {}
+            if (cursor[key] === null || typeof cursor[key] !== 'object') return { ok: false, reason: 'not-an-object' }
+            cursor = cursor[key]
+          }
+          const leaf = path[path.length - 1]
+          if (kind === 'set') cursor[leaf] = op.value
+          else if (kind === 'delete') delete cursor[leaf]
+          else if (kind === 'merge' && op.value && typeof op.value === 'object') cursor[leaf] = { ...(cursor[leaf] ?? {}), ...op.value }
+          else return { ok: false, reason: 'bad-op' }
+        }
+        await txn.put('state', store)
+        return { ok: true }
+      })
+      return json(result)
+    }
     // Atomic lazy migration: materialise a legacy grant into a capability
     // exactly once, inside the same serialized storage boundary that later
     // consumes it. Workers never mutate capabilities in memory and then
@@ -421,6 +460,13 @@ async function loadState(env) {
 
 async function saveState(env, state) {
   await stateStub(env).fetch('https://state/state', { method: 'PUT', body: JSON.stringify(state) })
+}
+
+// Apply declarative ops atomically inside the Durable Object's storage
+// transaction, avoiding lost updates from concurrent read-modify-write cycles.
+async function mutateState(env, ops) {
+  const response = await stateStub(env).fetch('https://state/state/mutate', { method: 'POST', body: JSON.stringify({ ops }) })
+  return response.json()
 }
 
 async function updateState(env, mutate) {
@@ -2681,10 +2727,14 @@ export default {
       const validRedirect = (value) => { try { const target = new URL(value); if (target.hash) return false; if (target.protocol === 'https:') return true; return target.protocol === 'http:' && (target.hostname === '127.0.0.1' || target.hostname === 'localhost' || target.hostname === '[::1]') } catch { return false } }
       if (!redirectUris.every(validRedirect)) return fail('redirect_uri must be https or a loopback http URL', 400)
       const clientId = 'mcp_' + base64Url(crypto.getRandomValues(new Uint8Array(18)))
-      await updateState(env, (next) => {
-        next.oauthClients[clientId] = { clientId, clientName, redirectUris, createdAt: nowIso() }
-        return next
-      })
+      // Register atomically: a concurrent state write must not drop the record
+      // it was created to hold (that surfaces later as "unknown client").
+      const written = await mutateState(env, [{
+        op: 'set',
+        path: ['oauthClients', clientId],
+        value: { clientId, clientName, redirectUris, createdAt: nowIso() },
+      }])
+      if (!written?.ok) return fail('could not persist client registration', 500)
       await addAudit(env, { event: 'oauth.client-register', clientId, clientName: body.client_name ?? '' })
       return json({ client_id: clientId, client_name: body.client_name ?? 'MCP client', redirect_uris: redirectUris, token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }, 201)
     }

@@ -55,3 +55,5 @@ jobs:
         run: npm run test:agent-extend
       - name: OAuth consent login flow (Miniflare)
         run: npm run test:oauth-consent
+      - name: OAuth client persistence (Miniflare)
+        run: npm run test:oauth-persist

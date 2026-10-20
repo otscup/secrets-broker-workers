@@ -23,6 +23,7 @@ test-*.mjs
 !test-mf-account-scope.mjs
 !test-mf-agent-extend.mjs
 !test-mf-oauth-consent.mjs
+!test-mf-oauth-persist.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs

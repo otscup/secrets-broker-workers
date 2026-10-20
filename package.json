@@ -24,7 +24,8 @@
     "test:account-scope": "node test-mf-account-scope.mjs",
     "test:agent-extend": "node test-mf-agent-extend.mjs",
     "test:oauth-consent": "node test-mf-oauth-consent.mjs",
-    "test:security": "npm run test:oidc && npm run test:r1-r6 && npm run test:mcp-oidc && npm run test:maxreads && npm run test:permissions && npm run test:actions && npm run test:approval && npm run test:admin-api && npm run test:capabilities && npm run test:capabilities-admin && npm run test:review-fixes && npm run test:state-machine && npm run test:ensure-authority && npm run test:legacy-scope && npm run test:identity-revoke && npm run test:account-scope && npm run test:agent-extend && npm run test:oauth-consent"
+    "test:oauth-persist": "node test-mf-oauth-persist.mjs",
+    "test:security": "npm run test:oidc && npm run test:r1-r6 && npm run test:mcp-oidc && npm run test:maxreads && npm run test:permissions && npm run test:actions && npm run test:approval && npm run test:admin-api && npm run test:capabilities && npm run test:capabilities-admin && npm run test:review-fixes && npm run test:state-machine && npm run test:ensure-authority && npm run test:legacy-scope && npm run test:identity-revoke && npm run test:account-scope && npm run test:agent-extend && npm run test:oauth-consent && npm run test:oauth-persist"
   },
   "devDependencies": {
     "miniflare": "^4.20260730.0",
