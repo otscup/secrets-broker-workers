@@ -73,3 +73,5 @@ jobs:
         run: npm run test:reminders
       - name: Item activity columns (Miniflare)
         run: npm run test:items
+      - name: Scheduled reminder handler (Miniflare)
+        run: npm run test:scheduled

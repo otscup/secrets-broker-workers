@@ -37,8 +37,9 @@ const state = async () => mf.dispatchFetch('https://broker.test/api/state', { he
   const d5 = (byAgent.d5 || []).find((r) => r.kind === 'expiring')
   const d3 = (byAgent.d3 || []).find((r) => r.kind === 'expiring')
   const d1 = (byAgent.d1 || []).find((r) => r.kind === 'expiring')
-  const ok = d5?.severity === 'notice' && d3?.severity === 'warning' && d1?.severity === 'critical'
-  if (ok) pass('R1 5/3/1-day reminders use notice/warning/critical')
+  // Operator rule: below 3 days is red, up to 5 days is orange.
+  const ok = d5?.severity === 'warning' && d3?.severity === 'warning' && d1?.severity === 'critical'
+  if (ok) pass('R1 5/3/1-day reminders use warning/warning/critical')
   else fail('R1', JSON.stringify({ d5, d3, d1 }))
 }
 // R2: already-expired agent flagged critical

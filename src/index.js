@@ -1205,10 +1205,11 @@ async function notifyPending(env, origin, entry, ctx) {
 const REMINDER_WINDOWS = [5, 3, 1]
 const IDLE_DAYS = 7
 
+// Severity follows the operator's rule: anything below 3 days is red, the
+// remaining window (up to 5 days) is the orange warning band.
 function reminderSeverity(daysLeft) {
-  if (daysLeft <= 1) return 'critical'
-  if (daysLeft <= 3) return 'warning'
-  return 'notice'
+  if (daysLeft <= 2) return 'critical'
+  return 'warning'
 }
 
 function buildReminders(state, now = Date.now()) {
@@ -1692,6 +1693,17 @@ function escapeHtml(value) {
 }
 
 export default {
+  // Cron entry point: runs the authorization reminder batch without an admin
+  // page load. This is what makes reminders work while nobody is looking.
+  async scheduled(event, env, ctx) {
+    const work = (async () => {
+      const state = await loadState(env)
+      const origin = String(env.PUBLIC_ORIGIN || 'https://sb.otscup.com').replace(/\/$/, '')
+      await dispatchReminderBatch(env, state, origin, ctx)
+    })()
+    if (ctx?.waitUntil) ctx.waitUntil(work)
+    else await work
+  },
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
 
