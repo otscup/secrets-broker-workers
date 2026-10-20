@@ -53,3 +53,5 @@ jobs:
         run: npm run test:account-scope
       - name: Agent authorization extension (Miniflare)
         run: npm run test:agent-extend
+      - name: OAuth consent login flow (Miniflare)
+        run: npm run test:oauth-consent

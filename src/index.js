@@ -1438,8 +1438,10 @@ export default {
 
 
     if (url.pathname === '/login' && request.method === 'GET') {
-      if (await adminAuthorized(request, env)) return Response.redirect(new URL('/', url).toString(), 302)
-      return htmlResponse(standaloneLoginPage(String(url.searchParams.get('next') ?? '/')))
+      const nextTarget = String(url.searchParams.get('next') ?? '/')
+      // Already signed in: honour the return target instead of always going home.
+      if (await adminAuthorized(request, env)) return Response.redirect(new URL(nextTarget, url).toString(), 302)
+      return htmlResponse(standaloneLoginPage(nextTarget))
     }
     if (url.pathname === '/connect' && request.method === 'GET') {
       if (!(await adminAuthorized(request, env))) return Response.redirect(new URL('/login?next=' + encodeURIComponent(url.pathname + url.search), url).toString(), 302)
@@ -2695,7 +2697,18 @@ export default {
       if (!client) return fail('unknown client', 400)
       if (!client.redirectUris.includes(redirectUri)) return fail('invalid redirect_uri', 400)
       if (!params.get('code_challenge') || params.get('code_challenge_method') !== 'S256') return fail('PKCE S256 is required', 400)
-      if (!(await adminAuthorized(request, env))) return new Response('<meta charset="utf-8"><p>请先在 <a href="/">Secrets Broker</a> 登录，然后再打开这个授权链接。</p>', { status: 401, headers: { 'content-type': 'text/html; charset=utf-8' } })
+      if (!(await adminAuthorized(request, env))) {
+        // Bounce through the login page and come back to this exact authorize
+        // URL. A bare 401 forces the user to copy the link by hand, which is
+        // why approving keeps looking like "login again".
+        const returnTo = url.pathname + url.search
+        const loginUrl = new URL('/login', url.origin)
+        loginUrl.searchParams.set('next', returnTo)
+        if (request.method === 'POST') {
+          return new Response('<meta charset="utf-8"><p>登录状态已过期，请 <a href="' + escapeHtml(loginUrl.pathname + loginUrl.search) + '">重新登录</a> 后再次点「允许」。</p>', { status: 401, headers: { 'content-type': 'text/html; charset=utf-8' } })
+        }
+        return Response.redirect(loginUrl.toString(), 302)
+      }
       if (request.method === 'POST' && params.get('decision') === 'deny') {
         const target = new URL(redirectUri); target.searchParams.set('error', 'access_denied'); if (params.get('state')) target.searchParams.set('state', params.get('state'))
         return Response.redirect(target.toString(), 302)
