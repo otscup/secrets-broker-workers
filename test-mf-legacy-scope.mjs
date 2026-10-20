@@ -93,7 +93,7 @@ function state(agent, extra = {}) {
 // L2b: legacy scope + LIVE legacy grant -> reads without pending (compat path)
 {
   await putState(state({ allow: [ITEM], groups: [], allowAll: false }, {
-    grants: { ['legacy-agent\u0000' + ITEM]: { agent: 'legacy-agent', name: ITEM, mode: 'share', createdAt: '2024-01-01', expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, account: ACCT } },
+    grants: { ['legacy-agent\u0000' + ITEM]: { agent: 'legacy-agent', name: ITEM, itemId: ITEM_ID, mode: 'share', createdAt: '2024-01-01', expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, account: ACCT } },
   }))
   await putSession()
   const r = await mcp('get_secret', { name: ITEM })

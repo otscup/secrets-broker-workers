@@ -43,7 +43,7 @@ function base(extra = {}) {
     grants: {}, ...extra,
   }
 }
-const legacyGrant = (extra = {}) => ({ agent: AGENT, name: ITEM, mode: 'share', createdAt: '2024-01-01', expiresAt: EXP_FUTURE, reads: 2, maxReads: 5, revokedAt: null, account: ACCT, ...extra })
+const legacyGrant = (extra = {}) => ({ agent: AGENT, name: ITEM, mode: 'share', createdAt: '2024-01-01', expiresAt: EXP_FUTURE, reads: 2, maxReads: 5, revokedAt: null, account: ACCT, itemId: ITEM_ID, ...extra })
 
 // E1: authority derived from the legacy grant, not from the caller
 {
@@ -133,7 +133,7 @@ const legacyGrant = (extra = {}) => ({ agent: AGENT, name: ITEM, mode: 'share', 
   const r = await ensure({ subjectId: AGENT, itemId: ITEM_ID, action: 'secret.read', accountId: ACCT, legacyName: ITEM })
   const st = await getState()
   // noApproval without a grant hits the actionGrant requirement first; either
-  // refusal reason is correct â€” what matters is that nothing is created.
+  // refusal reason is correct â€?what matters is that nothing is created.
   if (!r.ok && ['no-legacy-source', 'no-action-grant'].includes(r.reason) && !st.capabilities[CK]) pass('E11 noApproval alone yields no capability')
   else fail('E11', JSON.stringify({ r, cap: !!st.capabilities[CK] }))
 }

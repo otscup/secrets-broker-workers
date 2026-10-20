@@ -47,3 +47,5 @@ jobs:
         run: npm run test:ensure-authority
       - name: Legacy scope behaviour (Miniflare)
         run: npm run test:legacy-scope
+      - name: Migration identity + real revoke (Miniflare)
+        run: npm run test:identity-revoke

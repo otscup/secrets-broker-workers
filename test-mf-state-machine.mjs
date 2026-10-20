@@ -182,7 +182,7 @@ const POL = { [ITEM_ID]: { itemId: ITEM_ID, accountId: ACCT, hosts: ['api.exampl
 }
 // S10: first lazy migration persists before consume (read works immediately)
 {
-  await putState(base({ policies: { [ITEM]: { noApproval: true } }, grants: { [GK()]: { agent: AGENT, name: ITEM, mode: 'share', createdAt: '2024-01-01', expiresAt: 0, reads: 0, maxReads: 3, revokedAt: null, account: ACCT } }, capabilities: {} }))
+  await putState(base({ policies: { [ITEM]: { noApproval: true } }, grants: { [GK()]: { agent: AGENT, name: ITEM, itemId: ITEM_ID, mode: 'share', createdAt: '2024-01-01', expiresAt: 0, reads: 0, maxReads: 3, revokedAt: null, account: ACCT } }, capabilities: {} }))
   await putSession()
   const first = await mcp('get_secret', { name: ITEM })
   const st = await getState()
@@ -194,13 +194,22 @@ const POL = { [ITEM_ID]: { itemId: ITEM_ID, accountId: ACCT, hosts: ['api.exampl
 }
 // S11: concurrent first-migration (10-way) never over-counts past maxUses
 {
-  await putState(base({ policies: { [ITEM]: { noApproval: true } }, grants: { [GK()]: { agent: AGENT, name: ITEM, mode: 'share', createdAt: '2024-01-01', expiresAt: 0, reads: 0, maxReads: 2, revokedAt: null, account: ACCT } }, capabilities: {} }))
+  await putState(base({ policies: { [ITEM]: { noApproval: true } }, grants: { [GK()]: { agent: AGENT, name: ITEM, itemId: ITEM_ID, mode: 'share', createdAt: '2024-01-01', expiresAt: 0, reads: 0, maxReads: 2, revokedAt: null, account: ACCT } }, capabilities: {} }))
   await putSession()
   const out = await Promise.all(Array.from({ length: 10 }, () => mcp('get_secret', { name: ITEM })))
   const wins = out.filter((r) => textOf(r).includes(SECRET)).length
   const st = await getState()
   if (wins === 2 && st.capabilities[CK()].usedCount === 2) pass('S11 10-way first-migration: exactly maxUses=2 wins')
   else fail('S11', JSON.stringify({ wins, used: st.capabilities[CK()]?.usedCount }))
+}
+// S14: a legacy grant with NO stable itemId cannot be migrated (safe reject)
+{
+  await putState(base({ policies: { [ITEM]: { noApproval: true } }, grants: { [GK()]: { agent: AGENT, name: ITEM, mode: 'share', createdAt: '2024-01-01', expiresAt: 0, reads: 0, maxReads: 3, revokedAt: null, account: ACCT } }, capabilities: {} }))
+  await putSession()
+  const r = await mcp('get_secret', { name: ITEM })
+  const st = await getState()
+  if (!textOf(r).includes(SECRET) && !st.capabilities[CK()] && /migration rejected|unbound/i.test(textOf(r))) pass('S14 legacy grant without itemId: migration refused, no capability')
+  else fail('S14', JSON.stringify({ t: textOf(r).slice(0, 70), cap: !!st.capabilities[CK()] }))
 }
 // S12: revoked capability blocks use even with matching policy + read cap
 {

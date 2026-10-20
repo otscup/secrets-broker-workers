@@ -113,6 +113,30 @@ export class BrokerState extends DurableObject {
         const grantEntry = store.actionGrants?.[actionGrantKey(subjectId, itemId)] ?? null
         const policyNoApproval = store.policies?.[legacyName]?.noApproval === true
 
+        // ── Identity binding: name -> stable cipher id ────────────────────
+        // store.itemIds is a MUTABLE cache (written on resolve, never updated
+        // on rename/delete), so a name can point at a different cipher over
+        // time. Migrating on a bare name match would let a renamed or
+        // delete-then-recreated item inherit the old grant. We therefore
+        // require a recorded binding and, when the grant itself carries an
+        // itemId, that it agrees.
+        store.legacyItemBindings ??= {}
+        const bindingKey = `${subjectId}\u0000${legacyName}`
+        const binding = store.legacyItemBindings[bindingKey] ?? null
+        const cachedId = store.itemIds?.[legacyName] ?? ''
+        const grantItemId = legacy && typeof legacy.itemId === 'string' ? legacy.itemId : ''
+        if (grantItemId && grantItemId !== itemId) return { ok: false, reason: 'grant-item-id-mismatch' }
+        if (binding && binding.itemId !== itemId) return { ok: false, reason: 'binding-item-id-mismatch' }
+        // The binding requirement applies to GRANT-sourced migrations only.
+        // Without it we cannot prove the name still denotes the cipher the
+        // grant was issued for, so an unbound grant is refused. A noApproval
+        // migration is authorised by its actionGrant, which carries itemId and
+        // is validated separately below.
+        if (legacy && !binding && !grantItemId) {
+          return { ok: false, reason: 'unbound-legacy-identity' }
+        }
+        if (cachedId && cachedId !== itemId) return { ok: false, reason: 'cache-item-id-mismatch' }
+
         // ── Authority checks (all inside this transaction) ────────────────
         let source = null
         if (legacy) {
@@ -164,7 +188,12 @@ export class BrokerState extends DurableObject {
           policyVersion: 1,
         }
         if (derived.accountId && accountId && derived.accountId.toLowerCase() !== accountId.toLowerCase()) return { ok: false, reason: 'derived-cross-account' }
-        if (source === 'legacy-grant') legacy.migratedToCapability = key
+        if (source === 'legacy-grant') {
+          legacy.migratedToCapability = key
+          // Record the immutable identity binding the first time a migration is
+          // authorised, so later renames/recreates cannot re-point this name.
+          store.legacyItemBindings[bindingKey] = { itemId, boundAt: new Date(now).toISOString(), boundBy: source }
+        }
         store.capabilities[key] = derived
         await txn.put('state', store)
         return { ok: true, existed: false, usedCount: derived.usedCount, source }
@@ -2149,12 +2178,30 @@ export default {
     if (url.pathname === '/api/grants/revoke' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const body = await request.json().catch(() => ({}))
-      const key = grantKey(String(body.agent ?? ''), String(body.name ?? ''))
+      const agentName = String(body.agent ?? '')
+      const itemName = String(body.name ?? '')
+      const key = grantKey(agentName, itemName)
       let found = false
-      await updateState(env, (state) => { if (state.grants[key]) { state.grants[key].revokedAt = nowIso(); found = true } return state })
-      if (!found) return fail('grant not found', 404)
-      await addAudit(env, { event: 'grant.revoke', agent: body.agent, name: body.name, source: 'web' })
-      return json({ ok: true })
+      const revokedCapabilities = []
+      await updateState(env, (state) => {
+        if (state.grants[key]) { state.grants[key].revokedAt = nowIso(); found = true }
+        // Revocation must also cover capabilities already migrated from this
+        // grant — otherwise revoking the legacy record leaves a live grant the
+        // broker keeps serving. Match by subject+name and account.
+        const now = nowIso()
+        for (const [ckey, cap] of Object.entries(state.capabilities ?? {})) {
+          if (!cap || cap.revokedAt) continue
+          if (cap.subjectId !== agentName) continue
+          if (cap.itemName !== itemName) continue
+          cap.revokedAt = now
+          cap.revokedBy = 'admin:grant-revoke'
+          revokedCapabilities.push(ckey)
+        }
+        return state
+      })
+      if (!found && !revokedCapabilities.length) return fail('grant not found', 404)
+      await addAudit(env, { event: 'grant.revoke', agent: agentName, name: itemName, source: 'web', capabilities: revokedCapabilities.length })
+      return json({ ok: true, revokedCapabilities: revokedCapabilities.length })
     }
     if (url.pathname === '/api/grants/sync' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
