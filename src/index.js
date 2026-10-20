@@ -9,6 +9,13 @@ import {
 const encoder = new TextEncoder()
 const SESSION_COOKIE = 'broker_admin'
 const json = (data, status = 200, headers = {}) => Response.json(data, { status, headers })
+const securityHeaders = {
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'x-frame-options': 'DENY',
+  'content-security-policy': "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+}
+const htmlResponse = (body, status = 200) => new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...securityHeaders } })
 const fail = (message, status = 400) => json({ error: message }, status)
 const nowIso = () => new Date().toISOString()
 
@@ -380,7 +387,15 @@ async function putSession(env, session) {
   await stateStub(env).fetch('https://state/session', { method: 'PUT', body: JSON.stringify({ wrapped, expiresAt: session.expiresAt ?? 0 }) })
 }
 
-async function adminAuthorized(request, env) { return validCookie(request, env) }
+async function adminAuthorized(request, env) {
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+    const origin = request.headers.get('origin')
+    if (origin) {
+      try { if (new URL(origin).origin !== new URL(request.url).origin) return false } catch { return false }
+    }
+  }
+  return validCookie(request, env)
+}
 
 function pluginAuthorized(request, env) {
   const token = String(env.DSH_PLUGIN_TOKEN ?? '')
@@ -872,7 +887,7 @@ export default {
 
     if (url.pathname === '/login' && request.method === 'GET') {
       if (await adminAuthorized(request, env)) return Response.redirect(new URL('/', url).toString(), 302)
-      return new Response(standaloneLoginPage(String(url.searchParams.get('next') ?? '/')), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
+      return htmlResponse(standaloneLoginPage(String(url.searchParams.get('next') ?? '/')))
     }
     if (url.pathname === '/connect' && request.method === 'GET') {
       if (!(await adminAuthorized(request, env))) return Response.redirect(new URL('/login?next=' + encodeURIComponent(url.pathname + url.search), url).toString(), 302)
@@ -883,7 +898,7 @@ export default {
       const session = await getSession(env)
       if (!session) return Response.redirect(new URL('/?login=1', url).toString(), 302)
       if (item.account && String(item.account).toLowerCase() !== String(session.email).toLowerCase()) return new Response('请先切换到请求对应的 vault 账户并解锁', { status: 409, headers: { 'content-type': 'text/plain; charset=utf-8' } })
-      return new Response(connectPage(item), { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
+      return htmlResponse(connectPage(item))
     }
     if (url.pathname === '/api/credential-requests/cancel' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -923,7 +938,7 @@ export default {
     }
     if (url.pathname === '/' || url.pathname === '/index.html') {
       if (!(await adminAuthorized(request, env))) return Response.redirect(new URL('/login?next=' + encodeURIComponent(url.pathname + url.search), url).toString(), 302)
-      return new Response(uiHtml, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } })
+      return htmlResponse(uiHtml)
     }
     if (url.pathname === '/api/plugin/pending' && request.method === 'GET') {
       if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
@@ -1152,6 +1167,8 @@ export default {
         if (user.email_verified === false) return fail('OIDC email is not verified', 403)
         const isAdmin = await adminAuthorized(request, env)
         if (stateData.next === 'profile' && !isAdmin) return fail('请先在 Secrets Broker 登录后再绑定 OIDC', 401)
+        const boundIssuer = String(state.profile?.oidcIssuer ?? '')
+        if (boundIssuer && boundIssuer !== oidc.issuer) return fail('OIDC issuer 与已绑定身份不一致', 403)
         const boundSub = String(state.profile?.oidcSub ?? '')
         if (boundSub && subject !== boundSub) return fail('OIDC 身份与已绑定账户不一致', 403)
         if (!boundSub && !isAdmin) {
@@ -1163,6 +1180,7 @@ export default {
         }
         await updateState(env, (state) => {
           state.profile ??= {}
+          state.profile.oidcIssuer = oidc.issuer
           state.profile.oidcSub = subject
           state.profile.oidcEmail = String(user.email ?? state.profile.email ?? '')
           state.profile.name = String(user.name ?? user.preferred_username ?? state.profile.name ?? '')
@@ -1749,7 +1767,7 @@ export default {
       const outcome = await decidePending(env, id, decision, String(url.searchParams.get('ch') ?? 'notification'))
       if (!outcome) return new Response('请求不存在或已处理', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } })
       const message = outcome.denied ? `已拒绝：${outcome.agent} 读取「${outcome.name}」` : `已授权：${outcome.agent} 读取「${outcome.name}」（${outcome.mode}）`
-      return new Response(`<meta charset="utf-8"><title>Secrets Broker</title><h2>${message}</h2>`, { headers: { 'content-type': 'text/html; charset=utf-8' } })
+      return htmlResponse(`<meta charset="utf-8"><title>Secrets Broker</title><h2>${escapeHtml(message)}</h2>`)
     }
     if (url.pathname === '/telegram/webhook' && request.method === 'POST') {
       const state = await loadState(env)
@@ -1800,14 +1818,18 @@ export default {
     }
     if (url.pathname === '/oauth/register' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
-      const redirectUris = Array.isArray(body.redirect_uris) ? body.redirect_uris.map(String).filter(Boolean) : []
+      const state = await loadState(env)
+      if (Object.keys(state.oauthClients ?? {}).length >= 100) return fail('too many registered clients', 429)
+      const redirectUris = (Array.isArray(body.redirect_uris) ? body.redirect_uris.map(String).filter(Boolean) : []).slice(0, 5)
       if (!redirectUris.length) return fail('redirect_uris required', 400)
+      if (redirectUris.some((value) => value.length > 2048)) return fail('redirect_uri too long', 400)
+      const clientName = String(body.client_name ?? 'MCP client').slice(0, 80)
       const validRedirect = (value) => { try { const target = new URL(value); if (target.hash) return false; if (target.protocol === 'https:') return true; return target.protocol === 'http:' && (target.hostname === '127.0.0.1' || target.hostname === 'localhost' || target.hostname === '[::1]') } catch { return false } }
       if (!redirectUris.every(validRedirect)) return fail('redirect_uri must be https or a loopback http URL', 400)
       const clientId = 'mcp_' + base64Url(crypto.getRandomValues(new Uint8Array(18)))
-      await updateState(env, (state) => {
-        state.oauthClients[clientId] = { clientId, clientName: String(body.client_name ?? 'MCP client'), redirectUris, createdAt: nowIso() }
-        return state
+      await updateState(env, (next) => {
+        next.oauthClients[clientId] = { clientId, clientName, redirectUris, createdAt: nowIso() }
+        return next
       })
       await addAudit(env, { event: 'oauth.client-register', clientId, clientName: body.client_name ?? '' })
       return json({ client_id: clientId, client_name: body.client_name ?? 'MCP client', redirect_uris: redirectUris, token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }, 201)
@@ -1841,7 +1863,7 @@ export default {
         const target = new URL(redirectUri); target.searchParams.set('code', code); if (params.get('state')) target.searchParams.set('state', params.get('state'))
         return Response.redirect(target.toString(), 302)
       }
-      return new Response(oauthConsentPage(url.origin, params, client), { headers: { 'content-type': 'text/html; charset=utf-8' } })
+      return htmlResponse(oauthConsentPage(url.origin, params, client))
     }
     if (url.pathname === '/oauth/token' && request.method === 'POST') {
       const form = new URLSearchParams(await request.text())
