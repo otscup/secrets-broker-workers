@@ -114,23 +114,34 @@ function createGlobe(container, options) {
       const showArcs = o.showArcs !== false
       const showOperator = o.showOperator !== false
 
-      const byAgent = new Map()
-      for (const ev of events) {
+      // Every recorded request gets its own arc, so the globe fills with a dense
+      // trail of flights instead of one line per location. Arcs are coloured per
+      // agent so different agents stay distinguishable.
+      const PALETTE = ['#2ee6c8', '#ff6b6b', '#ffd166', '#5b8cff', '#ff8ad8', '#9dff5b', '#ffa45b', '#c08cff', '#5be0ff', '#ff7a5c']
+      const agentColor = new Map()
+      const colorFor = (agent) => {
+        const key = String(agent || '?')
+        if (!agentColor.has(key)) agentColor.set(key, PALETTE[agentColor.size % PALETTE.length])
+        return agentColor.get(key)
+      }
+
+      const located = []
+      for (const ev of events || []) {
         const g = ev.geo || {}
         if (typeof g.lat !== 'number' || typeof g.lon !== 'number') continue
-        const k = ev.agent + '|' + g.lat + ',' + g.lon
-        const prev = byAgent.get(k)
-        if (!prev || String(ev.at) > String(prev.at)) byAgent.set(k, ev)
+        located.push({ ev, g, color: colorFor(ev.agent) })
       }
+
       const opLat = operator && operator.known && typeof operator.lat === 'number' ? operator.lat : null
       const opLon = operator && operator.known && typeof operator.lon === 'number' ? operator.lon : null
       const opCode = operator && operator.country ? String(operator.country).toUpperCase() : ''
 
-      const points = [...byAgent.values()].map((ev) => ({
-        lat: ev.geo.lat,
-        lng: ev.geo.lon,
-        size: 0.5,
-        color: ev.ok ? '#2ee6c8' : '#ff6b6b',
+      // One marker per request, kept small so dense traffic stays readable.
+      const points = located.map(({ ev, g, color }) => ({
+        lat: g.lat,
+        lng: g.lon,
+        size: 0.22,
+        color,
         agent: ev.agent,
       }))
       if (showOperator && opLat !== null && opLon !== null) {
@@ -139,38 +150,30 @@ function createGlobe(container, options) {
       globe.pointsData(points)
 
       const arcs = []
-      const label = (code, city) => {
-        const cc = String(code || '').toUpperCase()
-        const name = String(city || '').split(',')[0].trim()
-        if (!cc) return name || ''
-        return name ? name + ' · ' + cc : cc
-      }
-      for (const ev of byAgent.values()) {
-        const g = ev.geo || {}
-        if (typeof g.lat !== 'number' || typeof g.lon !== 'number') continue
+      for (const { ev, g, color } of located) {
+        // The request itself: the agent location -> the broker node in China.
+        arcs.push({
+          startLat: g.lat, startLng: g.lon, endLat: CHINA_NODE.lat, endLng: CHINA_NODE.lon,
+          color: [color, '#7fc7ff'],
+        })
+        // The operator leg, when the operator sits somewhere else.
         if (opLat !== null && opLon !== null && (Math.abs(g.lat - opLat) > 0.01 || Math.abs(g.lon - opLon) > 0.01)) {
           arcs.push({
             startLat: opLat, startLng: opLon, endLat: g.lat, endLng: g.lon,
-            color: ['#ffd166', ev.ok ? '#2ee6c8' : '#ff6b6b'],
-            label: label(opCode, ''),
+            color: ['#ffd166', color],
           })
         }
-        arcs.push({
-          startLat: g.lat, startLng: g.lon, endLat: CHINA_NODE.lat, endLng: CHINA_NODE.lon,
-          color: [ev.ok ? '#2ee6c8' : '#ff6b6b', '#7fc7ff'],
-          label: label(g.country, g.city),
-        })
       }
       globe.arcsData(showArcs ? arcs : [])
-      // One label per visited location, mid-air above the point.
+
+      // Country codes sit on the globe, one per visited country.
       const labels = []
-      for (const ev of byAgent.values()) {
-        const g = ev.geo || {}
-        if (typeof g.lat !== 'number' || typeof g.lon !== 'number') continue
+      const seenCountry = new Set()
+      for (const { g } of located) {
         const cc = g.country ? String(g.country).toUpperCase() : ''
-        const city = g.city ? String(g.city).split(',')[0] : ''
-        const text = city && cc ? city + ' · ' + cc : (cc || city)
-        if (text) labels.push({ lat: g.lat, lng: g.lon, text })
+        if (!cc || seenCountry.has(cc)) continue
+        seenCountry.add(cc)
+        labels.push({ lat: g.lat, lng: g.lon, text: cc })
       }
       if (opLat !== null && opLon !== null && opCode) labels.push({ lat: opLat, lng: opLon, text: opCode })
       globe.labelsData(showArcs ? labels : [])

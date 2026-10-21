@@ -25,17 +25,15 @@ const uiSrc = fs.readFileSync('src/ui.js', 'utf8')
 }
 // E2: arc labels carry country code
 {
-  const ok = src.includes('arcLabel') && src.includes('label(g.country, g.city)')
-  if (ok) pass('E2 arcs carry country-code labels')
-  else fail('E2', 'no arc labels')
+  const ok = src.includes('labelsData') && /text: cc/.test(src)
+  if (ok) pass('E2 country codes are labelled on the globe')
+  else fail('E2', 'no country-code labels')
 }
 // E3: label format includes the 2-letter code
 {
-  const fn = /const label = \(code, city\) => \{([\s\S]{0,320}?)\}/.exec(src)
-  const body = fn ? fn[1] : ''
-  const ok = body.includes('toUpperCase()') && body.includes("' · '")
-  if (ok) pass('E3 label renders city · CC')
-  else fail('E3', body.slice(0, 120))
+  const ok = /String\(g\.country\)\.toUpperCase\(\)/.test(src)
+  if (ok) pass('E3 country code is upper-cased')
+  else fail('E3', 'country code not upper-cased')
 }
 // E4: danmaku panel is created when the modal opens, and shows an empty state
 {

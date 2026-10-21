@@ -111,5 +111,7 @@ jobs:
         run: npm run test:reminder-write
       - name: Globe empty state
         run: npm run test:globe-empty
+      - name: Globe per-request arcs
+        run: npm run test:globe-arcs
       - name: Full security suite (short path)
         run: npm run test:security:short

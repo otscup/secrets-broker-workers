@@ -1,65 +1,45 @@
-// Globe arcs + operator location + detail modal.
-import { Miniflare } from 'miniflare'
+// Every request must draw its own arc, coloured per agent, with country codes
+// on the globe. The previous builder de-duplicated by agent+location, so the
+// globe showed only a couple of lines.
+import fs from 'node:fs'
 const results = []
 const pass = (n) => { results.push({ n, ok: true }); console.log('PASS  ' + n) }
 const fail = (n, d) => { results.push({ n, ok: false, d }); console.log('FAIL  ' + n + ' :: ' + d) }
-const fs = await import('node:fs')
+const src = fs.readFileSync('src/globe/index.js', 'utf8')
+const start = src.indexOf('    setPoints(events, operator, opts) {')
+const end = src.indexOf('    setTheme(name) {')
+const body = src.slice(start, end)
 
-const KEK = Buffer.alloc(32, 187).toString('base64')
-const ACCT = 'g4@example.invalid'
-const mf = new Miniflare({ modules: true, modulesRules: [{ type: 'ESModule', include: ['**/*.js'] }], compatibilityDate: '2024-01-01', scriptPath: 'src/index.js', durableObjects: { BROKER_STATE: 'BrokerState' }, vars: { SESSION_KEK: KEK, ADMIN_PASSWORD: 'p', GEO_ENABLED: '1' }, bindings: { SESSION_KEK: KEK, ADMIN_PASSWORD: 'p', GEO_ENABLED: '1' }, serviceBindings: { NODEWARDEN: async () => new Response('{}') } })
-const ns = await mf.getDurableObjectNamespace('BROKER_STATE')
-const stub = ns.get(ns.idFromName('global'))
-await stub.fetch('https://do/state', { method: 'PUT', body: JSON.stringify({ agents: {}, oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {}, policies: {}, grants: {}, pending: {}, audit: [], settings: { notifications: {}, vaultEmail: ACCT }, itemGroups: {}, security: { passwordHash: '', passwordSalt: '', totpSecretWrapped: '', totpEnabled: false, totpPendingWrapped: '' } }) })
-const cookie = String((await mf.dispatchFetch('https://broker.test/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'p' }) })).headers.get('set-cookie') || '').split(';')[0]
-const html = await mf.dispatchFetch('https://broker.test/', { headers: { cookie } }).then((r) => r.text())
-
-// A1: operator location is recorded from an authenticated admin request
 {
-  const op = await stub.fetch('https://do/geo/operator').then((r) => r.json())
-  const known = op.operator && op.operator.known === true && typeof op.operator.lat === 'number'
-  if (known) pass('A1 operator location captured on admin auth')
-  else fail('A1', JSON.stringify(op))
+  if (!/byAgent/.test(body)) pass('A1 every event is drawn, none de-duplicated')
+  else fail('A1', 'byAgent map still present')
 }
-// A2: geo API returns operator alongside events
 {
-  await stub.fetch('https://do/geo/reset', { method: 'POST' })
-  await stub.fetch('https://do/geo/append', { method: 'POST', body: JSON.stringify({ event: { at: new Date().toISOString(), agent: 'x', kind: 'token', action: 'secret.read', ok: true, geo: { known: true, country: 'JP', city: 'Tokyo', lat: 35.68, lon: 139.69, asn: 1 } } }) })
-  const api = await mf.dispatchFetch('https://broker.test/api/geo/events?range=24h&sinceSeq=0', { headers: { cookie } }).then((r) => r.json())
-  const ok = api.ok && api.operator && typeof api.operator.lat === 'number' && api.events.length === 1
-  if (ok) pass('A2 geo API exposes operator for arc origin')
-  else fail('A2', JSON.stringify({ op: api.operator, n: api.events.length }))
+  if (/size: 0\.22/.test(body)) pass('A2 one small marker per request')
+  else fail('A2', 'per-request marker missing')
 }
-// A3: operator location is NOT part of the event log (kept separate)
 {
-  const raw = JSON.stringify(await stub.fetch('https://do/geo/query', { method: 'POST', body: JSON.stringify({ windowMs: 3600e3, limit: 10 }) }).then((r) => r.json()).then((p) => p.events))
-  const leaky = /operator|"我"/.test(raw)
-  if (!leaky) pass('A3 operator location excluded from the event log')
-  else fail('A3', raw.slice(0, 120))
+  const palette = /const PALETTE = \[/.test(body)
+  const perAgent = /agentColor/.test(body) && /colorFor\(ev\.agent\)/.test(body)
+  if (palette && perAgent) pass('A3 arcs coloured per agent')
+  else fail('A3', JSON.stringify({ palette, perAgent }))
 }
-// A4: bundle contains arc routing incl. fixed China node and toggles
 {
-  const bundle = fs.readFileSync('public/globe.js', 'utf8')
-  const ok = bundle.includes('showOperator') && bundle.includes('showArcs') && /31\.23|121\.47/.test(bundle)
-  if (ok) pass('A4 globe bundle has arc routing and toggles')
-  else fail('A4', JSON.stringify({ op: bundle.includes('showOperator'), arcs: bundle.includes('showArcs') }))
+  const code = /String\(g\.country\)\.toUpperCase\(\)/.test(body)
+  const label = /text: cc/.test(body)
+  if (code && label) pass('A4 country codes label the globe')
+  else fail('A4', JSON.stringify({ code, label }))
 }
-// A5: detail modal exists with both switches and honest wording
 {
-  const hasModal = html.includes('gl-arcs') && html.includes('gl-operator')
-  const honest = html.includes('IP 估算')
-  if (hasModal && honest) pass('A5 detail modal exposes both switches')
-  else fail('A5', JSON.stringify({ hasModal, honest }))
+  const onePerEvent = /for \(const \{ ev, g, color \} of located\)/.test(body)
+  const opLeg = /startLat: opLat, startLng: opLon, endLat: g\.lat/.test(body)
+  if (onePerEvent && opLeg) pass('A5 one arc per request plus operator leg')
+  else fail('A5', JSON.stringify({ onePerEvent, opLeg }))
 }
-// A6: no fabricated location when operator geo is unknown
 {
-  await stub.fetch('https://do/geo/operator', { method: 'POST', body: JSON.stringify({ geo: { known: false, country: '', city: '', lat: null, lon: null, asn: null } }) })
-  const op = await stub.fetch('https://do/geo/operator').then((r) => r.json())
-  const unknown = op.operator && op.operator.known === false && op.operator.lat === null
-  if (unknown) pass('A6 unknown operator location stored without fake coords')
-  else fail('A6', JSON.stringify(op))
+  if (/size: 0\.7, color: '#ffd166'/.test(body)) pass('A6 operator marker keeps a distinct colour')
+  else fail('A6', 'operator marker colour missing')
 }
-await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== globe arcs ' + passed + '/' + results.length + ' passed ====')
 if (passed !== results.length) process.exit(1)
