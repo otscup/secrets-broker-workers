@@ -59,8 +59,8 @@ await seed()
   const hit = ev[ev.length - 1]
   const g = hit && hit.geo
   const okShape = g && g.known === true && typeof g.country === 'string' && g.country.length === 2 &&
-    (g.lat === null || (Math.abs(g.lat) <= 90 && Math.round(g.lat * 100) === g.lat * 100)) &&
-    (g.lon === null || (Math.abs(g.lon) <= 180 && Math.round(g.lon * 100) === g.lon * 100))
+    (g.lat === null || (Math.abs(g.lat) <= 90 && Math.abs(g.lat * 100 - Math.round(g.lat * 100)) < 1e-6)) &&
+    (g.lon === null || (Math.abs(g.lon) <= 180 && Math.abs(g.lon * 100 - Math.round(g.lon * 100)) < 1e-6))
   if (okShape) pass('C4 request.cf geo used with 2dp rounded coordinates')
   else fail('C4', JSON.stringify(g))
 }

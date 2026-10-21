@@ -103,3 +103,7 @@ jobs:
         run: npm run test:panel
       - name: CSS integrity
         run: npm run test:css
+      - name: Fixed overview layout (browser)
+        run: npm run test:layout2
+      - name: Full security suite (short path)
+        run: npm run test:security:short

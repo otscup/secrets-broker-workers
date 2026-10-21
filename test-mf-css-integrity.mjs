@@ -19,7 +19,7 @@ const required = [
   '.grid3 .rank-box{',
   '.legend{',
   '.globe-pause{',
-  '.grid3-col{',
+  '.grid3>.card{',
 ]
 const missing = required.filter((rule) => !css.includes(rule))
 if (missing.length === 0) pass('C2 all key rules are present in the stylesheet')

@@ -54,9 +54,9 @@ const ui = fs.readFileSync('src/ui.js', 'utf8')
 }
 // X6: trend chart keeps its spacious height
 {
-  const h = /\.grid3 \.trend-box\{[^}]*min-height:(\d+)px/.exec(ui)
+  const h = /\.grid3>\.card\{[^}]*height:(\d+)px/.exec(ui)
   const px = h ? Number(h[1]) : 0
-  if (px >= 200) pass('X6 trend chart keeps room (' + px + 'px)')
+  if (px >= 200) pass('X6 panels keep a fixed height (' + px + 'px)')
   else fail('X6', 'min-height=' + px)
 }
 // X7: enlarge is a near-fullscreen overlay, not a small modal

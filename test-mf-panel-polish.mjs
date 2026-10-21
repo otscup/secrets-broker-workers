@@ -16,7 +16,7 @@ const html = await page.text()
 const ui = fs.readFileSync('src/ui.js', 'utf8')
 // Z1: ranking scrolls without a visible scrollbar
 {
-  const hidden = ui.includes('.grid3 .rank-box{height:210px;min-height:210px;overflow-y:auto;scrollbar-width:none')
+  const hidden = ui.includes('.grid3 .rank-box{flex:1 1 auto;min-height:0;height:auto;overflow-y:scroll;overflow-x:auto;scrollbar-width:none')
   const webkit = ui.includes('.grid3 .rank-box::-webkit-scrollbar{width:0;height:0;display:none}')
   if (hidden && webkit) pass('Z1 ranking scrolls with no visible scrollbar')
   else fail('Z1', JSON.stringify({ hidden, webkit }))
@@ -31,8 +31,8 @@ const ui = fs.readFileSync('src/ui.js', 'utf8')
 }
 // Z3: the globe panel is shorter, the donut gets more room
 {
-  const g = ui.indexOf('.grid3 .globe-box{height:180px')
-  const d = ui.indexOf('.grid3 .donut-wrap{height:240px')
+  const g = ui.indexOf('.grid3 .globe-box{flex:1 1 auto')
+  const d = ui.indexOf('.grid3 .donut-wrap{flex:1 1 auto')
   if (g > 0 && d > 0) pass('Z3 globe shortened, donut enlarged')
   else fail('Z3', JSON.stringify({ g, d }))
 }

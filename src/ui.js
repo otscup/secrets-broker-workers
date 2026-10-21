@@ -126,19 +126,17 @@ html[data-theme="dark"] .agent-stat{box-shadow:none;background:#151f31}
 .kpi.warn .value{color:var(--warn)}
 .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}.spacer{flex:1}
 .seg{background:#fff;border:1px solid var(--line);border-radius:10px;padding:3px;display:flex;gap:2px}.seg button{background:transparent;color:var(--muted);padding:5px 10px;font-size:12px;border-radius:7px}.seg button.on{background:var(--ok);color:#fff}
-.grid3-col{display:flex;flex-direction:column;gap:14px;min-width:0}
-.grid3-fill{flex:1;min-height:0;display:flex;flex-direction:column}
-.grid3-fill .rank-box{flex:1;min-height:0}
-.grid3 .donut-wrap{flex:1}
-.grid3{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:14px;align-items:start}
-.grid3>.card{display:flex;flex-direction:column;min-width:0}
-.grid3>.card>h2{margin:0 0 4px}
-/* Fixed heights: panels must not grow with the amount of data. */
-.grid3 .trend-box{height:230px;min-height:230px;overflow:hidden}
-.grid3 .globe-box{height:180px;min-height:180px}
-.grid3 .donut-wrap{height:240px;min-height:240px;justify-content:center;align-content:center;overflow:hidden}
-.grid3 .rank-box{height:210px;min-height:210px;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none}.grid3 .rank-box::-webkit-scrollbar{width:0;height:0;display:none}
-@media(max-width:1000px){.grid3{grid-template-columns:1fr}}
+/* Two rows of two fixed-height panels. Nothing may grow with the data. */
+.grid3{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);grid-template-rows:auto auto;gap:14px;align-items:start}
+.grid3>.card{display:flex;flex-direction:column;min-width:0;height:300px;overflow:hidden}
+.grid3>.card>h2{margin:0 0 4px;flex:0 0 auto}
+.grid3 .trend-box{flex:1 1 auto;min-height:0;overflow:hidden}
+.grid3 .globe-box{flex:1 1 auto;min-height:0;height:auto}
+.grid3 .donut-wrap{flex:1 1 auto;min-height:0;height:auto;justify-content:center;align-content:center;overflow:hidden}
+/* The ranking scrolls inside its box: fixed height, hidden scrollbar, wheel still works. */
+.grid3 .rank-box{flex:1 1 auto;min-height:0;height:auto;overflow-y:scroll;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none}
+.grid3 .rank-box::-webkit-scrollbar{width:0;height:0;display:none}
+.grid3 .rank-box table{width:100%}@media(max-width:1000px){.grid3{grid-template-columns:1fr}}
 table{width:100%;border-collapse:collapse;font-size:12.5px}th{color:var(--muted);font-weight:500;text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}td.actions{white-space:nowrap}td.actions button+button{margin-left:6px}th.nowrap{white-space:nowrap}tr:last-child td{border-bottom:0}tbody tr:hover td{background:#f8fafc}
 .table-wrap{overflow-x:auto;max-width:100%}
 .pill{display:inline-block;background:#eef7f5;color:#0b7d6d;border-radius:999px;padding:1px 8px;font-size:11px;border:0;cursor:pointer}.pill:hover{background:#dff3ee}.pill.off{background:#f3f4f6;color:var(--muted)}
@@ -190,28 +188,23 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div id="notice-bar" class="notice-bar hidden" role="button" tabindex="0" title="点击查看全部通知"></div>
     <div id="kpis" class="kpis"></div>
     <div class="grid3">
-      <div class="grid3-col">
-        <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
-        <div class="card grid3-fill"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap rank-box"></div></div>
-      </div>
-      <div class="grid3-col">
-        <div class="card" id="globe-card">
-          <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
-            <h2 style="margin:0">Agent Live Globe</h2>
-            <span class="hint globe-note" title="IP 估算位置，不代表实际物理位置">IP 估算</span>
-          </div>
-          <div id="globe-box" class="globe-box">
-            <button class="small globe-expand" id="globe-full" title="放大地球">⤢</button>
-            <div class="globe-empty" id="globe-empty">暂无访问记录</div>
-          </div>
-          <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
-            <div class="seg" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button><button class="small globe-pause" id="globe-pause" title="暂停动画">⏸</button></div>
-          </div>
-          <div class="hint" id="globe-status" style="margin-top:4px"></div>
+      <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
+      <div class="card" id="globe-card">
+        <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
+          <h2 style="margin:0">Agent Live Globe</h2>
+          <span class="hint globe-note" title="IP 估算位置，不代表实际物理位置">IP 估算</span>
         </div>
-        <div class="card" style="flex:1;display:flex;flex-direction:column"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
+        <div id="globe-box" class="globe-box">
+          <button class="small globe-expand" id="globe-full" title="放大地球">⤢</button>
+          <div class="globe-empty" id="globe-empty">暂无访问记录</div>
+        </div>
+        <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
+          <div class="seg" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button><button class="small globe-pause" id="globe-pause" title="暂停动画">⏸</button></div>
+        </div>
+        <div class="hint" id="globe-status" style="margin-top:4px"></div>
       </div>
-    </div>
+      <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap rank-box"></div></div>
+      <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>    </div>
     <div id="chart-tip" class="chart-tip"></div>
     <div class="card"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>
   </section>
