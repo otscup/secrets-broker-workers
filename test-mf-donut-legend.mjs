@@ -18,11 +18,11 @@ const ui = fs.readFileSync('src/ui.js', 'utf8')
   if (scroll) pass('D2 the legend scrolls with a hidden scrollbar')
   else fail('D2', 'legend overflow not contained')
 }
-// D3: two columns are kept so many agents stay compact
+// D3: a single column, so the agent name is never squeezed into an ellipsis
 {
-  const cols = /\.legend\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/.test(ui)
-  if (cols) pass('D3 the legend uses two columns')
-  else fail('D3', 'legend is not two columns')
+  const cols = /\.legend\{[^}]*flex-direction:column/.test(ui)
+  if (cols) pass('D3 the legend is a single column')
+  else fail('D3', 'legend is not a single column')
 }
 // D4: the ring keeps its size; the card is not resized
 {
