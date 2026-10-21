@@ -65,6 +65,7 @@ button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;
 .notice-bar[data-level="notice"] .notice-dot{background:#3f6ec4}
 .notice-bar .notice-more{flex:0 0 auto;font-size:12px;opacity:.75}
 .globe-box{position:relative;height:210px;margin-top:8px;border-radius:12px;overflow:hidden;background:transparent;border:1px solid var(--line);touch-action:none}
+.globe-pause{margin-left:4px;padding:2px 7px;font-size:11px;line-height:1.2}
 .globe-expand{position:absolute;top:6px;right:6px;z-index:3;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:3px 8px;font-size:13px;line-height:1.2;cursor:pointer}
 .globe-expand:hover{background:var(--btn)}
 html[data-theme="dark"] .globe-box{background:transparent}
@@ -99,17 +100,14 @@ html[data-theme="dark"] .globe-box{background:transparent}
 .globe-box canvas{display:block;max-width:100%}
 @media(max-width:720px){.globe-box{height:220px}}
 @media (prefers-reduced-motion: reduce){}#globe-card .globe-box{scroll-behavior:auto}}
-.agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:10px 0}
+.agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))!important;grid-auto-flow:column;gap:10px;margin:10px 0;width:100%}
 .agent-stats::after{content:none}
 .agent-stat{background:var(--card);border:1px solid var(--line);border-radius:var(--ios-radius);box-shadow:var(--ios-shadow);padding:10px 14px;display:flex;flex-direction:column;justify-content:center;min-height:64px;min-width:0}
 html[data-theme="dark"] .agent-stat{box-shadow:none;background:#151f31}
 .agent-stat b{font-size:19px;line-height:1.1;display:block}
 .agent-stat span{display:block;margin-top:2px;font-size:12px;color:var(--muted)}
 .agent-stat i{display:block;margin-top:6px;font-size:11px;color:var(--muted);font-style:normal;opacity:.8}
-@media(max-width:600px){.agent-stat{padding:10px;min-height:72px}.agent-stat b{font-size:18px}.agent-stat span{font-size:11px}.agent-stat i{display:none}}
-.agent-stat b{display:block;font-size:22px;line-height:1.2}
-.agent-stat span{display:block;font-size:12px;color:var(--muted);margin-top:2px}
-.agent-stat i{display:block;font-size:11px;color:var(--muted);font-style:normal;margin-top:6px;opacity:.8}
+@media(max-width:600px){.agent-stat{padding:8px 10px;min-height:64px}.agent-stat b{font-size:16px}.agent-stat span{font-size:10px}.agent-stat i{display:none}}
 .agent-row{cursor:pointer}
 .agent-row:hover td{background:#f8fafc}
 .agent-health{font-size:12px;padding:3px 8px;border-radius:999px}
@@ -120,7 +118,7 @@ html[data-theme="dark"] .agent-stat{box-shadow:none;background:#151f31}
 .agent-detail-grid>div{display:flex;flex-direction:column;gap:2px}
 .agent-detail-grid span{font-size:11px;color:var(--muted)}
 .agent-detail-grid b{font-size:13px;font-weight:500}
-@media(max-width:420px){.agent-stats{grid-template-columns:1fr}.agent-detail-grid{grid-template-columns:1fr}}
+@media(max-width:420px){.agent-detail-grid{grid-template-columns:1fr}}
 .row{display:flex;gap:9px;flex-wrap:wrap;align-items:end}.row>*{flex:1;min-width:140px}.row button{flex:0 0 auto}
 .hidden{display:none!important}.status{min-height:18px;font-size:12px;color:var(--muted);margin-top:8px}.error{color:var(--danger)}.ok{color:var(--ok)}
 .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
@@ -128,14 +126,18 @@ html[data-theme="dark"] .agent-stat{box-shadow:none;background:#151f31}
 .kpi.warn .value{color:var(--warn)}
 .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}.spacer{flex:1}
 .seg{background:#fff;border:1px solid var(--line);border-radius:10px;padding:3px;display:flex;gap:2px}.seg button{background:transparent;color:var(--muted);padding:5px 10px;font-size:12px;border-radius:7px}.seg button.on{background:var(--ok);color:#fff}
+.grid3-col{display:flex;flex-direction:column;gap:14px;min-width:0}
+.grid3-fill{flex:1;min-height:0;display:flex;flex-direction:column}
+.grid3-fill .rank-box{flex:1;min-height:0}
+.grid3 .donut-wrap{flex:1}
 .grid3{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:14px;align-items:start}
 .grid3>.card{display:flex;flex-direction:column;min-width:0}
 .grid3>.card>h2{margin:0 0 4px}
 /* Fixed heights: panels must not grow with the amount of data. */
 .grid3 .trend-box{height:230px;min-height:230px;overflow:hidden}
-.grid3 .globe-box{height:210px;min-height:210px}
-.grid3 .donut-wrap{height:190px;min-height:190px;justify-content:center;align-content:center;overflow:hidden}
-.grid3 .rank-box{height:210px;min-height:210px;overflow:auto}
+.grid3 .globe-box{height:180px;min-height:180px}
+.grid3 .donut-wrap{height:240px;min-height:240px;justify-content:center;align-content:center;overflow:hidden}
+.grid3 .rank-box{height:210px;min-height:210px;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none}.grid3 .rank-box::-webkit-scrollbar{width:0;height:0;display:none}
 @media(max-width:1000px){.grid3{grid-template-columns:1fr}}
 table{width:100%;border-collapse:collapse;font-size:12.5px}th{color:var(--muted);font-weight:500;text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}td.actions{white-space:nowrap}td.actions button+button{margin-left:6px}th.nowrap{white-space:nowrap}tr:last-child td{border-bottom:0}tbody tr:hover td{background:#f8fafc}
 .table-wrap{overflow-x:auto;max-width:100%}
@@ -143,7 +145,7 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th{color:var(--muted)
 .link-button{display:inline-block;border-radius:10px;padding:9px 13px;text-decoration:none;font-size:14px}
 .link-button.primary{background:var(--ok);color:#fff}
 .donut-wrap{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.donut-svg{position:relative;width:140px;height:140px;flex:0 0 auto}.donut-svg svg{width:140px;height:140px;transform:rotate(-90deg)}.donut-svg .donut-center{inset:31px}.donut-center{position:absolute;inset:25px;background:#fff;border-radius:50%;display:grid;place-items:center;font-weight:650;font-size:17px;text-align:center;padding:6px}.legend{font-size:12px}.legend div{display:flex;justify-content:space-between;gap:18px;margin:5px 0;cursor:pointer;border-radius:6px;padding:2px 4px}.legend div.active{background:var(--btn);font-weight:600}.dot{display:inline-block;width:8px;height:8px;border-radius:99px;margin-right:6px}
-.legend{font-size:12px}.legend div{display:flex;justify-content:space-between;gap:18px;margin:5px 0}.dot{display:inline-block;width:8px;height:8px;border-radius:99px;margin-right:6px}
+.legend{font-size:12px;flex:1;min-width:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 10px;align-content:start}.legend div{display:flex;justify-content:space-between;gap:8px;margin:2px 0;cursor:pointer;border-radius:6px;padding:1px 4px;min-width:0}.legend div span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.dot{display:inline-block;width:8px;height:8px;border-radius:99px;margin-right:6px;flex:0 0 auto}.legend-pager{display:flex;gap:6px;justify-content:flex-end;align-items:center;margin-top:4px;font-size:11px;color:var(--muted)}.legend-pager button{border:1px solid var(--line);background:var(--card);border-radius:6px;padding:1px 7px;font-size:11px;cursor:pointer}
 .recent .rowline{display:flex;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12px}.recent .rowline:last-child{border-bottom:0}.recent .ev{color:var(--muted);white-space:nowrap}
 ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}ul.items li:last-child{border-bottom:0}ul.items .name{font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}ul.items .type{color:var(--muted);font-size:11px}
 .secret{background:#0f172a;color:#d1fae5;border-radius:10px;padding:12px;margin-top:8px;word-break:break-all;font-family:ui-monospace,monospace;font-size:12px}
@@ -188,11 +190,11 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div id="notice-bar" class="notice-bar hidden" role="button" tabindex="0" title="点击查看全部通知"></div>
     <div id="kpis" class="kpis"></div>
     <div class="grid3">
-      <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+      <div class="grid3-col">
         <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
-        <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap rank-box"></div></div>
+        <div class="card grid3-fill"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap rank-box"></div></div>
       </div>
-      <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+      <div class="grid3-col">
         <div class="card" id="globe-card">
           <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
             <h2 style="margin:0">Agent Live Globe</h2>
@@ -203,8 +205,7 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
             <div class="globe-empty" id="globe-empty">暂无访问记录</div>
           </div>
           <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
-            <div class="seg" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button></div>
-            <button class="small" id="globe-pause" title="暂停动画">暂停</button>
+            <div class="seg" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button><button class="small globe-pause" id="globe-pause" title="暂停动画">⏸</button></div>
           </div>
           <div class="hint" id="globe-status" style="margin-top:4px"></div>
         </div>
@@ -606,6 +607,8 @@ function openKpiModal(kind) {
     openModal('待审批 / 通知', pending.length ? pending.map((entry) => '<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px"><div><b>' + esc(entry.agent || 'Agent') + '</b> 请求读取 <code>' + esc(entry.name) + '</code></div><div class="hint">' + esc(entry.createdAt ? new Date(entry.createdAt).toLocaleString('zh-CN', { hour12: false }) : '') + '</div><div class="row" style="margin-top:8px"><button class="small primary" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="once">仅本次</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="24h">24 小时</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="always">永久</button><button class="small danger" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="deny">拒绝</button></div></div>').join('') : '<div class="hint">暂无待审批请求</div>')
   }
 }
+let legendPage = 0
+const LEGEND_PER_PAGE = 8
 function renderStats() {
   const stats = app.stats || { totalReads: 0, activeAgents: 0, pending: 0, activeGrants: 0, buckets: [], topItems: [], topAgents: [] }
   const cards = [{ l: '读取次数', v: stats.totalReads, sub: '当前区间 · 点开查看', view: 'reads' }, { l: '活跃 Agent', v: stats.activeAgents, sub: '有读取记录', view: 'agents' }, { l: '待审批 / 通知', v: stats.pending, sub: '点开处理', warn: stats.pending > 0, view: 'pending' }, { l: '有效授权', v: stats.activeGrants, sub: '含免审批', view: 'grants' }]
@@ -621,7 +624,13 @@ function renderStats() {
   $('chart-box').querySelectorAll('[data-chart]').forEach((bar) => { bar.addEventListener('mouseenter', (event) => showTip(event, bar.dataset.label, bar.dataset.count)); bar.addEventListener('mousemove', (event) => showTip(event, bar.dataset.label, bar.dataset.count)); bar.addEventListener('mouseleave', hideTip) })
   const agents = stats.topAgents || []; const totalAgents = agents.reduce((sum, agent) => sum + agent.count, 0); const colors = ['#0f9d8a', '#5b6cff', '#f2994a', '#b6c2d9', '#a78bfa', '#14b8a6']; const R = 54, CIRC = 2 * Math.PI * R; let offset = 0
   const segments = agents.map((agent, index) => { const length = CIRC * (agent.count / Math.max(1, totalAgents)); const dash = Math.max(0, length - 2); const segment = '<circle class="donut-seg" data-donut data-agent="' + esc(agent.name) + '" data-count="' + agent.count + '" data-percent="' + Math.round(agent.count / Math.max(1, totalAgents) * 100) + '" cx="75" cy="75" r="' + R + '" fill="none" stroke="' + colors[index % colors.length] + '" stroke-width="19" stroke-dasharray="' + dash.toFixed(2) + ' ' + (CIRC - dash).toFixed(2) + '" stroke-dashoffset="' + (-offset).toFixed(2) + '" opacity=".9"/>'; offset += length; return segment }).join('')
-  $('donut-box').innerHTML = '<div class="donut-svg"><svg viewBox="0 0 150 150">' + (segments || '<circle cx="75" cy="75" r="54" fill="none" stroke="var(--btn)" stroke-width="19"/>') + '</svg><div class="donut-center" id="donut-center">' + totalAgents + '</div></div><div class="legend">' + agents.map((agent, index) => '<div data-legend data-agent="' + esc(agent.name) + '" data-count="' + agent.count + '" data-percent="' + Math.round(agent.count / Math.max(1, totalAgents) * 100) + '"><span><span class="dot" style="background:' + colors[index % colors.length] + '"></span>' + esc(agent.name) + '</span><b>' + Math.round(agent.count / Math.max(1, totalAgents) * 100) + '%</b></div>').join('') + '</div>'
+  const pageCount = Math.max(1, Math.ceil(agents.length / LEGEND_PER_PAGE))
+  if (legendPage >= pageCount) legendPage = 0
+  const pageAgents = agents.slice(legendPage * LEGEND_PER_PAGE, (legendPage + 1) * LEGEND_PER_PAGE)
+  const offsetBase = legendPage * LEGEND_PER_PAGE
+  const legendHtml = pageAgents.map((agent, index) => { const pct = Math.round(agent.count / Math.max(1, totalAgents) * 100); return '<div data-legend data-agent="' + esc(agent.name) + '" data-count="' + agent.count + '" data-percent="' + pct + '"><span><span class="dot" style="background:' + colors[(offsetBase + index) % colors.length] + '"></span>' + esc(agent.name) + '</span><b>' + pct + '%</b></div>' }).join('')
+  const pager = agents.length > LEGEND_PER_PAGE ? '<div class="legend-pager"><button id="legend-prev">‹</button><span>' + (legendPage + 1) + '/' + pageCount + '</span><button id="legend-next">›</button></div>' : ''
+  $('donut-box').innerHTML = '<div class="donut-svg"><svg viewBox="0 0 150 150">' + (segments || '<circle cx="75" cy="75" r="54" fill="none" stroke="var(--btn)" stroke-width="19"/>') + '</svg><div class="donut-center" id="donut-center">' + totalAgents + '</div></div><div style="flex:1;min-width:0;display:flex;flex-direction:column"><div class="legend">' + legendHtml + '</div>' + pager + '</div>'
   const donutCenter = $('donut-center')
   const selectDonut = (target) => {
     const agent = target?.dataset.agent; if (!agent) return
@@ -631,6 +640,10 @@ function renderStats() {
     $('donut-box').querySelectorAll('[data-donut],[data-legend]').forEach((el) => { if (el.dataset.agent === agent) el.classList.add('active') })
     donutCenter.textContent = agent + ' ' + target.dataset.percent + '%'
   }
+  const prevBtn = $('legend-prev')
+  const nextBtn = $('legend-next')
+  if (prevBtn) prevBtn.onclick = () => { legendPage = Math.max(0, legendPage - 1); renderStats() }
+  if (nextBtn) nextBtn.onclick = () => { legendPage = legendPage + 1; renderStats() }
   $('donut-box').querySelectorAll('[data-donut],[data-legend]').forEach((el) => { el.addEventListener('click', () => selectDonut(el)); el.addEventListener('mouseenter', (event) => { if (el.dataset.count) showTip(event, el.dataset.agent, el.dataset.count) }); el.addEventListener('mouseleave', hideTip) })
   const top = stats.topItems || []; const totalTop = top.reduce((sum, item) => sum + item.count, 0) || 1; const maxTop = Math.max(1, ...top.map((item) => item.count))
   $('top-box').innerHTML = top.length ? '<table><tr><th>#</th><th>条目</th><th>读取</th><th>占比</th><th>趋势</th></tr>' + top.map((item, index) => '<tr><td>' + (index + 1) + '</td><td><b>' + esc(item.name) + '</b></td><td>' + item.count + '</td><td>' + Math.round(item.count / totalTop * 100) + '%</td><td><span style="display:inline-block;height:6px;width:90px;background:#eef1f6;border-radius:99px;overflow:hidden"><i style="display:block;height:100%;width:' + Math.round(item.count / maxTop * 100) + '%;background:#0f9d8a"></i></span></td></tr>').join('') + '</table>' : '<div class="hint">该区间暂无读取记录</div>'
@@ -840,7 +853,7 @@ function openGlobeModal() {
       '<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px"><b>Agent Live Globe</b><span class="hint">放大视图</span></div>' +
       '<div class="hint">我的位置（IP 估算）：<b>' + esc(opText) + '</b></div>' +
       toggles +
-      '<div class="danmu-title" style="margin-top:10px">实时连接</div>' +
+      '<div class="danmu-title" style="margin-top:10px">实时连接<span class="hint" style="margin-left:6px">成功=已授权并完成 · 失败=权限不足或条目不存在（与位置无关）</span></div>' +
       '<div id="globe-danmu" class="danmu-feed"></div>' +
     '</div>' +
     '</div>'
@@ -905,7 +918,8 @@ function initGlobe() {
   const pauseBtn = $('globe-pause')
   if (pauseBtn) pauseBtn.onclick = () => {
     globe.paused = !globe.paused
-    pauseBtn.textContent = globe.paused ? '继续' : '暂停'
+    pauseBtn.textContent = globe.paused ? '▶' : '⏸'
+    pauseBtn.title = globe.paused ? '继续播放' : '暂停动画'
     if (globe.instance) globe.instance.setPaused(globe.paused)
     syncGlobePolling()
   }

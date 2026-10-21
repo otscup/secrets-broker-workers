@@ -99,3 +99,5 @@ jobs:
         run: npm run test:ui-polish
       - name: Layout and naming (Miniflare)
         run: npm run test:layout
+      - name: Panel polish (Miniflare)
+        run: npm run test:panel
