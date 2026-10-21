@@ -1248,9 +1248,22 @@ async function notifyPending(env, origin, entry, ctx) {
     }))
   }
   if (notifications.gotify?.url && notifications.gotify?.token) {
+    // Gotify clients (Gotify+ / notify inbox) render notify::actions as buttons,
+    // mirroring the Telegram inline keyboard: short body, no raw signed URLs.
+    // '拒绝' sits third so it survives the 3-action cap of Android notifications;
+    // the detail view shows all four. click.url opens the console on tap.
+    const extras = {
+      'client::notification.click': { url: `${origin}/` },
+      'notify::actions': [
+        { label: '仅本次', url: links.once },
+        { label: '24 小时', url: links['24h'] },
+        { label: '拒绝', url: links.deny },
+        { label: '永久', url: links.always },
+      ],
+    }
     tasks.push(fetch(`${String(notifications.gotify.url).replace(/\/$/, '')}/message?token=${encodeURIComponent(notifications.gotify.token)}`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'Secrets Broker approval', message: linkText, priority: 5 }),
+      body: JSON.stringify({ title: 'Secrets Broker approval', message: shortText, priority: 5, extras }),
     }))
   }
   if (notifications.wxpush?.url && notifications.wxpush?.token) {
