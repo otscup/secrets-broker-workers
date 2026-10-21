@@ -32,9 +32,9 @@ for (const badName of ['arcLabel', 'bumpImageUrl']) {
 
 {
   const ui = fs.readFileSync('src/ui.js', 'utf8')
-  const equal = /\.grid2\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/.test(ui)
+  const equal = /\.grid3\{display:grid;grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/.test(ui)
   const transparent = /\.globe-box\{[^}]*background:transparent/.test(ui)
   const clamp = /#globe-status\{[^}]*overflow-wrap:anywhere/.test(ui)
-  if (equal && transparent && clamp) pass('G4 equal columns, transparent globe, clamped text')
+  if (equal && transparent && clamp) pass('G4 equal cards, transparent globe, clamped text')
   else fail('G4', JSON.stringify({ equal, transparent, clamp }))
 }

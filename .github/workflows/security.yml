@@ -95,3 +95,5 @@ jobs:
         run: npm run test:bugfixes
       - name: Globe API guard
         run: npm run test:globe-api
+      - name: UI polish (Miniflare)
+        run: npm run test:ui-polish

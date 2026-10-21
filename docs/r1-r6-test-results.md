@@ -1,4 +1,4 @@
-# R1/R6 security tests — 2026-10-21T03:04:27.630Z
+# R1/R6 security tests — 2026-10-21T03:32:56.515Z
 
 DO consume ran against the real BrokerState class with serialized fetch (DO single-thread model) + shared store across two instances; throwaway HMAC material only.
 

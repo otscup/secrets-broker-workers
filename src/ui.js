@@ -68,6 +68,11 @@ button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;
 html[data-theme="dark"] .globe-box{background:transparent}
 .globe-box.globe-full{position:fixed;inset:16px;z-index:60;height:auto;margin:0;border-radius:16px;box-shadow:0 24px 60px rgba(10,20,40,.35)}
 .globe-box.globe-full canvas{cursor:grab}
+.globe-big{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(240px,1fr);gap:16px;align-items:stretch}
+.globe-big-stage{min-width:0}
+.globe-box-big{height:clamp(320px,52vh,520px);margin-top:0}
+.globe-big-side{min-width:0;display:flex;flex-direction:column}
+@media(max-width:860px){.globe-big{grid-template-columns:1fr}.globe-box-big{height:300px}}
 .danmu-wrap{margin-top:14px}
 .danmu-title{font-size:12px;color:var(--muted);margin-bottom:6px}
 .danmu-feed{max-height:180px;overflow:hidden;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:var(--btn);display:flex;flex-direction:column-reverse}
@@ -88,9 +93,13 @@ html[data-theme="dark"] .globe-box{background:transparent}
 .globe-box canvas{display:block;max-width:100%}
 @media(max-width:720px){.globe-box{height:220px}}
 @media (prefers-reduced-motion: reduce){}#globe-card .globe-box{scroll-behavior:auto}}
-.agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}
-.agent-stat{background:var(--btn);border-radius:12px;padding:12px}
-@media(max-width:480px){.agent-stat{padding:9px}.agent-stat b{font-size:18px}.agent-stat span{font-size:11px}.agent-stat i{display:none}}
+.agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:14px 0}
+.agent-stats::after{content:none}
+.agent-stat{background:var(--btn);border-radius:12px;padding:14px;display:flex;flex-direction:column;justify-content:center;min-height:84px;min-width:0}
+.agent-stat b{font-size:22px;line-height:1.15}
+.agent-stat span{margin-top:2px}
+.agent-stat i{margin-top:6px}
+@media(max-width:600px){.agent-stat{padding:10px;min-height:72px}.agent-stat b{font-size:18px}.agent-stat span{font-size:11px}.agent-stat i{display:none}}
 .agent-stat b{display:block;font-size:22px;line-height:1.2}
 .agent-stat span{display:block;font-size:12px;color:var(--muted);margin-top:2px}
 .agent-stat i{display:block;font-size:11px;color:var(--muted);font-style:normal;margin-top:6px;opacity:.8}
@@ -104,7 +113,7 @@ html[data-theme="dark"] .globe-box{background:transparent}
 .agent-detail-grid>div{display:flex;flex-direction:column;gap:2px}
 .agent-detail-grid span{font-size:11px;color:var(--muted)}
 .agent-detail-grid b{font-size:13px;font-weight:500}
-@media(max-width:720px){.agent-stats{grid-template-columns:repeat(3,minmax(0,1fr))}.agent-detail-grid{grid-template-columns:1fr}}
+@media(max-width:420px){.agent-stats{grid-template-columns:1fr}.agent-detail-grid{grid-template-columns:1fr}}
 .row{display:flex;gap:9px;flex-wrap:wrap;align-items:end}.row>*{flex:1;min-width:140px}.row button{flex:0 0 auto}
 .hidden{display:none!important}.status{min-height:18px;font-size:12px;color:var(--muted);margin-top:8px}.error{color:var(--danger)}.ok{color:var(--ok)}
 .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
@@ -112,11 +121,13 @@ html[data-theme="dark"] .globe-box{background:transparent}
 .kpi.warn .value{color:var(--warn)}
 .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}.spacer{flex:1}
 .seg{background:#fff;border:1px solid var(--line);border-radius:10px;padding:3px;display:flex;gap:2px}.seg button{background:transparent;color:var(--muted);padding:5px 10px;font-size:12px;border-radius:7px}.seg button.on{background:var(--ok);color:#fff}
-.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:stretch}
-.grid2>.card{display:flex;flex-direction:column;min-width:0}
-.grid2>.card>h2{margin:0 0 4px}
-.trend-box{flex:1;min-height:260px}
-.donut-wrap{flex:1}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:stretch}
+.grid3>.card{display:flex;flex-direction:column;min-width:0;min-height:360px}
+.grid3>.card>h2{margin:0 0 4px}
+.grid3 .trend-box{flex:1;min-height:240px;overflow:hidden}
+.grid3 .globe-box{flex:1;min-height:220px}
+.grid3 .donut-wrap{flex:1;justify-content:center}
+@media(max-width:1100px){.grid3{grid-template-columns:1fr}.grid3>.card{min-height:0}}
 table{width:100%;border-collapse:collapse;font-size:12.5px}th{color:var(--muted);font-weight:500;text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}td.actions{white-space:nowrap}td.actions button+button{margin-left:6px}th.nowrap{white-space:nowrap}tr:last-child td{border-bottom:0}tbody tr:hover td{background:#f8fafc}
 .table-wrap{overflow-x:auto;max-width:100%}
 .pill{display:inline-block;background:#eef7f5;color:#0b7d6d;border-radius:999px;padding:1px 8px;font-size:11px;border:0;cursor:pointer}.pill:hover{background:#dff3ee}.pill.off{background:#f3f4f6;color:var(--muted)}
@@ -167,12 +178,13 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div class="toolbar"><div class="seg" id="range-row"><button data-range="24h" class="on">24 小时</button><button data-range="7d">7 天</button><button data-range="30d">30 天</button></div><span class="spacer"></span><span class="hint" id="updated"></span></div>
     <div id="notice-bar" class="notice-bar hidden" role="button" tabindex="0" title="点击查看全部通知"></div>
     <div id="kpis" class="kpis"></div>
-    <div class="grid2">
+    <div class="grid3">
       <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
+      <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
       <div class="card" id="globe-card">
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
           <h2 style="margin:0">Agent Live Globe</h2>
-          <button class="small" id="globe-full" title="放大查看">⤢</button>
+          <button class="small" id="globe-full" title="放大地球">⤢</button>
         </div>
         <div class="hint globe-note" style="margin-bottom:6px" title="IP 估算位置，不代表实际物理位置">IP 估算位置</div>
         <div id="globe-box" class="globe-box"><div class="globe-empty" id="globe-empty">暂无访问记录</div></div>
@@ -182,9 +194,6 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
         </div>
         <div class="hint" id="globe-status" style="margin-top:6px"></div>
       </div>
-    </div>
-    <div class="grid2" style="margin-top:14px">
-      <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
     </div>
     <div id="chart-tip" class="chart-tip"></div>
     <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap"></div></div>
@@ -795,18 +804,48 @@ function openGlobeModal() {
       '<td style="color:' + color + '">' + (ev.ok ? '成功' : '失败') + '</td>' +
       '<td class="hint">' + esc(when) + '</td></tr>'
   }).join('') : ''
-  const body = '<div class="hint">我的位置（IP 估算）：<b>' + esc(opText) + '</b></div>' +
-    '<div class="hint" style="margin-top:4px">弧线表示：我 → Agent → 被访问国家；未记录我的位置时只画 Agent → 被访问国家。</div>' +
-    toggles +
-    (events.length ? '<div class="table-wrap"><table><tr><th>Agent</th><th>来源</th><th>操作</th><th>结果</th><th>时间</th></tr>' + rows + '</table></div>' : '<div class="hint">暂无真实访问记录</div>')
-  openModal('Agent Live Globe', body + '<div class="danmu-wrap"><div class="danmu-title">实时连接</div><div id="globe-danmu" class="danmu-feed"></div></div>')
+  // Enlarged view: the globe itself grows on the left, the live feed streams
+  // beside it. This is a bigger globe, not a table of connections.
+  const body = '<div class="globe-big">' +
+    '<div class="globe-big-stage"><div id="globe-big-box" class="globe-box globe-box-big"></div></div>' +
+    '<div class="globe-big-side">' +
+      '<div class="hint">我的位置（IP 估算）：<b>' + esc(opText) + '</b></div>' +
+      toggles +
+      '<div class="danmu-title" style="margin-top:10px">实时连接</div>' +
+      '<div id="globe-danmu" class="danmu-feed"></div>' +
+    '</div>' +
+    '</div>'
+  openModal('Agent Live Globe', body)
+  mountBigGlobe()
   startDanmu()
   const closeBtn = document.querySelector('#modal [data-close], #modal .modal-close')
-  if (closeBtn) { const prev = closeBtn.onclick; closeBtn.onclick = (e) => { stopDanmu(); if (prev) prev.call(closeBtn, e) } }
+  if (closeBtn) { const prev = closeBtn.onclick; closeBtn.onclick = (e) => { disposeBigGlobe(); stopDanmu(); if (prev) prev.call(closeBtn, e) } }
   const arcsToggle = $('gl-arcs')
-  if (arcsToggle) arcsToggle.onchange = () => { globe.showArcs = arcsToggle.checked; refreshGlobe(true) }
+  if (arcsToggle) arcsToggle.onchange = () => { globe.showArcs = arcsToggle.checked; refreshGlobe(true); redrawBigGlobe() }
   const opToggle = $('gl-operator')
-  if (opToggle) opToggle.onchange = () => { globe.showOperator = opToggle.checked; refreshGlobe(true) }
+  if (opToggle) opToggle.onchange = () => { globe.showOperator = opToggle.checked; refreshGlobe(true); redrawBigGlobe() }
+}
+// The modal hosts a second, larger globe instance.
+let bigGlobe = null
+async function mountBigGlobe() {
+  const box = $('globe-big-box')
+  if (!box) return
+  try {
+    const mod = await import('/globe.js')
+    bigGlobe = mod.mountGlobe(box, { reduceMotion: globe.reduceMotion })
+    redrawBigGlobe()
+  } catch (error) {
+    box.innerHTML = '<div class="globe-empty">' + esc(String(error && error.message || error).slice(0, 120)) + '</div>'
+  }
+}
+function redrawBigGlobe() {
+  if (!bigGlobe) return
+  try { bigGlobe.setPoints(globe.events || [], globe.operator, { showArcs: globe.showArcs, showOperator: globe.showOperator }) } catch {}
+}
+function disposeBigGlobe() {
+  if (!bigGlobe) return
+  try { bigGlobe.dispose() } catch {}
+  bigGlobe = null
 }
 function initGlobe() {
   if (!$('globe-box')) return
@@ -833,7 +872,18 @@ function initGlobe() {
   const fullBtn = $('globe-full')
   if (fullBtn) fullBtn.onclick = () => openGlobeModal()
   const boxEl = $('globe-box')
-  if (boxEl) boxEl.onclick = (event) => { if (event.target.tagName === 'CANVAS') openGlobeModal() }
+  // Distinguish a click from a drag: only a press-and-release without movement
+  // opens the enlarged view, so rotating the globe never pops a dialog.
+  if (boxEl) {
+    let downX = 0, downY = 0, downAt = 0
+    boxEl.addEventListener('pointerdown', (e) => { downX = e.clientX; downY = e.clientY; downAt = Date.now() })
+    boxEl.addEventListener('pointerup', (e) => {
+      if (e.target.tagName !== 'CANVAS') return
+      const moved = Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4
+      const quick = Date.now() - downAt < 600
+      if (!moved && quick) openGlobeModal()
+    })
+  }
   document.addEventListener('visibilitychange', syncGlobePolling)
   // Keep the globe palette in step with the console theme.
   if (window.MutationObserver) {

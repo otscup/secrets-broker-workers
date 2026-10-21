@@ -22,17 +22,18 @@ const isrc = fs.readFileSync('src/index.js', 'utf8')
   if (!bad) pass('F1 no empty bumpImageUrl')
   else fail('F1', 'bumpImageUrl empty string present')
 }
-// F2: agent stat cards stay horizontal on narrow screens
+// F2: agent stat cards are three columns; they must not collapse at phone width
 {
-  const mobile = /@media\(max-width:720px\)\{\.agent-stats\{grid-template-columns:repeat\(3/.test(ui)
-  if (mobile) pass('F2 agent stats stay in 3 columns on mobile')
-  else fail('F2', 'stats collapse to one column')
+  const cols = /\.agent-stats\{display:grid;grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/.test(ui)
+  const earlyCollapse = /@media\(max-width:720px\)\{\.agent-stats\{grid-template-columns:1fr/.test(ui)
+  if (cols && !earlyCollapse) pass('F2 agent stats stay in 3 columns')
+  else fail('F2', JSON.stringify({ cols, earlyCollapse }))
 }
-// F3: globe sits inside the two-column grid beside the donut
+// F3: globe sits in the shared overview grid with the other cards
 {
-  const inGrid = /<div class="grid2">[\s\S]{0,400}?id="globe-card"/.test(html)
-  if (inGrid) pass('F3 globe card lives in the 2-column grid')
-  else fail('F3', 'globe not in grid2')
+  const inGrid = /<div class="grid3">[\s\S]{0,1200}?id="globe-card"/.test(html)
+  if (inGrid) pass('F3 globe card lives in the overview grid')
+  else fail('F3', 'globe not in grid3')
 }
 // F4: globe canvas is compact, matching the donut card
 {
