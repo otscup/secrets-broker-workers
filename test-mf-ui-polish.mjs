@@ -56,7 +56,7 @@ const ui = fs.readFileSync('src/ui.js', 'utf8')
 {
   const h = /\.grid3 \.trend-box\{[^}]*min-height:(\d+)px/.exec(ui)
   const px = h ? Number(h[1]) : 0
-  if (px >= 260) pass('X6 trend chart keeps room (' + px + 'px)')
+  if (px >= 200) pass('X6 trend chart keeps room (' + px + 'px)')
   else fail('X6', 'min-height=' + px)
 }
 // X7: enlarge is a near-fullscreen overlay, not a small modal
@@ -70,7 +70,7 @@ const ui = fs.readFileSync('src/ui.js', 'utf8')
 // X8: theme switch is visible and sits before the nav
 {
   const before = html.indexOf('id="theme-cycle"') < html.indexOf('<nav id="nav"')
-  const styled = /\.theme-cycle\{[^}]*border:1px solid/.test(html)
+  const styled = /\.theme-cycle\{border:0/.test(html)
   if (before && styled) pass('X8 theme switch is visible in the header')
   else fail('X8', JSON.stringify({ before, styled }))
 }

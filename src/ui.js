@@ -23,9 +23,8 @@ nav button.active{background:#fff;color:var(--text);box-shadow:0 2px 8px rgba(20
 .avatar{width:30px;height:30px;border-radius:50%;background:var(--card);color:var(--text);display:grid;place-items:center;font-size:11px;border:1px solid var(--line);padding:0;line-height:0;cursor:pointer;overflow:hidden;flex:0 0 auto}
 .avatar img{display:block;width:100%;height:100%;object-fit:cover;border-radius:50%}
 .theme-switch{display:flex;gap:2px;background:transparent;border:0;padding:0;margin-left:auto}
-.theme-cycle{border:1px solid var(--line);background:var(--btn);font-size:16px;line-height:1;padding:6px 9px;border-radius:9px;cursor:pointer;flex:0 0 auto;min-width:34px}
-.theme-cycle:hover{background:var(--line)}
-html[data-theme="dark"] .theme-cycle{background:#1b2940;border-color:#2b3d5c}
+.theme-cycle{border:0;background:transparent;font-size:16px;line-height:1;padding:4px 6px;border-radius:8px;cursor:pointer;flex:0 0 auto;opacity:.7}
+.theme-cycle:hover{background:var(--btn);opacity:1}
 nav .icon-btn{width:30px;height:30px;margin-left:4px}
 .user .email{display:none}
 .user .who-name{display:inline;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -65,7 +64,9 @@ button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;
 .notice-bar[data-level="notice"]{background:#eef4ff;border-color:#cddcf7;color:#2b4f8a}
 .notice-bar[data-level="notice"] .notice-dot{background:#3f6ec4}
 .notice-bar .notice-more{flex:0 0 auto;font-size:12px;opacity:.75}
-.globe-box{position:relative;height:260px;margin-top:8px;border-radius:12px;overflow:hidden;background:transparent;border:1px solid var(--line);touch-action:none}
+.globe-box{position:relative;height:210px;margin-top:8px;border-radius:12px;overflow:hidden;background:transparent;border:1px solid var(--line);touch-action:none}
+.globe-expand{position:absolute;top:6px;right:6px;z-index:3;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:3px 8px;font-size:13px;line-height:1.2;cursor:pointer}
+.globe-expand:hover{background:var(--btn)}
 html[data-theme="dark"] .globe-box{background:transparent}
 .globe-box.globe-full{position:fixed;inset:16px;z-index:60;height:auto;margin:0;border-radius:16px;box-shadow:0 24px 60px rgba(10,20,40,.35)}
 .globe-box.globe-full canvas{cursor:grab}
@@ -98,11 +99,11 @@ html[data-theme="dark"] .globe-box{background:transparent}
 .globe-box canvas{display:block;max-width:100%}
 @media(max-width:720px){.globe-box{height:220px}}
 @media (prefers-reduced-motion: reduce){}#globe-card .globe-box{scroll-behavior:auto}}
-.agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:14px 0}
+.agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:10px 0}
 .agent-stats::after{content:none}
-.agent-stat{background:var(--card);border:1px solid var(--line);border-radius:var(--ios-radius);box-shadow:var(--ios-shadow);padding:14px 18px;display:flex;flex-direction:column;justify-content:center;min-height:92px;min-width:0}
+.agent-stat{background:var(--card);border:1px solid var(--line);border-radius:var(--ios-radius);box-shadow:var(--ios-shadow);padding:10px 14px;display:flex;flex-direction:column;justify-content:center;min-height:64px;min-width:0}
 html[data-theme="dark"] .agent-stat{box-shadow:none;background:#151f31}
-.agent-stat b{font-size:22px;line-height:1.15;display:block}
+.agent-stat b{font-size:19px;line-height:1.1;display:block}
 .agent-stat span{display:block;margin-top:2px;font-size:12px;color:var(--muted)}
 .agent-stat i{display:block;margin-top:6px;font-size:11px;color:var(--muted);font-style:normal;opacity:.8}
 @media(max-width:600px){.agent-stat{padding:10px;min-height:72px}.agent-stat b{font-size:18px}.agent-stat span{font-size:11px}.agent-stat i{display:none}}
@@ -127,14 +128,15 @@ html[data-theme="dark"] .agent-stat{box-shadow:none;background:#151f31}
 .kpi.warn .value{color:var(--warn)}
 .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}.spacer{flex:1}
 .seg{background:#fff;border:1px solid var(--line);border-radius:10px;padding:3px;display:flex;gap:2px}.seg button{background:transparent;color:var(--muted);padding:5px 10px;font-size:12px;border-radius:7px}.seg button.on{background:var(--ok);color:#fff}
-.grid3{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:14px;align-items:stretch}
+.grid3{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:14px;align-items:start}
 .grid3>.card{display:flex;flex-direction:column;min-width:0}
 .grid3>.card>h2{margin:0 0 4px}
-.grid3 .trend-box{flex:1;min-height:300px;overflow:hidden}
-.grid3 .globe-box{flex:1;min-height:300px}
-.grid3 .donut-wrap{flex:1;justify-content:center;align-content:center}
+/* Fixed heights: panels must not grow with the amount of data. */
+.grid3 .trend-box{height:230px;min-height:230px;overflow:hidden}
+.grid3 .globe-box{height:210px;min-height:210px}
+.grid3 .donut-wrap{height:190px;min-height:190px;justify-content:center;align-content:center;overflow:hidden}
+.grid3 .rank-box{height:210px;min-height:210px;overflow:auto}
 @media(max-width:1000px){.grid3{grid-template-columns:1fr}}
-@media(max-width:1000px){.grid3 .trend-box{min-height:260px}.grid3 .globe-box{min-height:260px}}
 table{width:100%;border-collapse:collapse;font-size:12.5px}th{color:var(--muted);font-weight:500;text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}td.actions{white-space:nowrap}td.actions button+button{margin-left:6px}th.nowrap{white-space:nowrap}tr:last-child td{border-bottom:0}tbody tr:hover td{background:#f8fafc}
 .table-wrap{overflow-x:auto;max-width:100%}
 .pill{display:inline-block;background:#eef7f5;color:#0b7d6d;border-radius:999px;padding:1px 8px;font-size:11px;border:0;cursor:pointer}.pill:hover{background:#dff3ee}.pill.off{background:#f3f4f6;color:var(--muted)}
@@ -186,26 +188,30 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div id="notice-bar" class="notice-bar hidden" role="button" tabindex="0" title="点击查看全部通知"></div>
     <div id="kpis" class="kpis"></div>
     <div class="grid3">
-      <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
       <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
-        <div class="card" id="globe-card" style="flex:1">
+        <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
+        <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap rank-box"></div></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+        <div class="card" id="globe-card">
           <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
             <h2 style="margin:0">Agent Live Globe</h2>
-            <button class="small" id="globe-full" title="放大地球">⤢</button>
+            <span class="hint globe-note" title="IP 估算位置，不代表实际物理位置">IP 估算</span>
           </div>
-          <div class="hint globe-note" style="margin-bottom:6px" title="IP 估算位置，不代表实际物理位置">IP 估算位置</div>
-          <div id="globe-box" class="globe-box"><div class="globe-empty" id="globe-empty">暂无访问记录</div></div>
+          <div id="globe-box" class="globe-box">
+            <button class="small globe-expand" id="globe-full" title="放大地球">⤢</button>
+            <div class="globe-empty" id="globe-empty">暂无访问记录</div>
+          </div>
           <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
             <div class="seg" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button></div>
             <button class="small" id="globe-pause" title="暂停动画">暂停</button>
           </div>
-          <div class="hint" id="globe-status" style="margin-top:6px"></div>
+          <div class="hint" id="globe-status" style="margin-top:4px"></div>
         </div>
         <div class="card" style="flex:1;display:flex;flex-direction:column"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
       </div>
     </div>
     <div id="chart-tip" class="chart-tip"></div>
-    <div class="card" style="margin-top:14px"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap"></div></div>
     <div class="card"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>
   </section>
 
@@ -443,7 +449,7 @@ function openAgentDetail(name) {
   const created = agent.createdAt ? new Date(agent.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-'
   const recent = ((app.data && app.data.audit) || []).filter((entry) => entry.agent === name).slice(0, 5)
   const activityRows = recent.length ? recent.map((entry) => '<div class="hint">' + esc(new Date(entry.time).toLocaleString('zh-CN', { hour12: false })) + ' · ' + esc(entry.event || '') + (entry.name ? ' · ' + esc(entry.name) : '') + '</div>').join('') : '<div class="hint">暂无读取记录</div>'
-  openModal(name, '<div class="row" style="justify-content:space-between;align-items:center"><div><b>' + esc(agent.alias || name) + '</b><div class="hint">' + kind + '</div></div><span class="agent-health ' + (health.level === 'ok' ? 'ok' : (health.level === 'warn' ? 'warn' : 'bad')) + '">' + esc(health.label) + '</span></div>' +
+  openModal(agentDisplayName(agent), '<div class="row" style="justify-content:space-between;align-items:center"><div><b>' + esc(agentDisplayName(agent)) + '</b><div class="hint">' + kind + (agentDisplayNote(agent) ? ' · ' + esc(agentDisplayNote(agent)) : '') + '</div></div><span class="agent-health ' + (health.level === 'ok' ? 'ok' : (health.level === 'warn' ? 'warn' : 'bad')) + '">' + esc(health.label) + '</span></div>' +
     '<div class="agent-detail-grid" style="margin-top:14px">' +
     '<div><span>账户</span><b>' + esc(agent.account || '-') + '</b></div>' +
     '<div><span>连接方式</span><b>' + (agent.oauth ? 'OAuth' : 'Token') + '</b></div>' +
@@ -761,6 +767,16 @@ let danmuTimer = null
 function stopDanmu() {
   if (danmuTimer) { clearInterval(danmuTimer); danmuTimer = null }
 }
+// Resolve the readable name for a captured event's agent. OAuth agents are
+// stored as "oauth:<clientId>"; show the client name and drop the raw id so the
+// feed stays readable.
+function eventAgentName(ev) {
+  const raw = String(ev.agent || '')
+  if (!raw.startsWith('oauth:')) return raw
+  const clientId = raw.slice(6)
+  const client = ((app.data && app.data.oauthClients) || []).find((c) => c.clientId === clientId)
+  return (client && client.clientName) || 'OAuth 客户端'
+}
 function danmuLine(ev) {
   const g = ev.geo || {}
   const cc = g.country ? String(g.country).toUpperCase() : ''
@@ -769,7 +785,7 @@ function danmuLine(ev) {
   const time = ev.at ? new Date(ev.at).toLocaleTimeString('zh-CN', { hour12: false }) : ''
   const color = ev.ok ? 'var(--ok,#0f9d8a)' : 'var(--danger)'
   return '<div class="danmu-row"><span class="danmu-time">' + esc(time) + '</span>' +
-    '<b class="danmu-agent">' + esc(ev.agent || '') + '</b>' +
+    '<b class="danmu-agent">' + esc(eventAgentName(ev)) + '</b>' +
     '<span class="danmu-where">' + esc(where) + '</span>' +
     '<span class="danmu-act">' + esc(ev.action || '') + '</span>' +
     '<span style="color:' + color + '">' + (ev.ok ? '成功' : '失败') + '</span></div>'
@@ -807,7 +823,7 @@ function openGlobeModal() {
     const where = g.known ? (g.city || '') + (g.city && g.country ? ', ' : '') + (g.country || '') : '未知位置'
     const when = ev.at ? new Date(ev.at).toLocaleString('zh-CN', { hour12: false }) : ''
     const color = ev.ok ? 'var(--accent,#0f9d8a)' : 'var(--danger)'
-    return '<tr><td><b>' + esc(ev.agent) + '</b> <span class="pill">' + (ev.kind === 'oauth' ? 'OAuth' : 'Token') + '</span></td>' +
+    return '<tr><td><b>' + esc(eventAgentName(ev)) + '</b> <span class="pill">' + (ev.kind === 'oauth' ? 'OAuth' : 'Token') + '</span></td>' +
       '<td class="hint">' + esc(where) + '</td>' +
       '<td class="hint">' + esc(ev.action || '') + '</td>' +
       '<td style="color:' + color + '">' + (ev.ok ? '成功' : '失败') + '</td>' +
@@ -1024,6 +1040,19 @@ function renderAgentStats(agents) {
   ]
   box.innerHTML = cards.map((card) => '<div class="agent-stat"><b>' + card.value + '</b><span>' + esc(card.label) + '</span>' + (card.hint ? '<i>' + esc(card.hint) + '</i>' : '') + '</div>').join('')
 }
+// OAuth agents are keyed internally as "oauth:<clientId>". Operators should
+// see the readable client name, with the raw id kept in the note.
+function agentDisplayName(agent) {
+  if (!agent) return ''
+  if (agent.alias) return agent.alias
+  if (agent.oauth && String(agent.name || '').startsWith('oauth:')) return agent.note || 'OAuth 客户端'
+  return agent.name
+}
+function agentDisplayNote(agent) {
+  if (!agent) return ''
+  if (agent.alias && agent.oauth && String(agent.name || '').startsWith('oauth:')) return agent.note || ''
+  return agent.note || ''
+}
 function renderAgents() {
   const all = (app.data && app.data.agents) || []
   renderAgentStats(all)
@@ -1059,8 +1088,8 @@ function renderAgents() {
     const kind = agent.oauth ? 'OAuth' : 'Token'
     const dotClass = health.level === 'ok' ? 'ok' : (health.level === 'warn' ? 'warn' : 'bad')
     return '<tr class="agent-row" data-agent-open="' + esc(agent.name) + '">' +
-      '<td><b>' + esc(agent.name) + '</b> <span class="pill">' + kind + '</span>' +
-      (agent.alias ? '<br><span class="hint">' + esc(agent.alias) + '</span>' : '') + '</td>' +
+      '<td><b>' + esc(agentDisplayName(agent)) + '</b> <span class="pill">' + kind + '</span>' +
+      (agentDisplayNote(agent) ? '<br><span class="hint">' + esc(agentDisplayNote(agent)) + '</span>' : '') + '</td>' +
       '<td class="hint">' + esc(health.detail) + (typeof agent.expiresAt === 'number' ? ' · 剩余 ' + Math.max(0, Math.ceil((agent.expiresAt - Date.now()) / 86400e3)) + ' 天' : ' · 长期') + '</td>' +
       '<td class="nowrap"><span class="agent-health ' + dotClass + '">' + esc(health.label) + '</span></td>' +
       '<td class="nowrap">' + '<button class="small" data-agent-extend="' + esc(agent.name) + '" title="延长授权">延长</button>' +

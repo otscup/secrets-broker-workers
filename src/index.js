@@ -3298,7 +3298,13 @@ export default {
         delete next.oauthCodes[code]
         next.oauthTokens[hash] = { hash, agent: agentName, clientId: entry.clientId, account, createdAt: nowIso(), expiresAt }
         next.oauthAgentProfiles ??= {}
-        if (!next.oauthAgentProfiles[agentName]) next.oauthAgentProfiles[agentName] = { alias: next.oauthClients?.[entry.clientId]?.clientName ?? '', note: '', allow: [], groups: [], allowAll: false, write: false, legacy: false }
+        if (!next.oauthAgentProfiles[agentName]) {
+          // The readable client name becomes the alias; the opaque client id
+          // goes to the note so nobody has to retype a long identifier.
+          next.oauthAgentProfiles[agentName] = { alias: next.oauthClients?.[entry.clientId]?.clientName ?? '', note: entry.clientId, allow: [], groups: [], allowAll: false, write: false, legacy: false }
+        } else if (!next.oauthAgentProfiles[agentName].note) {
+          next.oauthAgentProfiles[agentName].note = entry.clientId
+        }
         return next
       })
       await addAudit(env, { event: 'oauth.token-issue', agent: agentName, clientId: entry.clientId })

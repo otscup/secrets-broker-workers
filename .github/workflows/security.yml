@@ -97,3 +97,5 @@ jobs:
         run: npm run test:globe-api
       - name: UI polish (Miniflare)
         run: npm run test:ui-polish
+      - name: Layout and naming (Miniflare)
+        run: npm run test:layout

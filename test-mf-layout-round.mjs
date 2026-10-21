@@ -1,0 +1,47 @@
+import { Miniflare } from 'miniflare'
+import fs from 'node:fs'
+const results = []
+const pass = (n) => { results.push({ n, ok: true }); console.log('PASS  ' + n) }
+const fail = (n, d) => { results.push({ n, ok: false, d }); console.log('FAIL  ' + n + ' :: ' + d) }
+const KEK = Buffer.alloc(32, 143).toString('base64')
+const mf = new Miniflare({ modules: true, modulesRules: [{ type: 'ESModule', include: ['**/*.js'] }], compatibilityDate: '2024-01-01', scriptPath: 'src/index.js', durableObjects: { BROKER_STATE: 'BrokerState' }, vars: { SESSION_KEK: KEK, ADMIN_PASSWORD: 'p', GEO_ENABLED: '1' }, bindings: { SESSION_KEK: KEK, ADMIN_PASSWORD: 'p', GEO_ENABLED: '1' }, serviceBindings: { NODEWARDEN: async () => new Response('{}') } })
+const ns = await mf.getDurableObjectNamespace('BROKER_STATE')
+const stub = ns.get(ns.idFromName('global'))
+const seed = { agents: {}, oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {}, policies: {}, grants: {}, pending: {}, audit: [], settings: { notifications: {}, vaultEmail: 'z@e.invalid' }, itemGroups: {}, security: {} }
+await stub.fetch('https://do/state', { method: 'PUT', body: JSON.stringify(seed) })
+const lr = await mf.dispatchFetch('https://broker.test/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'p' }) })
+const cookie = String(lr.headers.get('set-cookie') || '').split(';')[0]
+const page = await mf.dispatchFetch('https://broker.test/', { headers: { cookie } })
+const html = await page.text()
+const ui = fs.readFileSync('src/ui.js', 'utf8')
+const isrc = fs.readFileSync('src/index.js', 'utf8')
+const trend = html.indexOf('id="chart-box"')
+const rank = html.indexOf('id="top-box"')
+const globe = html.indexOf('id="globe-card"')
+if (trend >= 0 && rank > trend && rank < globe) pass('Y1 ranking under trend')
+else fail('Y1', JSON.stringify({ trend, rank, globe }))
+const hTrend = ui.indexOf('.grid3 .trend-box{height:')
+const hRank = ui.indexOf('.grid3 .rank-box{height:')
+const hDonut = ui.indexOf('.grid3 .donut-wrap{height:')
+const hGlobe = ui.indexOf('.grid3 .globe-box{height:')
+if (hTrend > 0 && hRank > 0 && hDonut > 0 && hGlobe > 0) pass('Y2 fixed heights')
+else fail('Y2', JSON.stringify({ hTrend, hRank, hDonut, hGlobe }))
+if (ui.includes('.grid3 .rank-box{height:210px;min-height:210px;overflow:auto')) pass('Y3 rank scrolls')
+else fail('Y3', 'no overflow')
+const gbox = html.indexOf('id="globe-box"')
+const gbtn = html.indexOf('id="globe-full"')
+if (gbtn > gbox && gbtn < gbox + 400) pass('Y4 expand inside frame')
+else fail('Y4', JSON.stringify({ gbox, gbtn }))
+if (ui.includes('.theme-cycle{border:0;background:transparent')) pass('Y5 theme icon only')
+else fail('Y5', 'framed')
+const cols = ui.includes('.agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))')
+if (cols && ui.includes('min-height:64px')) pass('Y6 short agent cards')
+else fail('Y6', 'not short')
+if (ui.includes('function agentDisplayName(agent)') && ui.includes('esc(agentDisplayName(agent))') && isrc.includes('note: entry.clientId')) pass('Y7 readable oauth name')
+else fail('Y7', 'missing')
+if (ui.includes('function eventAgentName(ev)') && ui.includes('esc(eventAgentName(ev))')) pass('Y8 feed readable name')
+else fail('Y8', 'missing')
+await mf.dispose()
+const passed = results.filter((r) => r.ok).length
+console.log('\n==== layout round ' + passed + '/' + results.length + ' passed ====')
+if (passed !== results.length) process.exit(1)
