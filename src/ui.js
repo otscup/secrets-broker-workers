@@ -664,15 +664,29 @@ async function ensureGlobe() {
   if (globe.instance || globe.loading || globe.failed || globe.hidden) return globe.instance
   globe.loading = true
   try {
+    const box = $('globe-box')
+    if (!box) throw new Error('#globe-box missing')
+    // Fail loudly and precisely: a zero-size container or an unsupported WebGL
+    // context used to surface as a generic "component unavailable" message.
+    if (!box.clientWidth || !box.clientHeight) throw new Error('globe container has no size (' + box.clientWidth + 'x' + box.clientHeight + ')')
+    const probe = document.createElement('canvas')
+    const gl = probe.getContext('webgl2') || probe.getContext('webgl')
+    if (!gl) throw new Error('WebGL is unavailable in this browser')
     const mod = await import('/globe.js')
-    globe.instance = mod.mountGlobe($('globe-box'), { reduceMotion: globe.reduceMotion })
+    if (typeof mod.mountGlobe !== 'function') throw new Error('globe module did not export mountGlobe')
+    globe.instance = mod.mountGlobe(box, { reduceMotion: globe.reduceMotion })
     if (globe.paused) globe.instance.setPaused(true)
     return globe.instance
   } catch (error) {
-    // Never let the globe break the console.
+    // Never let the globe break the console, but do surface why it failed so
+    // the cause is diagnosable instead of being swallowed.
     globe.failed = true
+    const detail = String((error && (error.message || error.reason)) || error || 'unknown')
+    try { console.error('[globe] load failed:', error) } catch {}
     const box = $('globe-box')
-    if (box) box.innerHTML = '<div class="globe-empty">地球组件不可用（不影响其他功能）</div>'
+    if (box) box.innerHTML = '<div class="globe-empty">地球组件不可用（不影响其他功能）<br><span style="font-size:11px;opacity:.7">' + escapeHtml(detail.slice(0, 160)) + '</span></div>'
+    const st = $('globe-status')
+    if (st) st.textContent = '地球加载失败：' + detail.slice(0, 120)
     return null
   } finally { globe.loading = false }
 }
@@ -691,7 +705,9 @@ async function refreshGlobe(reset) {
     const empty = $('globe-empty')
     if (empty) empty.style.display = events.length ? 'none' : 'flex'
     renderGlobeStatus(events.length)
-    if (!events.length) return
+    // Initialise the globe even with no events so the earth itself is visible;
+    // only the markers depend on data. Skipping this left the card showing the
+    // placeholder forever on a quiet broker.
     const instance = await ensureGlobe()
     if (!instance) return
     instance.setPoints(events, globe.operator, { showArcs: globe.showArcs, showOperator: globe.showOperator })
