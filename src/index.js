@@ -201,7 +201,7 @@ export class BrokerState extends DurableObject {
     }
     if (url.pathname === '/fill/consume' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
-      const { nonce, agent, itemId, accountId, origin } = body ?? {}
+      const { nonce, agent, itemId, accountId, origin, policy } = body ?? {}
       if (!nonce) return json({ ok: false, reason: 'nonce-missing' })
       const result = await this.ctx.storage.transaction(async (txn) => {
         const ledger = (await txn.get('fillAuthorizations')) ?? {}
@@ -215,6 +215,12 @@ export class BrokerState extends DurableObject {
           return { ok: false, reason: 'account-mismatch' }
         }
         if (record.origin && origin && record.origin !== origin) return { ok: false, reason: 'origin-mismatch' }
+        // The policy is re-checked here, inside the same transaction that
+        // consumes the nonce, so narrowing the policy cannot race a redemption.
+        if (policy) {
+          if (record.origin && !policy.allowedOrigins?.includes(record.origin)) return { ok: false, reason: 'origin-not-allowed' }
+          if (record.action && !policy.allowedActions?.includes(record.action)) return { ok: false, reason: 'action-not-allowed' }
+        }
         record.consumedAt = Date.now()
         ledger[nonce] = record
         await txn.put('fillAuthorizations', ledger)
@@ -1221,7 +1227,14 @@ async function decidePending(env, id, decision, source = 'web') {
     // secret.use never mints secret.read and vice versa.
     // Approving a fill must never mint a plaintext-read capability. Each
     // action maps to itself; anything unknown is refused above.
-    const entryAction = SECRET_ACTIONS.has(String(entry.action)) ? String(entry.action) : 'secret.read'
+    // An unknown action is refused outright. It must never fall back to a
+    // weaker action, otherwise a future action could silently become a
+    // plaintext read.
+    const entryAction = String(entry.action ?? '')
+    if (!SECRET_ACTIONS.has(entryAction)) {
+      outcome = { agent: entry.agent, name: entry.name, denied: true, error: 'unsupported-action' }
+      return state
+    }
     const itemId = entry.itemId || state.itemIds?.[entry.name] || ''
     // A capability must never be issued without a concrete account: the consume
     // gate treats a blank accountId as "no account restriction". Refuse instead
@@ -1596,6 +1609,9 @@ function fillPolicyFor(state, itemId, origin) {
 // page by the execution layer. An 'api' credential may still be read, but only
 // when the admin enabled that explicitly for the item.
 function plaintextReadAllowed(state, itemId) {
+  // An id that could not be resolved is not an unclassified credential: it is an
+  // unknown item, and an unknown item never gets plaintext.
+  if (!itemId) return { ok: false, reason: 'item-id-unresolved' }
   const kind = credentialKind(state, itemId)
   if (kind === 'web') return { ok: false, reason: 'web-credential-is-fill-only' }
   if (kind === 'api') {
@@ -1637,10 +1653,10 @@ async function issueFillAuthorization(env, { nonce, agent, itemId, itemName, acc
 
 // Redeem exactly once. Returns the binding so the execution layer can check
 // that the origin it is about to fill matches the authorized one.
-async function consumeFillAuthorization(env, { nonce, agent, itemId, accountId, origin }) {
+async function consumeFillAuthorization(env, { nonce, agent, itemId, accountId, origin, policy }) {
   const response = await stateStub(env).fetch('https://state/fill/consume', {
     method: 'POST',
-    body: JSON.stringify({ nonce, agent, itemId, accountId, origin }),
+    body: JSON.stringify({ nonce, agent, itemId, accountId, origin, policy: policy ?? null }),
   })
   return response.json()
 }
@@ -2044,8 +2060,20 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   }
   const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
   if (!result) return { status: 'notfound', error: 'not found' }
+  // The credential id comes from the row that was actually decrypted, so a
+  // stale name->id cache can never point the guard at the wrong item.
+  const resolvedItemId = result.id || itemId
+  // The plaintext guard runs here, where the real id is known. A web
+  // credential never reaches the caller; an api credential needs an explicit
+  // read policy. An id that cannot be resolved is refused, not treated as
+  // unclassified.
+  const readGuard = plaintextReadAllowed(state, resolvedItemId)
+  if (!readGuard.ok) {
+    await addAudit(env, { event: 'secret.read-deny', agent: agentName, name, reason: readGuard.reason })
+    return { status: 'forbidden', error: 'plaintext read is not allowed for this credential: ' + readGuard.reason }
+  }
   await addAudit(env, { event: 'secret.read', agent: agentName, name, mode: policy?.noApproval ? 'no-approval' : 'grant', via: 'agent', legacy: decision.legacy === true })
-  return { status: 'ok', value: result.value, url: result.url }
+  return { status: 'ok', itemId: resolvedItemId, value: result.value, url: result.url }
 }
 
 function statsFor(state, range) {
@@ -2671,7 +2699,14 @@ export default {
       const agent = String(body.agent ?? '')
       if (!itemId || !agent) return fail('item and agent are required', 400)
       // Redeem atomically first: a replayed or concurrent request loses here.
-      const consumed = await consumeFillAuthorization(env, { nonce, agent, itemId, accountId: session.email, origin })
+      // The policy that is in force RIGHT NOW, handed to the DO so the check
+      // and the nonce consumption share one transaction. A policy narrowed
+      // after the authorization was issued invalidates it.
+      const currentPolicy = fillPolicyFor(state, itemId, origin)
+      const policySnapshot = currentPolicy.ok
+        ? { allowedOrigins: currentPolicy.policy.origins ?? [], allowedActions: currentPolicy.policy.actions ?? [] }
+        : { allowedOrigins: [], allowedActions: [] }
+      const consumed = await consumeFillAuthorization(env, { nonce, agent, itemId, accountId: session.email, origin, policy: policySnapshot })
       if (!consumed?.ok) {
         await addAudit(env, { event: 'fill.redeem-deny', agent, itemId, origin, reason: consumed?.reason ?? 'unknown' })
         return fail('authorization is not valid: ' + (consumed?.reason ?? 'unknown'), 403)
@@ -3825,9 +3860,10 @@ export default {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
               return result(text(access.error, true))
             }
-            // Plaintext only leaves the broker for an api credential the admin
-            // explicitly allowed. Website logins and unclassified items are
-            // refused: they are fill-only.
+            // Second layer: the same guard already ran inside agentAccess, where
+            // the real item id is known. A website login and an unclassified
+            // item are both refused here; only an api credential with an
+            // explicit read policy passes.
             const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '')
             if (!readGuard.ok) {
               await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name: secretName, reason: readGuard.reason })
@@ -4124,9 +4160,9 @@ export default {
           if (access.status === 'pending') return json({ status: 'pending', requestId: access.requestId, approvalUrl: access.approvalUrl }, 202)
           if (access.status === 'forbidden') return fail(access.error, 403)
           if (access.status === 'notfound') return fail(access.error, 404)
-          // Same rule as the MCP tools: only an api credential with an explicit
-          // read policy may return plaintext to an Agent. A website login is
-          // fill-only, so it can never be read back through this path either.
+          // Second layer: the same guard already ran inside agentAccess. A
+          // website login and an unclassified item are refused; only an api
+          // credential with an explicit read policy passes.
           const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '')
           if (!readGuard.ok) {
             await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name, reason: readGuard.reason })
