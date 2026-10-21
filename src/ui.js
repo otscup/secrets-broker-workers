@@ -64,8 +64,8 @@ button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;
 .notice-bar[data-level="notice"]{background:#eef4ff;border-color:#cddcf7;color:#2b4f8a}
 .notice-bar[data-level="notice"] .notice-dot{background:#3f6ec4}
 .notice-bar .notice-more{flex:0 0 auto;font-size:12px;opacity:.75}
-.globe-box{position:relative;height:260px;margin-top:8px;border-radius:12px;overflow:hidden;background:radial-gradient(circle at 50% 45%,#eaf2fb,#dbe8f6);border:1px solid var(--line);touch-action:none}
-html[data-theme="dark"] .globe-box{background:radial-gradient(circle at 50% 45%,#12243a,#081420)}
+.globe-box{position:relative;height:260px;margin-top:8px;border-radius:12px;overflow:hidden;background:transparent;border:1px solid var(--line);touch-action:none}
+html[data-theme="dark"] .globe-box{background:transparent}
 .globe-box.globe-full{position:fixed;inset:16px;z-index:60;height:auto;margin:0;border-radius:16px;box-shadow:0 24px 60px rgba(10,20,40,.35)}
 .globe-box.globe-full canvas{cursor:grab}
 .danmu-wrap{margin-top:14px}
@@ -83,7 +83,8 @@ html[data-theme="dark"] .globe-box{background:radial-gradient(circle at 50% 45%,
 @media (prefers-reduced-motion: reduce){.danmu-new{animation:none}}
 .globe-box canvas{cursor:grab}
 .globe-box canvas:active{cursor:grabbing}
-.globe-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#8ea4bd;font-size:13px}
+.globe-empty{position:absolute;inset:0;display:flex;align-items:flex-start;justify-content:center;padding:16px;color:var(--muted);font-size:12px;text-align:center;overflow-wrap:anywhere;word-break:break-word;overflow:hidden}
+#globe-status{overflow-wrap:anywhere;word-break:break-word;font-size:11px;line-height:1.4;max-height:34px;overflow:hidden}
 .globe-box canvas{display:block;max-width:100%}
 @media(max-width:720px){.globe-box{height:220px}}
 @media (prefers-reduced-motion: reduce){}#globe-card .globe-box{scroll-behavior:auto}}
@@ -111,7 +112,11 @@ html[data-theme="dark"] .globe-box{background:radial-gradient(circle at 50% 45%,
 .kpi.warn .value{color:var(--warn)}
 .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}.spacer{flex:1}
 .seg{background:#fff;border:1px solid var(--line);border-radius:10px;padding:3px;display:flex;gap:2px}.seg button{background:transparent;color:var(--muted);padding:5px 10px;font-size:12px;border-radius:7px}.seg button.on{background:var(--ok);color:#fff}
-.grid2{display:grid;grid-template-columns:minmax(0,1.9fr) minmax(260px,1fr);gap:14px;align-items:start}
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:stretch}
+.grid2>.card{display:flex;flex-direction:column;min-width:0}
+.grid2>.card>h2{margin:0 0 4px}
+.trend-box{flex:1;min-height:260px}
+.donut-wrap{flex:1}
 table{width:100%;border-collapse:collapse;font-size:12.5px}th{color:var(--muted);font-weight:500;text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}td.actions{white-space:nowrap}td.actions button+button{margin-left:6px}th.nowrap{white-space:nowrap}tr:last-child td{border-bottom:0}tbody tr:hover td{background:#f8fafc}
 .table-wrap{overflow-x:auto;max-width:100%}
 .pill{display:inline-block;background:#eef7f5;color:#0b7d6d;border-radius:999px;padding:1px 8px;font-size:11px;border:0;cursor:pointer}.pill:hover{background:#dff3ee}.pill.off{background:#f3f4f6;color:var(--muted)}
@@ -163,13 +168,13 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div id="notice-bar" class="notice-bar hidden" role="button" tabindex="0" title="点击查看全部通知"></div>
     <div id="kpis" class="kpis"></div>
     <div class="grid2">
-      <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box"></div></div>
+      <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
       <div class="card" id="globe-card">
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
           <h2 style="margin:0">Agent Live Globe</h2>
           <button class="small" id="globe-full" title="放大查看">⤢</button>
         </div>
-        <div class="hint" style="margin-bottom:6px">IP 估算位置 · 不代表实际物理位置</div>
+        <div class="hint globe-note" style="margin-bottom:6px" title="IP 估算位置，不代表实际物理位置">IP 估算位置</div>
         <div id="globe-box" class="globe-box"><div class="globe-empty" id="globe-empty">暂无访问记录</div></div>
         <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
           <div class="seg" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button></div>
@@ -178,7 +183,9 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
         <div class="hint" id="globe-status" style="margin-top:6px"></div>
       </div>
     </div>
-    <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
+    <div class="grid2" style="margin-top:14px">
+      <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
+    </div>
     <div id="chart-tip" class="chart-tip"></div>
     <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap"></div></div>
     <div class="card"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>

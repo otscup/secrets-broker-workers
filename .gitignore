@@ -42,6 +42,7 @@ test-*.mjs
 !test-mf-globe-init.mjs
 !test-mf-ui-undefined.mjs
 !test-mf-bugfixes.mjs
+!test-mf-globe-api.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs

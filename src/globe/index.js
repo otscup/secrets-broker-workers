@@ -46,11 +46,14 @@ function createGlobe(container, options) {
     .arcDashLength(0.5)
     .arcDashGap(0.16)
     .arcDashAnimateTime(reduceMotion ? 0 : 2000)
-    // Country code label riding the arc.
-    .arcLabel((d) => d.label || '')
-    .arcLabelSize(0.55)
-    .arcLabelAltitude(0.02)
-    .arcLabelColor(() => '#7fe8d8')
+    // Country-code labels use the labels layer: three-globe has no arcLabel
+    // methods (those belong to globe.gl), and calling them returns undefined
+    // which breaks the whole chained builder.
+    .labelText((d) => d.text || '')
+    .labelSize(0.55)
+    .labelAltitude(0.014)
+    .labelDotRadius(0)
+    .labelColor(() => (currentTheme() === 'dark' ? '#7fe8d8' : '#0b6f62'))
 
   const globeMaterial = globe.globeMaterial()
   globeMaterial.color = new THREE.Color(0xffffff)
@@ -158,12 +161,24 @@ function createGlobe(container, options) {
         })
       }
       globe.arcsData(showArcs ? arcs : [])
+      // One label per visited location, mid-air above the point.
+      const labels = []
+      for (const ev of byAgent.values()) {
+        const g = ev.geo || {}
+        if (typeof g.lat !== 'number' || typeof g.lon !== 'number') continue
+        const cc = g.country ? String(g.country).toUpperCase() : ''
+        const city = g.city ? String(g.city).split(',')[0] : ''
+        const text = city && cc ? city + ' · ' + cc : (cc || city)
+        if (text) labels.push({ lat: g.lat, lng: g.lon, text })
+      }
+      if (opLat !== null && opLon !== null && opCode) labels.push({ lat: opLat, lng: opLon, text: opCode })
+      globe.labelsData(showArcs ? labels : [])
     },
     setTheme(name) {
       // The photographic texture is theme-neutral; only the glow shifts.
       const dark = name === 'dark'
       globe.atmosphereColor(dark ? '#0f9d8a' : '#7fc7ff')
-      globe.arcLabelColor(() => (dark ? '#7fe8d8' : '#0b6f62'))
+      globe.labelColor(() => (dark ? '#7fe8d8' : '#0b6f62'))
       ambient.intensity = dark ? 1.15 : 1.4
       key.intensity = dark ? 1.0 : 1.2
     },

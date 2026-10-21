@@ -93,3 +93,5 @@ jobs:
         run: npm run test:ui-undefined
       - name: Reported bug fixes (Miniflare)
         run: npm run test:bugfixes
+      - name: Globe API guard
+        run: npm run test:globe-api
