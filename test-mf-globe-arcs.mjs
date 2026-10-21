@@ -15,7 +15,7 @@ const body = src.slice(start, end)
   else fail('A1', 'byAgent map still present')
 }
 {
-  if (/size: 0\.2/.test(body)) pass('A2 one small marker per request')
+  if (/size: 0\.16/.test(body)) pass('A2 one small marker per request')
   else fail('A2', 'per-request marker missing')
 }
 {

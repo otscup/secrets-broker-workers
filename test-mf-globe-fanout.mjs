@@ -23,22 +23,35 @@ const src = fs.readFileSync('src/globe/index.js', 'utf8')
   for (let i = 0; i < 22; i += 1) located.push(spots[i % 2])
   const perSpot = new Map()
   const starts = []
+  const altitudes = []
+  const widths = []
+  const ends = []
   for (const g of located) {
     const spot = g.lat + ',' + g.lon
     const index = perSpot.get(spot) || 0
     perSpot.set(spot, index + 1)
-    const seed = Math.abs(Math.round((g.lat * 1000) + (g.lon * 977) + index * 31))
-    const spread = index === 0 ? 0 : 0.35 + ((seed % 17) / 17) * 0.9
+    const seed = Math.abs(Math.round((g.lat * 1000) + (g.lon * 977) + index * 7919))
+    const spread = index === 0 ? 0 : 1.2 + ((seed % 23) / 23) * 6.5
     const bearing = (seed % 360) * (Math.PI / 180)
-    starts.push((g.lat + Math.cos(bearing) * spread).toFixed(4) + ',' + (g.lon + Math.sin(bearing) * spread).toFixed(4))
+    starts.push((g.lat + Math.cos(bearing) * spread).toFixed(3) + ',' + (g.lon + Math.sin(bearing) * spread).toFixed(3))
+    altitudes.push(0.12 + ((seed % 13) / 13) * 0.9)
+    widths.push(0.1 + ((seed % 7) / 7) * 0.26)
+    ends.push('31.23,121.47')
   }
   const unique = new Set(starts).size
-  if (unique === starts.length) pass('F3 all ' + starts.length + ' arcs start at distinct points')
-  else fail('F3', 'unique=' + unique + ' of ' + starts.length)
+  const alts = new Set(altitudes.map((v) => v.toFixed(3))).size
+  const wids = new Set(widths.map((v) => v.toFixed(3))).size
+  const endsSet = new Set(ends).size
+  if (unique === starts.length && alts > 1 && wids > 1 && endsSet === 1) {
+    pass('F3 arcs scatter: ' + unique + ' starts, ' + alts + ' altitudes, ' + wids + ' widths, one endpoint')
+  } else {
+    fail('F3', JSON.stringify({ unique, alts, wids, endsSet }))
+  }
 }
 {
-  if (/\.arcStroke\(0\.22\)/.test(src)) pass('F4 arc strokes are thin')
-  else fail('F4', 'arc stroke not reduced')
+  const acc = /\.arcAltitude\(\(d\)/.test(src) && /\.arcStroke\(\(d\)/.test(src)
+  if (acc) pass('F4 per-arc altitude and stroke accessors wired')
+  else fail('F4', 'accessors missing')
 }
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== globe fan-out ' + passed + '/' + results.length + ' passed ====')

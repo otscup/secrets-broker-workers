@@ -43,7 +43,8 @@ function createGlobe(container, options) {
     .pointAltitude(0.015)
     .pointRadius(0.55)
     .arcAltitudeAutoScale(0.42)
-    .arcStroke(0.22)
+    .arcAltitude((d) => (typeof d.altitude === 'number' ? d.altitude : 0.2))
+    .arcStroke((d) => (typeof d.stroke === 'number' ? d.stroke : 0.18))
     .arcDashLength(0.6)
     .arcDashGap(0.3)
     .arcDashAnimateTime(reduceMotion ? 0 : 2000)
@@ -143,13 +144,13 @@ function createGlobe(container, options) {
         const spot = g.lat + ',' + g.lon
         const index = spotCount.get(spot) || 0
         spotCount.set(spot, index + 1)
-        const seed = Math.abs(Math.round((g.lat * 1000) + (g.lon * 977) + index * 31))
-        const spread = index === 0 ? 0 : 0.35 + ((seed % 17) / 17) * 0.9
+        const seed = Math.abs(Math.round((g.lat * 1000) + (g.lon * 977) + index * 7919))
+        const spread = index === 0 ? 0 : 1.2 + ((seed % 23) / 23) * 6.5
         const bearing = (seed % 360) * (Math.PI / 180)
         points.push({
           lat: g.lat + Math.cos(bearing) * spread,
           lng: g.lon + Math.sin(bearing) * spread,
-          size: 0.2,
+          size: 0.16 + ((seed % 5) / 5) * 0.18,
           color,
           agent: ev.agent,
         })
@@ -168,18 +169,26 @@ function createGlobe(container, options) {
         const spot = g.lat + ',' + g.lon
         const index = perSpot.get(spot) || 0
         perSpot.set(spot, index + 1)
-        // Deterministic jitter keeps the layout stable between refreshes.
-        const seed = Math.abs(Math.round((g.lat * 1000) + (g.lon * 977) + index * 31))
-        const spread = index === 0 ? 0 : 0.35 + ((seed % 17) / 17) * 0.9
+        // Deterministic jitter keeps the layout stable between refreshes, while
+        // the angle, the radius and the arc height all vary so the trails look
+        // like scattered departures rather than a tight bundle.
+        const seed = Math.abs(Math.round((g.lat * 1000) + (g.lon * 977) + index * 7919))
+        const spread = index === 0 ? 0 : 1.2 + ((seed % 23) / 23) * 6.5
         const bearing = (seed % 360) * (Math.PI / 180)
         const dLat = Math.cos(bearing) * spread
         const dLon = Math.sin(bearing) * spread
         const startLat = g.lat + dLat
         const startLon = g.lon + dLon
+        // Each trail gets its own altitude, so they arc apart in the air.
+        const altitude = 0.12 + ((seed % 13) / 13) * 0.9
         // The request itself: the agent location -> the broker node in China.
         arcs.push({
           startLat, startLng: startLon, endLat: CHINA_NODE.lat, endLng: CHINA_NODE.lon,
           color: [color, '#7fc7ff'],
+          // Every trail flies at its own height and width, so the paths read
+          // as scattered departures instead of one dense bundle.
+          altitude,
+          stroke: 0.1 + ((seed % 7) / 7) * 0.26,
         })
         // The operator leg, when the operator sits somewhere else.
         if (opLat !== null && opLon !== null && (Math.abs(g.lat - opLat) > 0.01 || Math.abs(g.lon - opLon) > 0.01)) {
