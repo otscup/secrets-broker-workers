@@ -95,7 +95,7 @@ html[data-theme="dark"] .globe-box{background:transparent}
 @media (prefers-reduced-motion: reduce){.danmu-new{animation:none}}
 .globe-box canvas{cursor:grab}
 .globe-box canvas:active{cursor:grabbing}
-.globe-empty{position:absolute;inset:0;display:flex;align-items:flex-start;justify-content:center;padding:16px;color:var(--muted);font-size:12px;text-align:center;overflow-wrap:anywhere;word-break:break-word;overflow:hidden}
+.globe-empty{position:absolute;inset:0;display:flex;align-items:flex-start;justify-content:center;padding:16px;pointer-events:none;color:var(--muted);font-size:12px;text-align:center;overflow-wrap:anywhere;word-break:break-word;overflow:hidden}
 #globe-status{overflow-wrap:anywhere;word-break:break-word;font-size:11px;line-height:1.4;max-height:34px;overflow:hidden}
 .globe-box canvas{display:block;max-width:100%}
 @media(max-width:720px){
@@ -214,7 +214,7 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
         </div>
         <div id="globe-box" class="globe-box">
           <button class="small globe-expand" id="globe-full" title="放大地球">⤢</button>
-          <div class="globe-empty" id="globe-empty">暂无访问记录</div>
+          <div class="globe-empty" id="globe-empty"></div>
         </div>
         <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
           <div class="seg" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button><button class="small globe-pause" id="globe-pause" title="暂停动画">⏸</button></div>
@@ -780,7 +780,9 @@ async function refreshGlobe(reset) {
     }
     const events = result.events || []
     const empty = $('globe-empty')
-    if (empty) empty.style.display = events.length ? 'none' : 'flex'
+    // Keep the overlay empty and inert: a caption across the globe would block dragging,
+    // and the status line below already reports the record count.
+    if (empty) { empty.textContent = ''; empty.style.display = 'none' }
     renderGlobeStatus(events.length)
     // Initialise the globe even with no events so the earth itself is visible;
     // only the markers depend on data. Skipping this left the card showing the

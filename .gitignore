@@ -50,6 +50,7 @@ test-*.mjs
 !test-mf-fixed-layout.mjs
 !test-mf-mobile.mjs
 !test-mf-reminder-write.mjs
+!test-mf-globe-empty.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs
