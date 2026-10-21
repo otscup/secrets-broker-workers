@@ -91,3 +91,5 @@ jobs:
         run: npm run test:globe-init
       - name: UI undefined-call scan
         run: npm run test:ui-undefined
+      - name: Reported bug fixes (Miniflare)
+        run: npm run test:bugfixes

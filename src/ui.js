@@ -64,7 +64,7 @@ button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;
 .notice-bar[data-level="notice"]{background:#eef4ff;border-color:#cddcf7;color:#2b4f8a}
 .notice-bar[data-level="notice"] .notice-dot{background:#3f6ec4}
 .notice-bar .notice-more{flex:0 0 auto;font-size:12px;opacity:.75}
-.globe-box{position:relative;height:340px;margin-top:12px;border-radius:12px;overflow:hidden;background:radial-gradient(circle at 50% 45%,#eaf2fb,#dbe8f6);border:1px solid var(--line);touch-action:none}
+.globe-box{position:relative;height:260px;margin-top:8px;border-radius:12px;overflow:hidden;background:radial-gradient(circle at 50% 45%,#eaf2fb,#dbe8f6);border:1px solid var(--line);touch-action:none}
 html[data-theme="dark"] .globe-box{background:radial-gradient(circle at 50% 45%,#12243a,#081420)}
 .globe-box.globe-full{position:fixed;inset:16px;z-index:60;height:auto;margin:0;border-radius:16px;box-shadow:0 24px 60px rgba(10,20,40,.35)}
 .globe-box.globe-full canvas{cursor:grab}
@@ -88,7 +88,8 @@ html[data-theme="dark"] .globe-box{background:radial-gradient(circle at 50% 45%,
 @media(max-width:720px){.globe-box{height:220px}}
 @media (prefers-reduced-motion: reduce){}#globe-card .globe-box{scroll-behavior:auto}}
 .agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:14px}
-.agent-stat{background:var(--btn);border-radius:12px;padding:14px}
+.agent-stat{background:var(--btn);border-radius:12px;padding:12px}
+@media(max-width:480px){.agent-stat{padding:9px}.agent-stat b{font-size:18px}.agent-stat span{font-size:11px}.agent-stat i{display:none}}
 .agent-stat b{display:block;font-size:22px;line-height:1.2}
 .agent-stat span{display:block;font-size:12px;color:var(--muted);margin-top:2px}
 .agent-stat i{display:block;font-size:11px;color:var(--muted);font-style:normal;margin-top:6px;opacity:.8}
@@ -102,7 +103,7 @@ html[data-theme="dark"] .globe-box{background:radial-gradient(circle at 50% 45%,
 .agent-detail-grid>div{display:flex;flex-direction:column;gap:2px}
 .agent-detail-grid span{font-size:11px;color:var(--muted)}
 .agent-detail-grid b{font-size:13px;font-weight:500}
-@media(max-width:720px){.agent-stats{grid-template-columns:1fr}.agent-detail-grid{grid-template-columns:1fr}}
+@media(max-width:720px){.agent-stats{grid-template-columns:repeat(3,minmax(0,1fr))}.agent-detail-grid{grid-template-columns:1fr}}
 .row{display:flex;gap:9px;flex-wrap:wrap;align-items:end}.row>*{flex:1;min-width:140px}.row button{flex:0 0 auto}
 .hidden{display:none!important}.status{min-height:18px;font-size:12px;color:var(--muted);margin-top:8px}.error{color:var(--danger)}.ok{color:var(--ok)}
 .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
@@ -161,24 +162,23 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div class="toolbar"><div class="seg" id="range-row"><button data-range="24h" class="on">24 小时</button><button data-range="7d">7 天</button><button data-range="30d">30 天</button></div><span class="spacer"></span><span class="hint" id="updated"></span></div>
     <div id="notice-bar" class="notice-bar hidden" role="button" tabindex="0" title="点击查看全部通知"></div>
     <div id="kpis" class="kpis"></div>
-    <div class="card" id="globe-card">
-      <div class="row" style="justify-content:space-between;align-items:center">
-        <div><h2 style="margin:0">Agent Live Globe</h2><div class="hint" style="margin-top:4px">基于真实访问记录的 IP 估算位置，不代表实际物理位置。</div></div>
-        <div class="row" style="flex:0 0 auto;gap:8px">
-          <div class="seg" id="globe-range"><button data-grange="1h">1 小时</button><button data-grange="24h" class="on">24 小时</button><button data-grange="7d">7 天</button></div>
-          <button class="small" id="globe-pause" title="暂停动画">暂停</button>
-          <button class="small" id="globe-full" title="放大 / 缩小">放大</button>
-          <button class="small" id="globe-expand" title="展开详情">详情</button>
-          <button class="small" id="globe-hide" title="隐藏地球">隐藏</button>
-        </div>
-      </div>
-      <div id="globe-box" class="globe-box"><div class="globe-empty" id="globe-empty">暂无访问记录</div></div>
-      <div class="hint" id="globe-status" style="margin-top:8px"></div>
-    </div>
     <div class="grid2">
       <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box"></div></div>
-      <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
+      <div class="card" id="globe-card">
+        <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
+          <h2 style="margin:0">Agent Live Globe</h2>
+          <button class="small" id="globe-full" title="放大查看">⤢</button>
+        </div>
+        <div class="hint" style="margin-bottom:6px">IP 估算位置 · 不代表实际物理位置</div>
+        <div id="globe-box" class="globe-box"><div class="globe-empty" id="globe-empty">暂无访问记录</div></div>
+        <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
+          <div class="seg" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button></div>
+          <button class="small" id="globe-pause" title="暂停动画">暂停</button>
+        </div>
+        <div class="hint" id="globe-status" style="margin-top:6px"></div>
+      </div>
     </div>
+    <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
     <div id="chart-tip" class="chart-tip"></div>
     <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap"></div></div>
     <div class="card"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>
@@ -821,19 +821,12 @@ function initGlobe() {
     if (globe.instance) globe.instance.setPaused(globe.paused)
     syncGlobePolling()
   }
-  const expandBtn = $('globe-expand')
-  if (expandBtn) expandBtn.onclick = () => openGlobeModal()
+  // The card is now compact: the corner icon opens the enlarged view, which
+  // carries the full-size globe plus the live connection feed.
   const fullBtn = $('globe-full')
-  if (fullBtn) fullBtn.onclick = () => toggleGlobeFullscreen()
-  const hideBtn = $('globe-hide')
-  if (hideBtn) hideBtn.onclick = () => {
-    globe.hidden = !globe.hidden
-    const box = $('globe-box'); const st = $('globe-status')
-    if (box) box.style.display = globe.hidden ? 'none' : ''
-    if (st) st.style.display = globe.hidden ? 'none' : ''
-    hideBtn.textContent = globe.hidden ? '显示' : '隐藏'
-    syncGlobePolling()
-  }
+  if (fullBtn) fullBtn.onclick = () => openGlobeModal()
+  const boxEl = $('globe-box')
+  if (boxEl) boxEl.onclick = (event) => { if (event.target.tagName === 'CANVAS') openGlobeModal() }
   document.addEventListener('visibilitychange', syncGlobePolling)
   // Keep the globe palette in step with the console theme.
   if (window.MutationObserver) {

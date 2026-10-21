@@ -41,6 +41,7 @@ test-*.mjs
 !test-mf-globe-earth.mjs
 !test-mf-globe-init.mjs
 !test-mf-ui-undefined.mjs
+!test-mf-bugfixes.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs

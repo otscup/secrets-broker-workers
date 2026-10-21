@@ -36,7 +36,6 @@ function createGlobe(container, options) {
 
   const globe = new ThreeGlobe({ animateIn: !reduceMotion })
     .globeImageUrl('/earth.jpg')
-    .bumpImageUrl('')
     .showAtmosphere(true)
     .atmosphereColor('#7fc7ff')
     .atmosphereAltitude(0.18)

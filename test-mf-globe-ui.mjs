@@ -16,7 +16,7 @@ const html = await mf.dispatchFetch('https://broker.test/', { headers: { cookie 
 
 // U1: globe card and controls exist
 {
-  const need = ['id="globe-card"', 'id="globe-box"', 'id="globe-range"', 'id="globe-pause"', 'id="globe-hide"', 'id="globe-empty"']
+  const need = ['id="globe-card"', 'id="globe-box"', 'id="globe-range"', 'id="globe-pause"', 'id="globe-full"', 'id="globe-empty"']
   const missing = need.filter((m) => !html.includes(m))
   if (!missing.length) pass('U1 globe card and controls present')
   else fail('U1', missing.join(','))

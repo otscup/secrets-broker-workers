@@ -3271,13 +3271,22 @@ export default {
       const code = String(form.get('code') ?? '')
       const state = await loadState(env)
       const entry = state.oauthCodes[code]
-      if (!entry || entry.expiresAt < Date.now()) return json({ error: 'invalid_grant' }, 400)
-      if (String(form.get('client_id') ?? '') !== entry.clientId || String(form.get('redirect_uri') ?? '') !== entry.redirectUri) return json({ error: 'invalid_grant' }, 400)
-      if (!entry.codeChallenge || entry.codeChallengeMethod !== 'S256') return json({ error: 'invalid_grant', error_description: 'PKCE S256 is required' }, 400)
+      // Every rejection is audited so a failed client exchange is diagnosable
+      // instead of looking like the authorization silently did nothing.
+      const reject = async (description) => {
+        const who = 'oauth:' + String(entry?.clientId ?? form.get('client_id') ?? '')
+        await addAudit(env, { event: 'oauth.token-deny', agent: who, reason: description }).catch(() => {})
+        return json({ error: 'invalid_grant', error_description: description }, 400)
+      }
+      if (!entry || entry.expiresAt < Date.now()) return reject('code missing or expired')
+      if (String(form.get('client_id') ?? '') !== entry.clientId) return reject('client_id mismatch')
+      if (String(form.get('redirect_uri') ?? '') !== entry.redirectUri) return reject('redirect_uri mismatch')
+      if (!entry.codeChallenge || entry.codeChallengeMethod !== 'S256') return reject('PKCE S256 is required')
       {
         const verifier = String(form.get('code_verifier') ?? '')
+        if (!verifier) return reject('code_verifier missing')
         const challenge = base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(verifier))))
-        if (challenge !== entry.codeChallenge) return json({ error: 'invalid_grant', error_description: 'PKCE verification failed' }, 400)
+        if (challenge !== entry.codeChallenge) return reject('PKCE verification failed')
       }
       const accessToken = randomToken() + randomToken()
       const hash = await sha256Base64(accessToken)
