@@ -23,8 +23,9 @@ nav button.active{background:#fff;color:var(--text);box-shadow:0 2px 8px rgba(20
 .avatar{width:30px;height:30px;border-radius:50%;background:var(--card);color:var(--text);display:grid;place-items:center;font-size:11px;border:1px solid var(--line);padding:0;line-height:0;cursor:pointer;overflow:hidden;flex:0 0 auto}
 .avatar img{display:block;width:100%;height:100%;object-fit:cover;border-radius:50%}
 .theme-switch{display:flex;gap:2px;background:transparent;border:0;padding:0;margin-left:auto}
-.theme-cycle{border:0;background:transparent;font-size:17px;line-height:1;padding:5px 7px;border-radius:8px;cursor:pointer}
-.theme-cycle:hover{background:var(--btn)}
+.theme-cycle{border:1px solid var(--line);background:var(--btn);font-size:16px;line-height:1;padding:6px 9px;border-radius:9px;cursor:pointer;flex:0 0 auto;min-width:34px}
+.theme-cycle:hover{background:var(--line)}
+html[data-theme="dark"] .theme-cycle{background:#1b2940;border-color:#2b3d5c}
 nav .icon-btn{width:30px;height:30px;margin-left:4px}
 .user .email{display:none}
 .user .who-name{display:inline;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -68,11 +69,15 @@ button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;
 html[data-theme="dark"] .globe-box{background:transparent}
 .globe-box.globe-full{position:fixed;inset:16px;z-index:60;height:auto;margin:0;border-radius:16px;box-shadow:0 24px 60px rgba(10,20,40,.35)}
 .globe-box.globe-full canvas{cursor:grab}
-.globe-big{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(240px,1fr);gap:16px;align-items:stretch}
-.globe-big-stage{min-width:0}
-.globe-box-big{height:clamp(320px,52vh,520px);margin-top:0}
-.globe-big-side{min-width:0;display:flex;flex-direction:column}
-@media(max-width:860px){.globe-big{grid-template-columns:1fr}.globe-box-big{height:300px}}
+.globe-big{position:fixed;inset:0;z-index:80;background:var(--card);display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,360px);gap:0}
+.globe-big-stage{min-width:0;position:relative;background:var(--bg)}
+.globe-box-big{position:absolute;inset:0;height:100%;margin-top:0;border:0;border-radius:0;background:transparent}
+.globe-big-side{min-width:0;display:flex;flex-direction:column;padding:16px;border-left:1px solid var(--line);background:var(--card);overflow:hidden}
+.globe-big-side .danmu-feed{flex:1;max-height:none;overflow-y:auto}
+.globe-big-close{position:absolute;top:12px;right:12px;z-index:5}
+@media(max-width:900px){.globe-big{grid-template-columns:1fr;grid-template-rows:1fr auto}.globe-big-side{border-left:0;border-top:1px solid var(--line);max-height:42vh}.globe-box-big{position:relative;inset:auto;height:52vh}}
+#globe-overlay{position:fixed;inset:0;z-index:80;display:none}
+#globe-overlay.globe-overlay-on{display:block}
 .danmu-wrap{margin-top:14px}
 .danmu-title{font-size:12px;color:var(--muted);margin-bottom:6px}
 .danmu-feed{max-height:180px;overflow:hidden;border:1px solid var(--line);border-radius:10px;padding:6px 10px;background:var(--btn);display:flex;flex-direction:column-reverse}
@@ -95,10 +100,11 @@ html[data-theme="dark"] .globe-box{background:transparent}
 @media (prefers-reduced-motion: reduce){}#globe-card .globe-box{scroll-behavior:auto}}
 .agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:14px 0}
 .agent-stats::after{content:none}
-.agent-stat{background:var(--btn);border-radius:12px;padding:14px;display:flex;flex-direction:column;justify-content:center;min-height:84px;min-width:0}
-.agent-stat b{font-size:22px;line-height:1.15}
-.agent-stat span{margin-top:2px}
-.agent-stat i{margin-top:6px}
+.agent-stat{background:var(--card);border:1px solid var(--line);border-radius:var(--ios-radius);box-shadow:var(--ios-shadow);padding:14px 18px;display:flex;flex-direction:column;justify-content:center;min-height:92px;min-width:0}
+html[data-theme="dark"] .agent-stat{box-shadow:none;background:#151f31}
+.agent-stat b{font-size:22px;line-height:1.15;display:block}
+.agent-stat span{display:block;margin-top:2px;font-size:12px;color:var(--muted)}
+.agent-stat i{display:block;margin-top:6px;font-size:11px;color:var(--muted);font-style:normal;opacity:.8}
 @media(max-width:600px){.agent-stat{padding:10px;min-height:72px}.agent-stat b{font-size:18px}.agent-stat span{font-size:11px}.agent-stat i{display:none}}
 .agent-stat b{display:block;font-size:22px;line-height:1.2}
 .agent-stat span{display:block;font-size:12px;color:var(--muted);margin-top:2px}
@@ -121,13 +127,14 @@ html[data-theme="dark"] .globe-box{background:transparent}
 .kpi.warn .value{color:var(--warn)}
 .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap}.spacer{flex:1}
 .seg{background:#fff;border:1px solid var(--line);border-radius:10px;padding:3px;display:flex;gap:2px}.seg button{background:transparent;color:var(--muted);padding:5px 10px;font-size:12px;border-radius:7px}.seg button.on{background:var(--ok);color:#fff}
-.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;align-items:stretch}
-.grid3>.card{display:flex;flex-direction:column;min-width:0;min-height:360px}
+.grid3{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:14px;align-items:stretch}
+.grid3>.card{display:flex;flex-direction:column;min-width:0}
 .grid3>.card>h2{margin:0 0 4px}
-.grid3 .trend-box{flex:1;min-height:240px;overflow:hidden}
-.grid3 .globe-box{flex:1;min-height:220px}
-.grid3 .donut-wrap{flex:1;justify-content:center}
-@media(max-width:1100px){.grid3{grid-template-columns:1fr}.grid3>.card{min-height:0}}
+.grid3 .trend-box{flex:1;min-height:300px;overflow:hidden}
+.grid3 .globe-box{flex:1;min-height:300px}
+.grid3 .donut-wrap{flex:1;justify-content:center;align-content:center}
+@media(max-width:1000px){.grid3{grid-template-columns:1fr}}
+@media(max-width:1000px){.grid3 .trend-box{min-height:260px}.grid3 .globe-box{min-height:260px}}
 table{width:100%;border-collapse:collapse;font-size:12.5px}th{color:var(--muted);font-weight:500;text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}td.actions{white-space:nowrap}td.actions button+button{margin-left:6px}th.nowrap{white-space:nowrap}tr:last-child td{border-bottom:0}tbody tr:hover td{background:#f8fafc}
 .table-wrap{overflow-x:auto;max-width:100%}
 .pill{display:inline-block;background:#eef7f5;color:#0b7d6d;border-radius:999px;padding:1px 8px;font-size:11px;border:0;cursor:pointer}.pill:hover{background:#dff3ee}.pill.off{background:#f3f4f6;color:var(--muted)}
@@ -152,8 +159,8 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
 @media(max-width:720px){.wrap{padding:14px 12px}header{gap:8px}h1{font-size:18px}nav{order:3;width:100%;overflow-x:auto;margin-left:0;padding-bottom:2px}nav button{flex:0 0 auto}.user-wrap{margin-left:0}.theme-switch{margin-left:auto}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:14px}.row>*{min-width:100%}.row button{width:100%}.modal{padding:8px}.modal .card{max-height:calc(100vh - 16px);padding:16px}.chart{overflow-x:auto}table{font-size:12px}th,td{padding:6px}}
 </style></head><body><div class="wrap">
 <header><img id="site-logo" src="/logo.png" alt="" style="width:30px;height:30px;border-radius:8px;object-fit:cover;cursor:pointer"><h1 id="site-title" style="cursor:pointer">Secrets Broker</h1><span class="badge">Cloudflare Workers</span>
-<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button><a class="icon-btn" href="https://github.com/otscup/secrets-broker-workers" target="_blank" rel="noreferrer" title="GitHub"><svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a></nav>
 <button id="theme-cycle" class="theme-cycle" title="切换主题：浅色 / 深色 / 跟随系统">☀️</button>
+<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button><a class="icon-btn" href="https://github.com/otscup/secrets-broker-workers" target="_blank" rel="noreferrer" title="GitHub"><svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a></nav>
 <button id="page-refresh" class="small" title="刷新当前页面">刷新</button>
 <div class="user-wrap"><span class="user"><span class="who-name" id="who"></span><button id="avatar" class="avatar" title="账户">SB</button></span>
 <div id="account-menu" class="account-menu hidden"><button data-view="profile">个人资料</button><button data-view="settings">系统设置</button><button id="account-logout">退出登录</button><button id="lock" class="danger">锁定</button></div></div>
@@ -180,23 +187,25 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div id="kpis" class="kpis"></div>
     <div class="grid3">
       <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
-      <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
-      <div class="card" id="globe-card">
-        <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
-          <h2 style="margin:0">Agent Live Globe</h2>
-          <button class="small" id="globe-full" title="放大地球">⤢</button>
+      <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+        <div class="card" id="globe-card" style="flex:1">
+          <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
+            <h2 style="margin:0">Agent Live Globe</h2>
+            <button class="small" id="globe-full" title="放大地球">⤢</button>
+          </div>
+          <div class="hint globe-note" style="margin-bottom:6px" title="IP 估算位置，不代表实际物理位置">IP 估算位置</div>
+          <div id="globe-box" class="globe-box"><div class="globe-empty" id="globe-empty">暂无访问记录</div></div>
+          <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
+            <div class="seg" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button></div>
+            <button class="small" id="globe-pause" title="暂停动画">暂停</button>
+          </div>
+          <div class="hint" id="globe-status" style="margin-top:6px"></div>
         </div>
-        <div class="hint globe-note" style="margin-bottom:6px" title="IP 估算位置，不代表实际物理位置">IP 估算位置</div>
-        <div id="globe-box" class="globe-box"><div class="globe-empty" id="globe-empty">暂无访问记录</div></div>
-        <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
-          <div class="seg" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button></div>
-          <button class="small" id="globe-pause" title="暂停动画">暂停</button>
-        </div>
-        <div class="hint" id="globe-status" style="margin-top:6px"></div>
+        <div class="card" style="flex:1;display:flex;flex-direction:column"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
       </div>
     </div>
     <div id="chart-tip" class="chart-tip"></div>
-    <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap"></div></div>
+    <div class="card" style="margin-top:14px"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap"></div></div>
     <div class="card"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>
   </section>
 
@@ -806,20 +815,31 @@ function openGlobeModal() {
   }).join('') : ''
   // Enlarged view: the globe itself grows on the left, the live feed streams
   // beside it. This is a bigger globe, not a table of connections.
-  const body = '<div class="globe-big">' +
-    '<div class="globe-big-stage"><div id="globe-big-box" class="globe-box globe-box-big"></div></div>' +
+  const body = '<div class="globe-big" id="globe-big">' +
+    '<div class="globe-big-stage">' +
+      '<div id="globe-big-box" class="globe-box globe-box-big"></div>' +
+      '<button class="small globe-big-close" id="globe-big-close">关闭 ✕</button>' +
+    '</div>' +
     '<div class="globe-big-side">' +
+      '<div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px"><b>Agent Live Globe</b><span class="hint">放大视图</span></div>' +
       '<div class="hint">我的位置（IP 估算）：<b>' + esc(opText) + '</b></div>' +
       toggles +
       '<div class="danmu-title" style="margin-top:10px">实时连接</div>' +
       '<div id="globe-danmu" class="danmu-feed"></div>' +
     '</div>' +
     '</div>'
-  openModal('Agent Live Globe', body)
+  const host = $('globe-overlay') || (() => {
+    const el = document.createElement('div')
+    el.id = 'globe-overlay'
+    document.body.appendChild(el)
+    return el
+  })()
+  host.innerHTML = body
+  host.classList.add('globe-overlay-on')
   mountBigGlobe()
   startDanmu()
-  const closeBtn = document.querySelector('#modal [data-close], #modal .modal-close')
-  if (closeBtn) { const prev = closeBtn.onclick; closeBtn.onclick = (e) => { disposeBigGlobe(); stopDanmu(); if (prev) prev.call(closeBtn, e) } }
+  const closeBtn = $('globe-big-close')
+  if (closeBtn) closeBtn.onclick = closeBigGlobe
   const arcsToggle = $('gl-arcs')
   if (arcsToggle) arcsToggle.onchange = () => { globe.showArcs = arcsToggle.checked; refreshGlobe(true); redrawBigGlobe() }
   const opToggle = $('gl-operator')
@@ -846,6 +866,12 @@ function disposeBigGlobe() {
   if (!bigGlobe) return
   try { bigGlobe.dispose() } catch {}
   bigGlobe = null
+}
+function closeBigGlobe() {
+  disposeBigGlobe()
+  stopDanmu()
+  const host = $('globe-overlay')
+  if (host) { host.innerHTML = ''; host.classList.remove('globe-overlay-on') }
 }
 function initGlobe() {
   if (!$('globe-box')) return

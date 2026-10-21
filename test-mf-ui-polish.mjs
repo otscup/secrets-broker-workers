@@ -36,27 +36,43 @@ const ui = fs.readFileSync('src/ui.js', 'utf8')
   if (btn && logic && darkCss) pass('X3 light/dark/system switch intact')
   else fail('X3', JSON.stringify({ btn, logic, darkCss }))
 }
-// X4: three overview cards in one equal-height row
+// X4: trend takes two thirds, globe one third
 {
-  const grid = /<div class="grid3">[\s\S]{0,900}?读取趋势[\s\S]{0,900}?Agent 读取占比[\s\S]{0,900}?globe-card/.test(html)
-  const css = /\.grid3\{display:grid;grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/.test(ui) && /\.grid3>\.card\{[^}]*min-height/.test(ui)
-  if (grid && css) pass('X4 three uniform cards share one row')
-  else fail('X4', JSON.stringify({ grid, css }))
+  const grid = /\.grid3\{display:grid;grid-template-columns:minmax\(0,2fr\) minmax\(0,1fr\)/.test(ui)
+  const layout = /<div class="grid3">[\s\S]{0,500}?读取趋势[\s\S]{0,900}?globe-card/.test(html)
+  if (grid && layout) pass('X4 trend is 2/3 wide, globe 1/3')
+  else fail('X4', JSON.stringify({ grid, layout }))
 }
-// X5: agent stat cards stay horizontal and uniform
+// X5: agent stat cards stay horizontal and match the overview KPI look
 {
   const cols = /\.agent-stats\{display:grid;grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/.test(ui)
   const uniform = /\.agent-stat\{[^}]*min-height/.test(ui)
+  const kpiLook = /\.agent-stat\{[^}]*border-radius:var\(--ios-radius\)/.test(ui)
   const notOneCol = !/@media\(max-width:720px\)\{\.agent-stats\{grid-template-columns:1fr/.test(ui)
-  if (cols && uniform && notOneCol) pass('X5 agent stats are three uniform horizontal cards')
-  else fail('X5', JSON.stringify({ cols, uniform, notOneCol }))
+  if (cols && uniform && kpiLook && notOneCol) pass('X5 agent stats are three uniform horizontal cards')
+  else fail('X5', JSON.stringify({ cols, uniform, kpiLook, notOneCol }))
 }
 // X6: trend chart keeps its spacious height
 {
   const h = /\.grid3 \.trend-box\{[^}]*min-height:(\d+)px/.exec(ui)
   const px = h ? Number(h[1]) : 0
-  if (px >= 230) pass('X6 trend chart keeps room (' + px + 'px)')
+  if (px >= 260) pass('X6 trend chart keeps room (' + px + 'px)')
   else fail('X6', 'min-height=' + px)
+}
+// X7: enlarge is a near-fullscreen overlay, not a small modal
+{
+  const fixed = /\.globe-big\{position:fixed;inset:0/.test(ui)
+  const stage = /\.globe-box-big\{[^}]*height:100%/.test(ui)
+  const close = ui.includes('function closeBigGlobe') && ui.includes('globe-big-close')
+  if (fixed && stage && close) pass('X7 enlarge covers the viewport with a close button')
+  else fail('X7', JSON.stringify({ fixed, stage, close }))
+}
+// X8: theme switch is visible and sits before the nav
+{
+  const before = html.indexOf('id="theme-cycle"') < html.indexOf('<nav id="nav"')
+  const styled = /\.theme-cycle\{[^}]*border:1px solid/.test(html)
+  if (before && styled) pass('X8 theme switch is visible in the header')
+  else fail('X8', JSON.stringify({ before, styled }))
 }
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length

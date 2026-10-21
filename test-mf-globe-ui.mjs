@@ -17,6 +17,7 @@ const html = await mf.dispatchFetch('https://broker.test/', { headers: { cookie 
 // U1: globe card and controls exist
 {
   const need = ['id="globe-card"', 'id="globe-box"', 'id="globe-range"', 'id="globe-pause"', 'id="globe-full"', 'id="globe-empty"']
+  // The enlarged globe lives in a runtime overlay host, created on demand.
   const missing = need.filter((m) => !html.includes(m))
   if (!missing.length) pass('U1 globe card and controls present')
   else fail('U1', missing.join(','))
