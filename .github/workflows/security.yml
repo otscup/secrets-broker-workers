@@ -101,3 +101,5 @@ jobs:
         run: npm run test:layout
       - name: Panel polish (Miniflare)
         run: npm run test:panel
+      - name: CSS integrity
+        run: npm run test:css

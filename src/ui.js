@@ -99,7 +99,7 @@ html[data-theme="dark"] .globe-box{background:transparent}
 #globe-status{overflow-wrap:anywhere;word-break:break-word;font-size:11px;line-height:1.4;max-height:34px;overflow:hidden}
 .globe-box canvas{display:block;max-width:100%}
 @media(max-width:720px){.globe-box{height:220px}}
-@media (prefers-reduced-motion: reduce){}#globe-card .globe-box{scroll-behavior:auto}}
+@media (prefers-reduced-motion: reduce){#globe-card .globe-box{scroll-behavior:auto}}
 .agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))!important;grid-auto-flow:column;gap:10px;margin:10px 0;width:100%}
 .agent-stats::after{content:none}
 .agent-stat{background:var(--card);border:1px solid var(--line);border-radius:var(--ios-radius);box-shadow:var(--ios-shadow);padding:10px 14px;display:flex;flex-direction:column;justify-content:center;min-height:64px;min-width:0}

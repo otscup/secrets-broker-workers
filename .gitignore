@@ -46,6 +46,7 @@ test-*.mjs
 !test-mf-ui-polish.mjs
 !test-mf-layout-round.mjs
 !test-mf-panel-polish.mjs
+!test-mf-css-integrity.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs
