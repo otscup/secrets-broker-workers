@@ -101,6 +101,8 @@ jobs:
         run: npm run test:layout
       - name: Panel polish (Miniflare)
         run: npm run test:panel
+      - name: Donut legend layout
+        run: npm run test:donut
       - name: CSS integrity
         run: npm run test:css
       - name: Fixed overview layout (browser)

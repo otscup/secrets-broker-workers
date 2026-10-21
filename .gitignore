@@ -45,6 +45,7 @@ test-*.mjs
 !test-mf-globe-api.mjs
 !test-mf-ui-polish.mjs
 !test-mf-layout-round.mjs
+!test-mf-donut-legend.mjs
 !test-mf-panel-polish.mjs
 !test-mf-css-integrity.mjs
 !test-mf-fixed-layout.mjs
