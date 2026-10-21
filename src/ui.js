@@ -259,6 +259,15 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
   <section id="view-grants" class="view hidden">
     <div class="card" id="transfers-card"><h2>待复制到其他账户</h2><div class="hint">主账户分享后先进入队列；切回目标账户并解锁后自动复制到指定文件夹并生成授权。</div><div id="transfers-box" class="table-wrap" style="margin-top:10px"></div></div>
     <div class="card"><h2>待批准请求</h2><div class="hint">点按钮即授权；同 Docker 版的 once/1h/24h/7d/永久。</div><div id="pending-box" class="table-wrap" style="margin-top:10px"></div></div>
+    <div class="card"><h2>网页填充规则</h2>
+      <div class="hint">把凭据标记为 <b>api</b>（API Key，可按需允许明文读取）或 <b>web</b>（网站登录，只能填充到指定网站，Agent 永远拿不到明文）。</div>
+      <div class="row" style="margin:10px 0;flex-wrap:wrap"><label class="field" style="flex:1;min-width:200px">凭据名称<input id="fp-item" placeholder="例如 github.com"></label><label class="field" style="flex:1;min-width:160px">类型<select id="fp-kind"><option value="api">api（API Key）</option><option value="web">web（网站登录）</option></select></label></div>
+      <div id="fp-web-fields" class="hidden"><label class="field">允许的 origin（每行一个，必须是 https://host 或 https://host:port）</label><textarea id="fp-origins" rows="3" placeholder="https://example.com"></textarea><label class="field">允许的动作</label><select id="fp-actions" multiple size="2"><option value="login">login（登录）</option></select><div class="hint">只做精确匹配：example.com.evil.test、任意子域或其他端口都不会被放行。</div></div>
+      <label class="chk" id="fp-read-row" style="margin-top:8px"><input type="checkbox" id="fp-read"> 允许 Agent 直接读取明文（仅 api 凭据；默认拒绝，30 天后自动失效）</label>
+      <div class="row" style="margin-top:10px"><button class="primary" id="fp-save">保存规则</button><button class="danger" id="fp-delete">删除规则</button></div><div class="status" id="fp-status"></div>
+      <div id="fp-exec-note" class="hint" style="margin-top:10px"></div>
+      <div id="fp-list" class="table-wrap" style="margin-top:10px"></div>
+    </div>
     <div class="card"><h2>有效授权</h2><div id="grants-box" class="table-wrap"></div></div>
     <div class="card"><h2>OAuth 客户端</h2><div class="hint">每个连接（Muse、Codex、ChatGPT 等）在首次授权时会注册一个客户端。重复或失效的注册可以逐个撤销，撤销会同时清除它的 token。</div><div id="oauth-clients-box" class="table-wrap" style="margin-top:10px"></div></div>
   </section>
@@ -519,6 +528,11 @@ document.addEventListener('click', async (event) => {
 })
 $('pending-box').addEventListener('click', async (event) => { const button = event.target.closest('[data-decide]'); if (!button) return; try { await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.decide }) }); await Promise.all([loadState(), loadStats(), loadItems()]); toast('已处理') } catch (error) { toast(error.message, true) } })
 $('grants-box').addEventListener('click', (event) => { const menu = event.target.closest('[data-grant-menu]'); if (menu) openGrantMenu(menu.dataset.agent, menu.dataset.name) })
+$('fp-kind').addEventListener('change', fillKindChanged)
+$('fp-item').addEventListener('input', fillPolicyLoaded)
+fillPolicyLoaded()
+$('fp-save').addEventListener('click', saveFillPolicy)
+$('fp-delete').addEventListener('click', deleteFillPolicy)
 $('oauth-clients-box').addEventListener('click', async (event) => {
   const button = event.target.closest('[data-oauth-revoke]')
   if (!button) return
@@ -552,7 +566,7 @@ async function checkPendingNotifications() {
 }
 function startPendingPolling() { updateBrowserNotifyStatus(); if (pendingTimer) return; checkPendingNotifications(); pendingTimer = setInterval(checkPendingNotifications, 15000) }
 let globeBooted = false
-async function loadState() { try { app.data = await api('/api/state'); renderNoticeBar(); if (!globeBooted) { globeBooted = true; try { initGlobe() } catch {} } renderAgents(); renderPending(); renderGrants(); renderOauthClients(); renderTransfers(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
+async function loadState() { try { app.data = await api('/api/state'); renderNoticeBar(); if (!globeBooted) { globeBooted = true; try { initGlobe() } catch {} } renderAgents(); renderPending(); renderGrants(); renderFillPolicies(); renderOauthClients(); renderTransfers(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
 async function loadItems() { status('item-status', '加载中…'); try { const result = await api('/api/items'); app.items = result.items || []; renderItems(); status('item-status', '共 ' + app.items.length + ' 个条目'); if (result.completedTransfers?.length) { toast('已自动复制：' + result.completedTransfers.join('、')); await loadState() } } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } else status('item-status', error.message, 'error') } }
 async function loadStats() { try { app.stats = await api('/api/stats?range=' + app.range); renderStats() } catch {} }
 async function loadSettings() {
@@ -637,7 +651,9 @@ function openKpiModal(kind) {
     openModal('有效授权', active.length ? '<table><tr><th>Agent</th><th>条目</th><th>到期</th><th>读取</th></tr>' + active.map((grant) => '<tr><td>' + esc(agentLabel(grant.agent)) + '</td><td><code>' + esc(grant.name) + '</code></td><td>' + (grant.expiresAt ? new Date(grant.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</td><td>' + (grant.reads ?? 0) + '/' + (grant.maxReads || '∞') + '</td></tr>').join('') + '</table>' : '<div class="hint">暂无有效授权</div>')
   } else {
     const pending = app.data.pending || []
-    openModal('待审批 / 通知', pending.length ? pending.map((entry) => '<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px"><div><b>' + esc(entry.agent || 'Agent') + '</b> 请求读取 <code>' + esc(entry.name) + '</code></div><div class="hint">' + esc(entry.createdAt ? new Date(entry.createdAt).toLocaleString('zh-CN', { hour12: false }) : '') + '</div><div class="row" style="margin-top:8px"><button class="small primary" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="once">仅本次</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="24h">24 小时</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="always">永久</button><button class="small danger" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="deny">拒绝</button></div></div>').join('') : '<div class="hint">暂无待审批请求</div>')
+    openModal('待审批 / 通知', pending.length ? pending.map((entry) => '<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">'
+      + pendingDetailHtml(entry)
+      + '<div class="row" style="margin-top:8px"><button class="small primary" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="once">仅本次</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="24h">24 小时</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="always">永久</button><button class="small danger" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="deny">拒绝</button></div></div>').join('') : '<div class="hint">暂无待审批请求</div>')
   }
 }
 let legendPage = 0
@@ -1025,7 +1041,10 @@ function openNoticeModal() {
   if (!items.length) return
   const pending = (app.data && app.data.pending) || []
   const reminders = (app.data && app.data.reminders) || []
-  const pendingBlock = pending.length ? pending.map((entry) => '<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px"><div><b>' + esc(entry.agent || 'Agent') + '</b> 请求读取 <code>' + esc(entry.name) + '</code></div><div class="hint">' + esc(entry.createdAt ? new Date(entry.createdAt).toLocaleString('zh-CN', { hour12: false }) : '') + '</div><div class="row" style="margin-top:8px"><button class="small primary" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="once">仅本次</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="24h">24 小时</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="always">永久</button><button class="small danger" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="deny">拒绝</button></div></div>').join('') : ''
+
+  const pendingBlock = pending.length ? pending.map((entry) => '<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">'
+    + pendingDetailHtml(entry)
+    + '<div class="row" style="margin-top:8px"><button class="small primary" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="once">仅本次</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="24h">24 小时</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="always">永久</button><button class="small danger" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="deny">拒绝</button></div></div>').join('') : ''
   const reminderBlock = reminders.length ? reminders.map((item) => {
     const color = item.severity === 'critical' ? 'var(--danger)' : (item.severity === 'warning' ? '#c2760b' : '#2b4f8a')
     return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid var(--line);padding:8px 0"><div><b style="color:' + color + '">' + esc(item.agent || '') + '</b> <span class="pill">' + (item.oauth ? 'OAuth' : 'Token') + '</span><div class="hint" style="color:' + color + '">' + esc(item.message || '') + '</div></div><div class="nowrap"><button class="small" data-notice-extend="' + esc(item.agent) + '">延长</button></div></div>'
@@ -1148,8 +1167,138 @@ function renderAgents() {
 }
 function renderPending() {
   const pending = app.data.pending || []
-  $('pending-box').innerHTML = pending.length ? '<table><tr><th>Agent</th><th>条目</th><th>时间</th><th>授权</th></tr>' + pending.map((request) => '<tr><td>' + esc(request.agent) + '</td><td><b>' + esc(request.name) + '</b></td><td>' + esc(new Date(request.createdAt).toLocaleTimeString('zh-CN', { hour12: false })) + '</td><td>' + [['once', '仅本次'], ['1h', '1 小时'], ['24h', '24 小时'], ['7d', '7 天'], ['always', '永久']].map((mode) => '<button class="small primary" data-decide="' + mode[0] + '" data-id="' + esc(request.id) + '">' + mode[1] + '</button>').join('') + '<button class="small danger" data-decide="deny" data-id="' + esc(request.id) + '">拒绝</button></td></tr>').join('') + '</table>' : '<div class="hint">暂无待批准请求</div>'
+  const head = '<table><tr><th>Agent</th><th>条目</th><th>动作</th><th>目标 origin</th><th>时间</th><th>授权</th></tr>'
+  const body = pending.map((request) => {
+    const origin = pendingOriginLabel(request)
+    const isFill = String(request.action || '') === 'secret.fill'
+    const originCell = isFill
+      ? (origin ? '<code>' + esc(origin) + '</code>' : '<b style="color:var(--danger)">' + esc(origin) + '</b>')
+      : '<span class="hint">-</span>'
+    return '<tr><td>' + esc(request.agent) + '</td><td><b>' + esc(request.name) + '</b></td><td>'
+      + esc(pendingActionLabel(request)) + '</td><td>' + originCell + '</td><td>'
+      + esc(new Date(request.createdAt).toLocaleTimeString('zh-CN', { hour12: false })) + '</td><td>'
+      + [['once', '仅本次'], ['1h', '1 小时'], ['24h', '24 小时'], ['7d', '7 天'], ['always', '永久']]
+        .map((mode) => '<button class="small primary" data-decide="' + mode[0] + '" data-id="' + esc(request.id) + '">' + mode[1] + '</button>').join('')
+      + '<button class="small danger" data-decide="deny" data-id="' + esc(request.id) + '">拒绝</button></td></tr>'
+  }).join('')
+  $('pending-box').innerHTML = pending.length ? head + body + '</table>' : '<div class="hint">暂无待批准请求</div>'
 }
+
+// -- Web fill policies --------------------------------------------------------
+// A pending fill request shows the exact origin it targets, so the approver
+// can tell the site apart instead of guessing from the item name.
+// The pending detail is used by the notice bar and the KPI modal so an
+// approver always sees the action and the exact target origin.
+function pendingDetailHtml(entry) {
+  const origin = pendingOriginLabel(entry)
+  const isFill = String(entry.action || '') === 'secret.fill'
+  const target = isFill
+    ? (origin ? '<div><span class="hint">目标 origin</span><br><code>' + esc(origin) + '</code></div>'
+      : '<div><b style="color:var(--danger)">目标无效（缺少 origin），无法批准</b></div>')
+    : ''
+  return '<div><b>' + esc(entry.agent || 'Agent') + '</b> 请求' + esc(pendingActionLabel(entry))
+    + ' <code>' + esc(entry.name) + '</code></div>' + target
+    + '<div class="hint">' + esc(entry.createdAt ? new Date(entry.createdAt).toLocaleString('zh-CN', { hour12: false }) : '') + '</div>'
+}
+
+// The web fill policy card. Every call goes through the admin API, which
+// checks the admin cookie and the unlocked vault on the server.
+// Show the stored policy for the item so the admin edits the real state.
+function fillPolicyLoaded() {
+  const item = $('fp-item').value.trim()
+  const entry = fillPolicyState().items.find((e) => e.itemName === item)
+  if (!entry) {
+    $('fp-kind').value = 'api'
+    $('fp-origins').value = ''
+    $('fp-read').checked = false
+    fillKindChanged()
+    return
+  }
+  $('fp-kind').value = entry.kind
+  $('fp-origins').value = (entry.origins || []).join('\n')
+  $('fp-read').checked = entry.plaintextRead === true
+  for (const option of $('fp-actions').options) option.selected = (entry.actions || []).includes(option.value)
+  fillKindChanged()
+}
+function fillKindChanged() {
+  const isWeb = $('fp-kind').value === 'web'
+  $('fp-web-fields').classList.toggle('hidden', !isWeb)
+  $('fp-read-row').classList.toggle('hidden', isWeb)
+}
+async function saveFillPolicy() {
+  const item = $('fp-item').value.trim()
+  if (!item) return status('fp-status', '请填写凭据名称', true)
+  const kind = $('fp-kind').value
+  const body = { item, kind }
+  if (kind === 'web') {
+    const origins = $('fp-origins').value.split('\n').map((line) => line.trim()).filter(Boolean)
+    const actions = [...$('fp-actions').selectedOptions].map((option) => option.value)
+    if (!origins.length) return status('fp-status', 'web 凭据至少需要一个 https origin', true)
+    if (!actions.length) return status('fp-status', '请选择至少一个动作', true)
+    body.origins = origins
+    body.actions = actions
+  }
+  try {
+    await api('/api/fill/policy', { method: 'POST', body: JSON.stringify(body) })
+    if (kind === 'api' && $('fp-read').checked) {
+      await api('/api/fill/read-policy', { method: 'POST', body: JSON.stringify({ item, allow: true, ttlDays: 30 }) })
+    } else if (kind === 'api') {
+      await api('/api/fill/read-policy', { method: 'POST', body: JSON.stringify({ item, allow: false }) })
+    }
+    status('fp-status', '已保存', false)
+    await loadState()
+  } catch (error) {
+    status('fp-status', error.message || '保存失败', true)
+  }
+}
+async function deleteFillPolicy() {
+  const item = $('fp-item').value.trim()
+  if (!item) return status('fp-status', '请填写要删除的凭据名称', true)
+  if (!confirm('删除「' + item + '」的填充规则和明文读取授权？')) return
+  try {
+    await api('/api/fill/policy/delete', { method: 'POST', body: JSON.stringify({ item }) })
+    status('fp-status', '已删除', false)
+    await loadState()
+  } catch (error) {
+    status('fp-status', error.message || '删除失败', true)
+  }
+}
+
+function pendingOriginLabel(entry) {
+  if (String(entry.action || '') !== 'secret.fill') return ''
+  const origin = String(entry.targetOrigin || '').trim()
+  if (!origin) return '目标无效（缺少 origin）'
+  return origin
+}
+function pendingActionLabel(entry) {
+  const labels = { 'secret.read': '读取明文', 'secret.use': '代持请求', 'secret.fill': '网页填充' }
+  return labels[String(entry.action || '')] || String(entry.action || '未知')
+}
+function fillPolicyState() {
+  return (app.data && app.data.fillPolicies) || { items: [], executionLayer: false }
+}
+function renderFillPolicies() {
+  const list = $('fp-list')
+  if (!list) return
+  const state = fillPolicyState()
+  const note = $('fp-exec-note')
+  if (note) {
+    note.textContent = state.executionLayer
+      ? '执行层已配置（凭据可被填充到网页）。'
+      : '尚未配置真实浏览器执行层：填充请求无法完成实际网页登录，Agent 也不会拿到凭据明文。'
+    note.style.color = state.executionLayer ? '' : 'var(--danger)'
+  }
+  if (!state.items.length) { list.innerHTML = '<div class="hint">还没有配置任何填充规则。默认所有凭据都不可被 Agent 直接读取明文。</div>'; return }
+  const rows = state.items.map((entry) => {
+    const read = entry.plaintextRead
+      ? (entry.plaintextReadExpiresAt && entry.plaintextReadExpiresAt < Date.now() ? '已过期' : '允许')
+      : '拒绝'
+    const origins = entry.origins.length ? entry.origins.map((o) => '<code>' + esc(o) + '</code>').join('<br>') : '-'
+    return '<tr><td><code>' + esc(entry.itemId) + '</code></td><td>' + esc(entry.kind) + '</td><td>' + origins + '</td><td>' + esc((entry.actions || []).join(', ') || '-') + '</td><td>' + read + '</td></tr>'
+  }).join('')
+  list.innerHTML = '<table><tr><th>凭据 ID</th><th>类型</th><th>允许的 origin</th><th>动作</th><th>明文读取</th></tr>' + rows + '</table>'
+}
+
 function renderGrants() {
   const grants = app.data.grants || []
   $('grants-box').innerHTML = grants.length ? '<table><tr><th>Agent</th><th>条目</th><th>状态</th><th>模式</th><th>到期</th><th>读取</th><th>操作</th></tr>' + grants.map((grant) => { const status = grant.revokedAt ? '已撤销' : (grant.expiresAt && grant.expiresAt <= Date.now() ? '已过期' : (grant.maxReads && (grant.reads ?? 0) >= grant.maxReads ? '次数用尽' : '生效中')); return '<tr><td>' + esc(grant.agent) + '</td><td><b>' + esc(grant.name) + '</b></td><td>' + status + '</td><td>' + esc(grant.mode) + '</td><td>' + (grant.expiresAt ? new Date(grant.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</td><td>' + (grant.reads ?? 0) + (grant.maxReads ? ' / ' + grant.maxReads : '') + '</td><td><button class="small" data-grant-menu data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="更多">⋮</button></td></tr>' }).join('') + '</table>' : '<div class="hint">暂无授权</div>'

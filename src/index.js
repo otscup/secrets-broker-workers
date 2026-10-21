@@ -1159,6 +1159,19 @@ function publicState(state) {
     profile: state.profile ?? {},
     grants: Object.values(state.grants ?? {}),
     pending: Object.values(state.pending ?? {}),
+    // Web fill policies for the admin UI: which credential is a website
+    // login, which origins it may be filled into, and whether plaintext reads
+    // are allowed. Metadata only, never a credential value.
+    fillPolicies: {
+      items: Object.entries(state.credentialKinds ?? {}).map(([itemId, kind]) => ({
+        itemId, kind,
+        itemName: Object.keys(state.itemIds ?? {}).find((name) => state.itemIds[name] === itemId) ?? '',
+        origins: state.fillPolicies?.[itemId]?.origins ?? [],
+        actions: state.fillPolicies?.[itemId]?.actions ?? [],
+        plaintextRead: Boolean(state.plaintextReadPolicies?.[itemId]),
+        plaintextReadExpiresAt: state.plaintextReadPolicies?.[itemId]?.expiresAt ?? 0,
+      })),
+    },
     // OAuth client registrations + their live token counts, so the admin UI can
     // show and prune them. Full client IDs are safe here (admin-only view) but
     // tokens are never exposed, only counts.
@@ -1206,7 +1219,9 @@ async function decidePending(env, id, decision, source = 'web') {
     state.grants[grantKey(entry.agent, entry.name)] = { agent: entry.agent, name: entry.name, mode, createdAt: nowIso(), expiresAt, reads: 0, maxReads: mode === 'once' ? 1 : null, revokedAt: null, account: entry.account ?? '' }
     // Temporary capability bound to the pending entry's action. Approving
     // secret.use never mints secret.read and vice versa.
-    const entryAction = entry.action === 'secret.use' ? 'secret.use' : 'secret.read'
+    // Approving a fill must never mint a plaintext-read capability. Each
+    // action maps to itself; anything unknown is refused above.
+    const entryAction = SECRET_ACTIONS.has(String(entry.action)) ? String(entry.action) : 'secret.read'
     const itemId = entry.itemId || state.itemIds?.[entry.name] || ''
     // A capability must never be issued without a concrete account: the consume
     // gate treats a blank accountId as "no account restriction". Refuse instead
@@ -1215,6 +1230,21 @@ async function decidePending(env, id, decision, source = 'web') {
     if (!isWellFormedAccountId(entryAccount)) {
       outcome = { agent: entry.agent, name: entry.name, mode, action: entryAction, error: 'account-missing' }
       return state
+    }
+    // A fill approval is only meaningful with a concrete target origin, and
+    // the origin must still satisfy the fill policy. A missing or malformed
+    // target is refused rather than guessed.
+    if (entryAction === 'secret.fill') {
+      const target = normalizeOrigin(entry.targetOrigin)
+      if (!target) {
+        outcome = { agent: entry.agent, name: entry.name, mode, action: entryAction, denied: true, error: 'fill-target-missing' }
+        return state
+      }
+      const fill = fillPolicyFor(state, itemId || state.itemIds?.[entry.name] || '', target.origin)
+      if (!fill.ok) {
+        outcome = { agent: entry.agent, name: entry.name, mode, action: entryAction, denied: true, error: 'fill-target-not-allowed' }
+        return state
+      }
     }
     if (itemId) {
       const key = capabilityKey(entry.agent, itemId, entryAction)
@@ -2597,7 +2627,8 @@ export default {
         return next
       })
       await addAudit(env, { event: 'policy.update', name, noApproval: body.noApproval === true })
-      return json({ ok: true, state: publicState(state) })
+      const view = publicState(state)
+      return json({ ok: true, state: { ...view, fillPolicies: { ...view.fillPolicies, executionLayer: Boolean(String(env.FILL_EXECUTION_TOKEN ?? '')) } } })
     }
     if (url.pathname === '/api/use-policies' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -2700,13 +2731,37 @@ export default {
       const state = await loadState(env)
       const kinds = state.credentialKinds ?? {}
       const policies = state.fillPolicies ?? {}
+      const reads = state.plaintextReadPolicies ?? {}
       const items = Object.entries(kinds).map(([itemId, kind]) => ({
-        itemId, kind, origins: policies[itemId]?.origins ?? [], actions: policies[itemId]?.actions ?? [],
+        itemId, kind,
+        itemName: Object.keys(state.itemIds ?? {}).find((name) => state.itemIds[name] === itemId) ?? '',
+        origins: policies[itemId]?.origins ?? [], actions: policies[itemId]?.actions ?? [],
         autoApprove: policies[itemId]?.autoApprove === true, accountId: policies[itemId]?.accountId ?? '',
+        plaintextRead: Boolean(reads[itemId]),
+        plaintextReadExpiresAt: reads[itemId]?.expiresAt ?? 0,
       }))
       return json({ items, executionLayer: Boolean(String(env.FILL_EXECUTION_TOKEN ?? '')) })
     }
     // Admin: allow or revoke plaintext reads for an api credential.
+    // Admin: clear a classification and everything it authorised.
+    if (url.pathname === '/api/fill/policy/delete' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const itemName = String(body.item ?? '').trim()
+      if (!itemName) return fail('item required', 400)
+      const itemId = await resolveItemId(env, env.NODEWARDEN_DB, session, itemName)
+      if (!itemId) return fail('item not found', 404)
+      await updateState(env, (state) => {
+        delete state.credentialKinds?.[itemId]
+        delete state.fillPolicies?.[itemId]
+        delete state.plaintextReadPolicies?.[itemId]
+        return state
+      })
+      await addAudit(env, { event: 'fill-policy.delete', name: itemName, itemId })
+      return json({ ok: true, itemId })
+    }
     if (url.pathname === '/api/fill/read-policy' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
@@ -2852,7 +2907,8 @@ export default {
       // Fire the notification batch opportunistically on admin page loads; the
       // helper de-duplicates per (agent, kind, threshold) so this cannot spam.
       try { await dispatchReminderBatch(env, state, url.origin, ctx) } catch {}
-      return json({ ...publicState(state), reminders, pendingCount: Object.keys(state.pending ?? {}).length })
+    const view = publicState(state)
+    return json({ ...view, fillPolicies: { ...view.fillPolicies, executionLayer: Boolean(String(env.FILL_EXECUTION_TOKEN ?? '')) }, reminders, pendingCount: Object.keys(state.pending ?? {}).length })
     }
     // Read-only migration report: which agents still rely on legacy paths,
     // what would break, and current capability terms. Never mutates.
