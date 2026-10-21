@@ -177,6 +177,51 @@ export class BrokerState extends DurableObject {
       const cursor = page.length ? Number(page[page.length - 1].seq ?? 0) : sinceSeq
       return json({ ok: true, events: page, cursor, hasMore: fresh.length > page.length, total: inWindow.length })
     }
+    // Fill authorization ledger. Kept in a separate storage key so the main
+    // state shape is untouched, and every mutation runs inside a transaction.
+    if (url.pathname === '/fill/issue' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const record = body && typeof body.record === 'object' ? body.record : null
+      if (!record || !record.nonce || !record.agent || !record.itemId || !record.origin || !record.action) {
+        return json({ ok: false, reason: 'invalid' })
+      }
+      const stored = await this.ctx.storage.transaction(async (txn) => {
+        const ledger = (await txn.get('fillAuthorizations')) ?? {}
+        if (ledger[record.nonce]) return { ok: false, reason: 'nonce-exists' }
+        ledger[record.nonce] = record
+        // Keep the ledger bounded; expired entries are pruned on write.
+        const now = Date.now()
+        for (const [key, entry] of Object.entries(ledger)) {
+          if (!entry || (entry.expiresAt && entry.expiresAt < now)) delete ledger[key]
+        }
+        await txn.put('fillAuthorizations', ledger)
+        return { ok: true }
+      })
+      return json(stored)
+    }
+    if (url.pathname === '/fill/consume' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const { nonce, agent, itemId, accountId, origin } = body ?? {}
+      if (!nonce) return json({ ok: false, reason: 'nonce-missing' })
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const ledger = (await txn.get('fillAuthorizations')) ?? {}
+        const record = ledger[nonce]
+        if (!record) return { ok: false, reason: 'unknown-nonce' }
+        if (record.consumedAt) return { ok: false, reason: 'already-consumed' }
+        if (record.expiresAt && record.expiresAt < Date.now()) return { ok: false, reason: 'expired' }
+        if (record.agent !== agent) return { ok: false, reason: 'agent-mismatch' }
+        if (record.itemId !== itemId) return { ok: false, reason: 'item-mismatch' }
+        if (record.accountId && accountId && String(record.accountId).toLowerCase() !== String(accountId).toLowerCase()) {
+          return { ok: false, reason: 'account-mismatch' }
+        }
+        if (record.origin && origin && record.origin !== origin) return { ok: false, reason: 'origin-mismatch' }
+        record.consumedAt = Date.now()
+        ledger[nonce] = record
+        await txn.put('fillAuthorizations', ledger)
+        return { ok: true, record }
+      })
+      return json(result)
+    }
     if (url.pathname === '/state/mutate' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
       const ops = Array.isArray(body.ops) ? body.ops : null
@@ -1463,6 +1508,121 @@ async function geoEventSummary(env) {
     return { events: 0, agents: 0 }
   }
 }
+// ── Web fill (P1): classification, policy, one-shot authorization ──────────
+// The Agent may ask for a credential to be filled into a website. The Agent
+// never sees the value. This file only decides, authorizes and audits.
+
+// How a credential is classified is an explicit admin decision stored per item.
+// The NodeWarden item type is deliberately NOT used: it is user editable, so
+// deriving "this is a website login" from it would let anyone reclassify a
+// secret at will and read it back as plaintext.
+const CREDENTIAL_KINDS = new Set(['api', 'web'])
+const FILL_ACTIONS = new Set(['login'])
+
+// Fill authorizations live apart from capabilities: they are one-shot, bound to
+// a concrete origin, and redeemed by the execution layer only.
+function fillPolicyKey(itemId) { return itemId }
+
+// Normalise an origin to scheme + host + port so comparisons are exact.
+// No suffix or wildcard matching: "example.com.evil.test" must never match
+// a policy for "example.com".
+function normalizeOrigin(value) {
+  let url
+  try { url = new URL(String(value)) } catch { return null }
+  if (url.protocol !== 'https:') return null
+  if (url.username || url.password) return null
+  const host = url.hostname.toLowerCase().replace(/\.$/, '')
+  if (!host) return null
+  const port = url.port ? String(url.port) : '443'
+  return { origin: 'https://' + host + (port === '443' ? '' : ':' + port), host, port }
+}
+
+function credentialKind(state, itemId) {
+  return state.credentialKinds?.[itemId] ?? null
+}
+
+// A policy is applicable only when the item is classified as a web
+// credential and the request origin is listed verbatim. Any ambiguity (more
+// than one policy claiming the item, or an item with no policy) is not
+// auto-approved: the caller turns it into a pending request.
+function fillPolicyFor(state, itemId, origin) {
+  const kind = credentialKind(state, itemId)
+  if (kind !== 'web') return { ok: false, reason: 'not-a-web-credential' }
+  const policy = state.fillPolicies?.[itemId] ?? null
+  if (!policy) return { ok: false, reason: 'no-fill-policy' }
+  if (policy.accountId && origin && state.settings?.vaultEmail &&
+      String(policy.accountId).toLowerCase() !== String(state.settings?.vaultEmail).toLowerCase()) {
+    return { ok: false, reason: 'account-mismatch' }
+  }
+  const origins = (policy.origins ?? []).map((value) => normalizeOrigin(value)?.origin).filter(Boolean)
+  if (!origins.length) return { ok: false, reason: 'policy-has-no-origin' }
+  if (!origin || !origins.includes(origin)) return { ok: false, reason: 'origin-not-allowed' }
+  const actions = (policy.actions ?? []).map((value) => String(value))
+  if (!actions.length) return { ok: false, reason: 'policy-has-no-action' }
+  return { ok: true, policy, origin, actions, kind }
+}
+// Plaintext read guard. A credential classified as 'web' is a website login:
+// its value must never travel back to an Agent, it may only be filled into a
+// page by the execution layer. An 'api' credential may still be read, but only
+// when the admin enabled that explicitly for the item.
+function plaintextReadAllowed(state, itemId) {
+  const kind = credentialKind(state, itemId)
+  if (kind === 'web') return { ok: false, reason: 'web-credential-is-fill-only' }
+  if (kind === 'api') {
+    const policy = state.plaintextReadPolicies?.[itemId] ?? null
+    if (!policy) return { ok: false, reason: 'no-plaintext-read-policy' }
+    if (policy.accountId && policy.accountId && state.settings?.vaultEmail &&
+        String(policy.accountId).toLowerCase() !== String(state.settings?.vaultEmail).toLowerCase()) {
+      return { ok: false, reason: 'account-mismatch' }
+    }
+    if (policy.expiresAt && policy.expiresAt < Date.now()) return { ok: false, reason: 'policy-expired' }
+    return { ok: true, policy }
+  }
+  // An unclassified credential keeps the previous behaviour: the existing
+  // capability and approval flow already decides. Classification only adds
+  // the stricter rules for the items the admin has labelled.
+  return { ok: true }
+}
+// How long a fill authorization stays valid. Kept short on purpose: the
+// execution layer redeems it immediately.
+function fillAuthTtlMs(env) {
+  const configured = Number(env.FILL_AUTH_TTL_MS ?? 0)
+  if (Number.isFinite(configured) && configured > 0) return Math.min(15 * 60 * 1000, configured)
+  return 10 * 60 * 1000
+}
+// ── Fill authorization ledger ─────────────────────────────────────────────
+// Stored under its own top-level key so the main state shape is untouched.
+// The DO transaction is the only place an authorization can be redeemed, so a
+// replayed nonce or a concurrent second request cannot both succeed.
+async function issueFillAuthorization(env, { nonce, agent, itemId, itemName, accountId, origin, action, ttlMs }) {
+  const now = Date.now()
+  const expiresAt = now + ttlMs
+  const record = { nonce, agent, itemId, itemName: itemName ?? '', accountId, origin, action, issuedAt: now, expiresAt, consumedAt: 0 }
+  const response = await stateStub(env).fetch('https://state/fill/issue', {
+    method: 'POST',
+    body: JSON.stringify({ record }),
+  })
+  return response.json()
+}
+
+// Redeem exactly once. Returns the binding so the execution layer can check
+// that the origin it is about to fill matches the authorized one.
+async function consumeFillAuthorization(env, { nonce, agent, itemId, accountId, origin }) {
+  const response = await stateStub(env).fetch('https://state/fill/consume', {
+    method: 'POST',
+    body: JSON.stringify({ nonce, agent, itemId, accountId, origin }),
+  })
+  return response.json()
+}
+
+// The execution layer must present a credential that is NOT the Agent token.
+// It is configured separately and is never handed to an Agent.
+function executionLayerAuthorized(env, request) {
+  const expected = String(env.FILL_EXECUTION_TOKEN ?? '')
+  if (!expected) return false
+  const header = request.headers.get('x-fill-execution-token') ?? ''
+  return constantTimeEqual(encoder.encode(expected), encoder.encode(header))
+}
 // ── Agent Live Globe: event capture ────────────────────────────────────────
 // Records where an *authenticated Agent* reached this broker from. Never stores
 // or returns a raw IP, token, cookie, secret value or sensitive URL parameter.
@@ -1605,7 +1765,7 @@ export function agentInScope(agent, itemGroups, targetName, groupOverride) {
 // secret.read and secret.use are independent actions. secret.read returns
 // plaintext; secret.use only lets the broker inject and execute. Neither
 // implies the other.
-const SECRET_ACTIONS = new Set(['secret.read', 'secret.use'])
+const SECRET_ACTIONS = new Set(['secret.read', 'secret.use', 'secret.fill'])
 
 // ── Unified capability model (read/use share one authority) ───────────────
 // A capability is the SOLE authority for secret.read / secret.use grants:
@@ -1697,6 +1857,14 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
     const status = capabilityStatus(cap)
     if (status !== 'valid' && status !== 'expiring') { ok = false; reason = status }
     else if (action === 'secret.read') { ok = true; reason = 'capability' }
+    else if (action === 'secret.fill') {
+      // The fill policy is the authority for the target origin. Without a
+      // policy the request is not approvable, it is a hard deny.
+      const fill = fillPolicyFor(state, itemId, target?.origin ?? '')
+      if (!fill.ok) { ok = false; reason = fill.reason }
+      else if (!fill.actions.includes(String(target?.action ?? 'login'))) { ok = false; reason = 'action-not-allowed' }
+      else { ok = true; reason = 'capability' }
+    }
     else {
       const policy = usePolicyFor(state, itemId, accountId)
       if (!policy) { ok = false; reason = 'no-use-policy' }
@@ -1727,6 +1895,15 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
     const policy = usePolicyFor(state, itemId, accountId)
     if (!policy) { ok = false; reason = 'no-use-policy'; grantEligible = false }
     else if (!targetAllowed(policy, target)) { ok = false; reason = 'target-denied'; grantEligible = false }
+    else { ok = false; reason = 'awaiting-approval' }
+  }
+  if (grantEligible && action === 'secret.fill') {
+    // An action grant exists but the operator has not approved this fill yet.
+    // The target origin must already satisfy the fill policy, otherwise the
+    // request is a hard deny and can never be approved into existence.
+    const fill = fillPolicyFor(state, itemId, target?.origin ?? '')
+    if (!fill.ok) { ok = false; reason = fill.reason; grantEligible = false }
+    else if (!fill.actions.includes(String(target?.action ?? 'login'))) { ok = false; reason = 'action-not-allowed'; grantEligible = false }
     else { ok = false; reason = 'awaiting-approval' }
   }
   return { ok, reason, legacy: legacyDecision, grant: null, capability: cap, capabilityKey: key, grantEligible, capabilityDecisive }
@@ -1797,12 +1974,15 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     let pendingId = findPending(state, agentName, name, action)
     if (!pendingId) {
       pendingId = crypto.randomUUID()
-      const entry = { id: pendingId, agent: agentName, name, account: session.email, action, createdAt: nowIso() }
+      // The pending request records the target origin so the approver can see
+      // which site the credential would be filled into. A fill request without
+      // an origin is never approvable.
+      const entry = { id: pendingId, agent: agentName, name, account: session.email, action, createdAt: nowIso(), targetOrigin: action === 'secret.fill' ? String(target?.origin ?? '') : '' }
       await updateState(env, (next) => { next.pending[pendingId] = entry; if (itemId) { next.itemIds ??= {}; next.itemIds[name] = itemId } return next })
       await addAudit(env, { event: 'request.create', agent: agentName, name })
       await notifyPending(env, origin, entry, ctx)
     }
-    return { status: 'pending', requestId: pendingId, approvalUrl: `${origin}/#/grants` }
+    return { status: 'pending', requestId: pendingId, approvalUrl: `${origin}/#/grants`, itemId, targetOrigin: String(target?.origin ?? '') }
   }
   // Unified atomic consume: capability is the sole counter. Checks passed
   // above; consume now, before decrypt/fetch, inside the DO transaction.
@@ -1825,6 +2005,12 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   if (action === 'secret.use') {
     // The caller (http_request) performs the fetch; this returns metadata only.
     return { status: 'use-ok', itemId, url: (await readSecretFromRows(env, env.NODEWARDEN_DB, session, name))?.url ?? '' }
+  }
+  if (action === 'secret.fill') {
+    // Metadata only. The value never travels through this path: the execution
+    // layer redeems the one-shot authorization for it, with its own token.
+    await addAudit(env, { event: 'fill.approved', agent: agentName, name, origin: String(target?.origin ?? '') })
+    return { status: 'fill-ok', itemId, origin: String(target?.origin ?? ''), action: String(target?.action ?? 'login') }
   }
   const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
   if (!result) return { status: 'notfound', error: 'not found' }
@@ -2434,6 +2620,120 @@ export default {
       })
       await addAudit(env, { event: 'use-policy.update', name: itemName, itemId, hosts, methods })
       return json({ ok: true, itemId })
+    }
+    // Admin: classify a credential and configure its fill policy. The kind is an
+    // explicit admin decision; the NodeWarden item type is never consulted.
+    // The only endpoint that hands a plaintext value to a caller. It requires
+    // the execution layer's own token, which is never given to an Agent, and a
+    // one-shot authorization bound to this exact item, account and origin.
+    if (url.pathname === '/api/fill/execute' && request.method === 'POST') {
+      if (!executionLayerAuthorized(env, request)) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const nonce = String(body.nonce ?? '')
+      const origin = String(body.origin ?? '')
+      if (!nonce) return fail('nonce required', 400)
+      const session = await getSession(env)
+      // The vault must still be unlocked: a locked vault ends the task.
+      if (!session) return fail('vault locked', 423)
+      const state = await loadState(env)
+      const itemId = String(body.itemId ?? '')
+      const agent = String(body.agent ?? '')
+      if (!itemId || !agent) return fail('item and agent are required', 400)
+      // Redeem atomically first: a replayed or concurrent request loses here.
+      const consumed = await consumeFillAuthorization(env, { nonce, agent, itemId, accountId: session.email, origin })
+      if (!consumed?.ok) {
+        await addAudit(env, { event: 'fill.redeem-deny', agent, itemId, origin, reason: consumed?.reason ?? 'unknown' })
+        return fail('authorization is not valid: ' + (consumed?.reason ?? 'unknown'), 403)
+      }
+      const record = consumed.record ?? {}
+      // The vault may have been locked between issuing and redeeming.
+      if (record.accountId && String(record.accountId).toLowerCase() !== String(session.email).toLowerCase()) {
+        await addAudit(env, { event: 'fill.redeem-deny', agent, itemId, origin, reason: 'account-mismatch' })
+        return fail('authorization is not valid: account-mismatch', 403)
+      }
+      const found = await readSecretFromRows(env, env.NODEWARDEN_DB, session, record.itemName ?? '')
+      if (!found) return fail('credential not found', 404)
+      await addAudit(env, { event: 'fill.redeem', agent, itemId, origin, action: record.action ?? '' })
+      // The value goes to the execution layer only. It is never echoed to the
+      // Agent and never written to the audit log.
+      return json({ username: found.username, password: found.value, totp: found.totp, origin: record.origin, action: record.action })
+    }
+    if (url.pathname === '/api/fill/policy' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const itemName = String(body.item ?? '').trim()
+      if (!itemName) return fail('item required', 400)
+      const itemId = await resolveItemId(env, env.NODEWARDEN_DB, session, itemName)
+      if (!itemId) return fail('item not found', 404)
+      const kind = String(body.kind ?? '')
+      if (!CREDENTIAL_KINDS.has(kind)) return fail('kind must be api or web', 400)
+      const origins = (Array.isArray(body.origins) ? body.origins : [])
+        .map((value) => normalizeOrigin(value)?.origin)
+        .filter(Boolean)
+      const actions = (Array.isArray(body.actions) ? body.actions : [])
+        .map((value) => String(value))
+        .filter((value) => FILL_ACTIONS.has(value))
+      if (kind === 'web' && !origins.length) return fail('web credentials need at least one https origin', 400)
+      if (kind === 'web' && !actions.length) return fail('web credentials need at least one action', 400)
+      await updateState(env, (state) => {
+        state.credentialKinds ??= {}
+        state.credentialKinds[itemId] = kind
+        if (kind === 'web') {
+          state.fillPolicies ??= {}
+          state.fillPolicies[itemId] = {
+            itemId, accountId: session.email, origins, actions,
+            autoApprove: body.autoApprove === true, updatedAt: nowIso(),
+          }
+        } else {
+          // An api credential has no fill policy: it is not a website login.
+          delete state.fillPolicies?.[itemId]
+        }
+        return state
+      })
+      await addAudit(env, { event: 'fill-policy.update', name: itemName, itemId, kind, origins, actions })
+      return json({ ok: true, itemId, kind, origins, actions })
+    }
+    if (url.pathname === '/api/fill/policies' && request.method === 'GET') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const kinds = state.credentialKinds ?? {}
+      const policies = state.fillPolicies ?? {}
+      const items = Object.entries(kinds).map(([itemId, kind]) => ({
+        itemId, kind, origins: policies[itemId]?.origins ?? [], actions: policies[itemId]?.actions ?? [],
+        autoApprove: policies[itemId]?.autoApprove === true, accountId: policies[itemId]?.accountId ?? '',
+      }))
+      return json({ items, executionLayer: Boolean(String(env.FILL_EXECUTION_TOKEN ?? '')) })
+    }
+    // Admin: allow or revoke plaintext reads for an api credential.
+    if (url.pathname === '/api/fill/read-policy' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const itemName = String(body.item ?? '').trim()
+      if (!itemName) return fail('item required', 400)
+      const itemId = await resolveItemId(env, env.NODEWARDEN_DB, session, itemName)
+      if (!itemId) return fail('item not found', 404)
+      const kind = credentialKind(await loadState(env), itemId)
+      if (kind === 'web') return fail('website credentials are fill-only and cannot be read as plaintext', 400)
+      if (kind !== 'api') return fail('classify the credential as api first', 400)
+      const allow = body.allow === true
+      await updateState(env, (state) => {
+        state.credentialKinds ??= {}
+        state.credentialKinds[itemId] = 'api'
+        state.plaintextReadPolicies ??= {}
+        if (allow) {
+          const ttlDays = Math.max(1, Math.min(365, Number(body.ttlDays) || 30))
+          state.plaintextReadPolicies[itemId] = { itemId, accountId: session.email, expiresAt: Date.now() + ttlDays * 86400e3, createdAt: nowIso() }
+        } else {
+          delete state.plaintextReadPolicies[itemId]
+        }
+        return state
+      })
+      await addAudit(env, { event: 'plaintext-read-policy.update', name: itemName, itemId, allow })
+      return json({ ok: true, itemId, allow })
     }
     if (url.pathname === '/api/action-grants' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -3469,6 +3769,15 @@ export default {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
               return result(text(access.error, true))
             }
+            // Plaintext only leaves the broker for an api credential the admin
+            // explicitly allowed. Website logins and unclassified items are
+            // refused: they are fill-only.
+            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '')
+            if (!readGuard.ok) {
+              await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name: secretName, reason: readGuard.reason })
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
+              return result(text('plaintext read is not allowed for this credential: ' + readGuard.reason, true))
+            }
             await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: true })
             return result(text(access.value))
           }
@@ -3486,6 +3795,14 @@ export default {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
               return result(text(access.error, true))
             }
+            // A website login is fill-only: its username/password/totp must never
+            // reach the Agent. An api key needs an explicit read policy.
+            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '')
+            if (!readGuard.ok) {
+              await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name: secretName, reason: readGuard.reason })
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
+              return result(text('plaintext read is not allowed for this credential: ' + readGuard.reason, true))
+            }
             const found = await readSecretFromRows(env, env.NODEWARDEN_DB, session, secretName)
             if (!found) {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
@@ -3493,6 +3810,60 @@ export default {
             }
             await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: true })
             return result(text(JSON.stringify({ username: found.username, password: found.value, totp: found.totp })))
+          }
+          // secret.fill: ask for a website credential to be filled in. The Agent
+          // never receives the value; it only learns whether the request was
+          // approved and, if so, the short-lived authorization handed to the
+          // execution layer. Without a configured execution layer this fails
+          // closed and returns no secret material.
+          if (name === 'secret.fill') {
+            const secretName = String(args.name ?? '').trim()
+            if (!secretName) return result(text('name is required', true))
+            const requestedOrigin = normalizeOrigin(args.origin)
+            if (!requestedOrigin) return result(text('a valid https origin is required', true))
+            const access = await agentAccess(env, {
+              session, agentName: resolved.name, agent: resolved.agent, state: resolved.state,
+              name: secretName, origin: url.origin, ctx, action: 'secret.fill',
+              target: { host: requestedOrigin.host, port: requestedOrigin.port, method: 'POST', pathname: '/', origin: requestedOrigin.origin, action: String(args.action ?? 'login') },
+            })
+            const fillKind = resolved.agent.oauth ? 'oauth' : 'token'
+            if (access.status === 'pending') {
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: fillKind, action: 'secret.fill', ok: false })
+              return result(text('pending approval: ' + access.approvalUrl))
+            }
+            if (access.status === 'forbidden' || access.status === 'notfound') {
+              await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: fillKind, action: 'secret.fill', ok: false })
+              return result(text(access.error, true))
+            }
+            if (access.status !== 'fill-ok') return result(text('fill was not authorized', true))
+            // Policy check happens after authorization so an unauthorized agent
+            // cannot probe which credentials exist.
+            const policy = fillPolicyFor(resolved.state, access.itemId ?? '', requestedOrigin.origin)
+            if (!policy.ok) {
+              await addAudit(env, { event: 'fill.deny', agent: resolved.name, name: secretName, origin: requestedOrigin.origin, reason: policy.reason })
+              return result(text('fill is not permitted for this credential and origin: ' + policy.reason, true))
+            }
+            if (!policy.actions.includes(String(args.action ?? 'login'))) {
+              await addAudit(env, { event: 'fill.deny', agent: resolved.name, name: secretName, origin: requestedOrigin.origin, reason: 'action-not-allowed' })
+              return result(text('fill action is not allowed by the policy', true))
+            }
+            // No execution layer configured: fail closed. The Agent must not
+            // receive the value, and there is nothing that can redeem a token.
+            if (!String(env.FILL_EXECUTION_TOKEN ?? '')) {
+              await addAudit(env, { event: 'fill.deny', agent: resolved.name, name: secretName, origin: requestedOrigin.origin, reason: 'no-execution-layer' })
+              return result(text('fill execution layer is not configured', true))
+            }
+            const nonce = base64Url(crypto.getRandomValues(new Uint8Array(24)))
+            const issued = await issueFillAuthorization(env, {
+              nonce, agent: resolved.name, itemId: access.itemId ?? '', itemName: secretName, accountId: session.email,
+              origin: requestedOrigin.origin, action: String(args.action ?? 'login'), ttlMs: fillAuthTtlMs(env),
+            })
+            if (!issued?.ok) return result(text('fill authorization could not be issued', true))
+            await addAudit(env, { event: 'fill.authorize', agent: resolved.name, name: secretName, origin: requestedOrigin.origin, approval: access.approval ?? 'policy' })
+            await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: fillKind, action: 'secret.fill', ok: true })
+            // The nonce is the execution layer's handle. It is not a secret:
+            // redeeming it also requires the execution layer's own token.
+            return result(text(JSON.stringify({ taskId: nonce, origin: requestedOrigin.origin, expiresInSeconds: 600 })))
           }
           if (name === 'request_credential') {
             const secretName = String(args.name ?? '').trim()
@@ -3697,6 +4068,14 @@ export default {
           if (access.status === 'pending') return json({ status: 'pending', requestId: access.requestId, approvalUrl: access.approvalUrl }, 202)
           if (access.status === 'forbidden') return fail(access.error, 403)
           if (access.status === 'notfound') return fail(access.error, 404)
+          // Same rule as the MCP tools: only an api credential with an explicit
+          // read policy may return plaintext to an Agent. A website login is
+          // fill-only, so it can never be read back through this path either.
+          const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '')
+          if (!readGuard.ok) {
+            await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name, reason: readGuard.reason })
+            return fail('plaintext read is not allowed for this credential: ' + readGuard.reason, 403)
+          }
           return json({ value: access.value })
         }
         const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)

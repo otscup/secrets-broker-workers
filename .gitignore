@@ -46,6 +46,9 @@ test-*.mjs
 !test-mf-ui-polish.mjs
 !test-mf-layout-round.mjs
 !test-mf-donut-legend.mjs
+!test-mf-fill.mjs
+!test-mf-fill-expiry.mjs
+!test-mf-fill-mock.mjs
 !test-mf-panel-polish.mjs
 !test-mf-css-integrity.mjs
 !test-mf-fixed-layout.mjs
