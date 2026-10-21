@@ -4,7 +4,9 @@ const os = require('node:os')
 const path = require('node:path')
 
 const SRC = 'E:/DeepSeek workers/secrets-broker-workers'
-const RUN = path.join(os.tempdir ? os.tmpdir() : require('node:os').tmpdir(), 'sb-test-run')
+// A unique directory per run avoids clashing with an earlier run that still
+// holds files open, which Windows refuses to delete.
+const RUN = path.join(os.tmpdir ? os.tmpdir() : require('node:os').tmpdir(), 'sb-test-run-' + process.pid + '-' + Date.now())
 
 function mirror() {
   fs.rmSync(RUN, { recursive: true, force: true })

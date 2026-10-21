@@ -49,6 +49,7 @@ test-*.mjs
 !test-mf-css-integrity.mjs
 !test-mf-fixed-layout.mjs
 !test-mf-mobile.mjs
+!test-mf-reminder-write.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs

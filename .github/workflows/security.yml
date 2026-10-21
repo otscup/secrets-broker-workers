@@ -107,5 +107,7 @@ jobs:
         run: npm run test:layout2
       - name: Mobile and globe sizing
         run: npm run test:mobile
+      - name: Reminder write safety (Miniflare)
+        run: npm run test:reminder-write
       - name: Full security suite (short path)
         run: npm run test:security:short

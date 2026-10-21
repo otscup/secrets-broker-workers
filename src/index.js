@@ -1437,14 +1437,15 @@ async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now()) 
     if (ctx?.waitUntil) ctx.waitUntil(run)
     else await run
   }
-  await updateState(env, (next) => {
-    next.reminderSent ??= {}
-    for (const r of fresh) {
-      const key = r.agent + '\u0000' + r.kind + '\u0000' + (r.kind === 'expiring' ? r.daysLeft : 'idle')
-      next.reminderSent[key] = now
-    }
-    return next
-  }).catch(() => {})
+  // Record the sent markers atomically. A whole-state write here would persist a
+  // stale snapshot and silently drop anything that landed in the meantime -
+  // for example an OAuth client registered while this batch was being built.
+  const ops = fresh.map((r) => ({
+    op: 'set',
+    path: ['reminderSent', r.agent + '\u0000' + r.kind + '\u0000' + (r.kind === 'expiring' ? r.daysLeft : 'idle')],
+    value: now,
+  }))
+  if (ops.length) await mutateState(env, ops).catch(() => {})
   return { sent: tasks.length ? fresh.length : 0, reminders: reminders.length }
 }
 
