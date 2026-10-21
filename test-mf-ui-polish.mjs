@@ -61,10 +61,10 @@ const ui = fs.readFileSync('src/ui.js', 'utf8')
 }
 // X7: enlarge is a near-fullscreen overlay, not a small modal
 {
-  const fixed = /\.globe-big\{position:fixed;inset:0/.test(ui)
+  const fixed = /\.globe-big\{position:fixed;inset:6%/.test(ui)
   const stage = /\.globe-box-big\{[^}]*height:100%/.test(ui)
   const close = ui.includes('function closeBigGlobe') && ui.includes('globe-big-close')
-  if (fixed && stage && close) pass('X7 enlarge covers the viewport with a close button')
+  if (fixed && stage && close) pass('X7 enlarge is a card with a close button')
   else fail('X7', JSON.stringify({ fixed, stage, close }))
 }
 // X8: theme switch is visible and sits before the nav

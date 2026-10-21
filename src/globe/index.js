@@ -27,7 +27,8 @@ function createGlobe(container, options) {
 
   const scene = new THREE.Scene()
   const camera = new THREE.PerspectiveCamera(42, width() / height(), 0.1, 4000)
-  camera.position.set(0, 90, 320)
+  // Pull the camera back so the rendered globe is about 15% smaller.
+  camera.position.set(0, 106, 380)
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
