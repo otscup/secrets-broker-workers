@@ -51,10 +51,11 @@ test-*.mjs
 !test-mf-mobile.mjs
 !test-mf-reminder-write.mjs
 !test-mf-globe-empty.mjs
-!test-mf-globe-arcs.mjs
 inspect-cipher.mjs
 set-secrets.mjs
 add-domain.mjs
 add-dns.mjs
 attach-route.mjs
 *.log
+
+!test-mf-globe-fanout.mjs

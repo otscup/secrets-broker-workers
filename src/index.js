@@ -1449,6 +1449,20 @@ async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now()) 
   return { sent: tasks.length ? fresh.length : 0, reminders: reminders.length }
 }
 
+// Count the captured globe events without exposing anything sensitive: totals
+// and the agent names only, no coordinates, no identifiers.
+async function geoEventSummary(env) {
+  try {
+    const response = await stateStub(env).fetch('https://state/geo/query', { method: 'POST', body: JSON.stringify({ windowMs: 7 * 86400e3, limit: 500 }) })
+    const payload = await response.json()
+    const events = Array.isArray(payload.events) ? payload.events : []
+    const agents = new Set()
+    for (const entry of events) if (entry && entry.agent) agents.add(String(entry.agent))
+    return { events: events.length, agents: agents.size }
+  } catch {
+    return { events: 0, agents: 0 }
+  }
+}
 // ── Agent Live Globe: event capture ────────────────────────────────────────
 // Records where an *authenticated Agent* reached this broker from. Never stores
 // or returns a raw IP, token, cookie, secret value or sensitive URL parameter.
@@ -3234,6 +3248,9 @@ export default {
         tokens: tokens.length,
         liveTokens: tokens.filter((t) => !t.expiresAt || t.expiresAt > now).length,
         agents: Object.keys(state.agents ?? {}).length,
+        // Live-globe counters so an operator can confirm the globe has traffic
+        // without opening the console. Counts and agent names only.
+        ...(await geoEventSummary(env)),
       })
     }
     if (url.pathname === '/.well-known/oauth-protected-resource' || url.pathname === '/.well-known/oauth-protected-resource/mcp') {

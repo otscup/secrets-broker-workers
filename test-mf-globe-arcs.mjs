@@ -15,7 +15,7 @@ const body = src.slice(start, end)
   else fail('A1', 'byAgent map still present')
 }
 {
-  if (/size: 0\.22/.test(body)) pass('A2 one small marker per request')
+  if (/size: 0\.2/.test(body)) pass('A2 one small marker per request')
   else fail('A2', 'per-request marker missing')
 }
 {
@@ -32,7 +32,7 @@ const body = src.slice(start, end)
 }
 {
   const onePerEvent = /for \(const \{ ev, g, color \} of located\)/.test(body)
-  const opLeg = /startLat: opLat, startLng: opLon, endLat: g\.lat/.test(body)
+  const opLeg = /startLat: opLat, startLng: opLon, endLat: startLat/.test(body)
   if (onePerEvent && opLeg) pass('A5 one arc per request plus operator leg')
   else fail('A5', JSON.stringify({ onePerEvent, opLeg }))
 }

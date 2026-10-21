@@ -43,9 +43,9 @@ function createGlobe(container, options) {
     .pointAltitude(0.015)
     .pointRadius(0.55)
     .arcAltitudeAutoScale(0.42)
-    .arcStroke(0.55)
-    .arcDashLength(0.5)
-    .arcDashGap(0.16)
+    .arcStroke(0.22)
+    .arcDashLength(0.6)
+    .arcDashGap(0.3)
     .arcDashAnimateTime(reduceMotion ? 0 : 2000)
     // Country-code labels use the labels layer: three-globe has no arcLabel
     // methods (those belong to globe.gl), and calling them returns undefined
@@ -137,29 +137,54 @@ function createGlobe(container, options) {
       const opCode = operator && operator.country ? String(operator.country).toUpperCase() : ''
 
       // One marker per request, kept small so dense traffic stays readable.
-      const points = located.map(({ ev, g, color }) => ({
-        lat: g.lat,
-        lng: g.lon,
-        size: 0.22,
-        color,
-        agent: ev.agent,
-      }))
+      const points = []
+      const spotCount = new Map()
+      for (const { ev, g, color } of located) {
+        const spot = g.lat + ',' + g.lon
+        const index = spotCount.get(spot) || 0
+        spotCount.set(spot, index + 1)
+        const seed = Math.abs(Math.round((g.lat * 1000) + (g.lon * 977) + index * 31))
+        const spread = index === 0 ? 0 : 0.35 + ((seed % 17) / 17) * 0.9
+        const bearing = (seed % 360) * (Math.PI / 180)
+        points.push({
+          lat: g.lat + Math.cos(bearing) * spread,
+          lng: g.lon + Math.sin(bearing) * spread,
+          size: 0.2,
+          color,
+          agent: ev.agent,
+        })
+      }
       if (showOperator && opLat !== null && opLon !== null) {
         points.push({ lat: opLat, lng: opLon, size: 0.7, color: '#ffd166', agent: '我', isOperator: true })
       }
       globe.pointsData(points)
 
+      // Requests from the same place overlap into a single line, so each one
+      // gets a small deterministic offset. The result fans out like departing
+      // flights instead of collapsing onto one stroke.
+      const perSpot = new Map()
       const arcs = []
       for (const { ev, g, color } of located) {
+        const spot = g.lat + ',' + g.lon
+        const index = perSpot.get(spot) || 0
+        perSpot.set(spot, index + 1)
+        // Deterministic jitter keeps the layout stable between refreshes.
+        const seed = Math.abs(Math.round((g.lat * 1000) + (g.lon * 977) + index * 31))
+        const spread = index === 0 ? 0 : 0.35 + ((seed % 17) / 17) * 0.9
+        const bearing = (seed % 360) * (Math.PI / 180)
+        const dLat = Math.cos(bearing) * spread
+        const dLon = Math.sin(bearing) * spread
+        const startLat = g.lat + dLat
+        const startLon = g.lon + dLon
         // The request itself: the agent location -> the broker node in China.
         arcs.push({
-          startLat: g.lat, startLng: g.lon, endLat: CHINA_NODE.lat, endLng: CHINA_NODE.lon,
+          startLat, startLng: startLon, endLat: CHINA_NODE.lat, endLng: CHINA_NODE.lon,
           color: [color, '#7fc7ff'],
         })
         // The operator leg, when the operator sits somewhere else.
         if (opLat !== null && opLon !== null && (Math.abs(g.lat - opLat) > 0.01 || Math.abs(g.lon - opLon) > 0.01)) {
           arcs.push({
-            startLat: opLat, startLng: opLon, endLat: g.lat, endLng: g.lon,
+            startLat: opLat, startLng: opLon, endLat: startLat, endLng: startLon,
             color: ['#ffd166', color],
           })
         }
