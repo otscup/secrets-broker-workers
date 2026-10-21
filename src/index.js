@@ -1219,17 +1219,62 @@ async function signedApprovalLinks(env, id, origin, source = 'notification') {
   return links
 }
 
+// ── Notification templates ───────────────────────────────────────────────
+// One approval template shared by all channels, editable in Settings →
+// 通知模板 (stored at settings.notifications.templates) so copy changes do
+// not need a redeploy. Missing/empty fields fall back to the defaults below,
+// which reproduce the previously hardcoded wording. Placeholders: {agent},
+// {name}, {time}, {origin} for approvals; {lines}, {origin} for reminders.
+// Channels differ only in rendering: Telegram/ntfy/Gotify turn the labels
+// into buttons/actions, wxpush has no buttons so it appends the signed links.
+const DEFAULT_APPROVAL_TEMPLATE = {
+  title: 'Secrets Broker 授权请求',
+  body: 'Secrets Broker 授权请求\nAgent: {agent}\n条目: {name}\n时间: {time}\n\n请在 Secrets Broker 页面处理: {origin}/',
+  labels: { once: '仅本次', '24h': '24 小时', deny: '拒绝', always: '永久' },
+}
+const DEFAULT_REMINDER_TEMPLATE = {
+  title: 'Secrets Broker 授权提醒',
+  body: 'Secrets Broker 授权提醒\n\n{lines}\n\n前往延长：{origin}/#/agents',
+}
+function notificationTemplates(notifications) {
+  const t = notifications?.templates ?? {}
+  const a = t.approval ?? {}
+  const r = t.reminder ?? {}
+  const labels = a.labels ?? {}
+  const pick = (value, fallback) => (typeof value === 'string' && value !== '' ? value : fallback)
+  return {
+    approval: {
+      title: pick(a.title, DEFAULT_APPROVAL_TEMPLATE.title),
+      body: pick(a.body, DEFAULT_APPROVAL_TEMPLATE.body),
+      labels: {
+        once: pick(labels.once, DEFAULT_APPROVAL_TEMPLATE.labels.once),
+        '24h': pick(labels['24h'], DEFAULT_APPROVAL_TEMPLATE.labels['24h']),
+        deny: pick(labels.deny, DEFAULT_APPROVAL_TEMPLATE.labels.deny),
+        always: pick(labels.always, DEFAULT_APPROVAL_TEMPLATE.labels.always),
+      },
+    },
+    reminder: {
+      title: pick(r.title, DEFAULT_REMINDER_TEMPLATE.title),
+      body: pick(r.body, DEFAULT_REMINDER_TEMPLATE.body),
+    },
+  }
+}
+function renderTemplate(text, vars) {
+  return String(text).replace(/\{(agent|name|time|origin|lines)\}/g, (match, key) => (vars[key] ?? match))
+}
+
 async function notifyPending(env, origin, entry, ctx) {
   const state = await loadState(env)
   const notifications = state.settings?.notifications ?? {}
+  const tpl = notificationTemplates(notifications).approval
   const links = await signedApprovalLinks(env, entry.id, origin)
-  const shortText = `Secrets Broker 授权请求\nAgent: ${entry.agent}\n条目: ${entry.name}\n时间: ${entry.createdAt}\n\n请在 Secrets Broker 页面处理: ${origin}/`
-  const linkText = `Secrets Broker 授权请求\nAgent: ${entry.agent}\n条目: ${entry.name}\n时间: ${entry.createdAt}\n\n批准一次: ${links.once}\n批准 24 小时: ${links['24h']}\n永久: ${links.always}\n拒绝: ${links.deny}`
+  const shortText = renderTemplate(tpl.body, { agent: entry.agent, name: entry.name, time: entry.createdAt, origin })
+  const linkText = `${shortText}\n\n${tpl.labels.once}: ${links.once}\n${tpl.labels['24h']}: ${links['24h']}\n${tpl.labels.always}: ${links.always}\n${tpl.labels.deny}: ${links.deny}`
   const tasks = []
   if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
     const keyboard = { inline_keyboard: [
-      [{ text: '仅本次', callback_data: `a:${entry.id}:once` }, { text: '24 小时', callback_data: `a:${entry.id}:24h` }],
-      [{ text: '永久', callback_data: `a:${entry.id}:always` }, { text: '拒绝', callback_data: `d:${entry.id}` }],
+      [{ text: tpl.labels.once, callback_data: `a:${entry.id}:once` }, { text: tpl.labels['24h'], callback_data: `a:${entry.id}:24h` }],
+      [{ text: tpl.labels.always, callback_data: `a:${entry.id}:always` }, { text: tpl.labels.deny, callback_data: `d:${entry.id}` }],
     ] }
     tasks.push(fetch(`https://api.telegram.org/bot${notifications.telegram.botToken}/sendMessage`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -1238,13 +1283,13 @@ async function notifyPending(env, origin, entry, ctx) {
   }
   if (notifications.ntfy?.url && notifications.ntfy?.topic) {
     const actions = [
-      `view, 仅本次, ${links.once}, clear=true`,
-      `view, 24小时, ${links['24h']}, clear=true`,
-      `view, 永久, ${links.always}, clear=true`,
-      `view, 拒绝, ${links.deny}, clear=true`,
+      `view, ${tpl.labels.once}, ${links.once}, clear=true`,
+      `view, ${tpl.labels['24h']}, ${links['24h']}, clear=true`,
+      `view, ${tpl.labels.always}, ${links.always}, clear=true`,
+      `view, ${tpl.labels.deny}, ${links.deny}, clear=true`,
     ].join('; ')
     tasks.push(fetch(`${String(notifications.ntfy.url).replace(/\/$/, '')}/${encodeURIComponent(notifications.ntfy.topic)}`, {
-      method: 'POST', headers: { title: 'Secrets Broker approval', tags: 'lock', Actions: actions }, body: shortText,
+      method: 'POST', headers: { title: tpl.title, tags: 'lock', Actions: actions }, body: shortText,
     }))
   }
   if (notifications.gotify?.url && notifications.gotify?.token) {
@@ -1255,22 +1300,22 @@ async function notifyPending(env, origin, entry, ctx) {
     const extras = {
       'client::notification.click': { url: `${origin}/` },
       'notify::actions': [
-        { label: '仅本次', url: links.once },
-        { label: '24 小时', url: links['24h'] },
-        { label: '拒绝', url: links.deny },
-        { label: '永久', url: links.always },
+        { label: tpl.labels.once, url: links.once },
+        { label: tpl.labels['24h'], url: links['24h'] },
+        { label: tpl.labels.deny, url: links.deny },
+        { label: tpl.labels.always, url: links.always },
       ],
     }
     tasks.push(fetch(`${String(notifications.gotify.url).replace(/\/$/, '')}/message?token=${encodeURIComponent(notifications.gotify.token)}`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ title: 'Secrets Broker approval', message: shortText, priority: 5, extras }),
+      body: JSON.stringify({ title: tpl.title, message: shortText, priority: 5, extras }),
     }))
   }
   if (notifications.wxpush?.url && notifications.wxpush?.token) {
     if (notifications.wxpush.format === 'json') {
-      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${notifications.wxpush.token}` }, body: JSON.stringify({ title: 'Secrets Broker 授权请求', text: linkText, content: linkText, agent: entry.agent, item: entry.name, approval: links }) }))
+      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${notifications.wxpush.token}` }, body: JSON.stringify({ title: tpl.title, text: linkText, content: linkText, agent: entry.agent, item: entry.name, approval: links }) }))
     } else {
-      const body = new URLSearchParams({ title: 'Secrets Broker 授权请求', content: linkText, token: notifications.wxpush.token })
+      const body = new URLSearchParams({ title: tpl.title, content: linkText, token: notifications.wxpush.token })
       tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }))
     }
   }
@@ -1344,14 +1389,15 @@ function buildReminders(state, now = Date.now()) {
 // Notification body for a reminder batch. Deliberately excludes any secret
 // material and any token; it only carries agent names and day counts plus the
 // link back to the console where an admin can extend.
-function reminderMessage(reminders, origin) {
+function reminderMessage(reminders, origin, notifications) {
+  const tpl = notificationTemplates(notifications).reminder
   const lines = reminders.map((r) => {
     const kind = r.oauth ? 'OAuth' : 'Token'
     if (r.kind === 'expired') return '- ' + r.agent + ' (' + kind + ')：授权已过期'
     if (r.kind === 'expiring') return '- ' + r.agent + ' (' + kind + ')：' + r.message + '，剩余 ' + r.daysLeft + ' 天'
     return '- ' + r.agent + ' (' + kind + ')：' + r.message
   })
-  return 'Secrets Broker 授权提醒\n\n' + lines.join('\n') + '\n\n前往延长：' + origin + '/#/agents'
+  return { title: tpl.title, text: renderTemplate(tpl.body, { lines: lines.join('\n'), origin }) }
 }
 
 // Send once per (agent, kind, threshold) so a 5-day reminder does not repeat on
@@ -1368,22 +1414,22 @@ async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now()) 
   })
   if (!fresh.length) return { sent: 0, reminders: reminders.length }
   const notifications = state.settings?.notifications ?? {}
-  const text = reminderMessage(fresh, origin)
+  const { title, text } = reminderMessage(fresh, origin, notifications)
   const tasks = []
   if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
     tasks.push(fetch('https://api.telegram.org/bot' + notifications.telegram.botToken + '/sendMessage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: notifications.telegram.chatId, text, disable_web_page_preview: true }) }))
   }
   if (notifications.ntfy?.url && notifications.ntfy?.topic) {
-    tasks.push(fetch(String(notifications.ntfy.url).replace(/\/$/, '') + '/' + encodeURIComponent(notifications.ntfy.topic), { method: 'POST', headers: { 'title': 'Secrets Broker 授权提醒', tags: 'warning' }, body: text }))
+    tasks.push(fetch(String(notifications.ntfy.url).replace(/\/$/, '') + '/' + encodeURIComponent(notifications.ntfy.topic), { method: 'POST', headers: { 'title': title, tags: 'warning' }, body: text }))
   }
   if (notifications.gotify?.url && notifications.gotify?.token) {
-    tasks.push(fetch(String(notifications.gotify.url).replace(/\/$/, '') + '/message?token=' + encodeURIComponent(notifications.gotify.token), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Secrets Broker 授权提醒', message: text, priority: 6 }) }))
+    tasks.push(fetch(String(notifications.gotify.url).replace(/\/$/, '') + '/message?token=' + encodeURIComponent(notifications.gotify.token), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title, message: text, priority: 6 }) }))
   }
   if (notifications.wxpush?.url && notifications.wxpush?.token) {
     if (notifications.wxpush.format === 'json') {
-      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + notifications.wxpush.token }, body: JSON.stringify({ title: 'Secrets Broker 授权提醒', text, content: text }) }))
+      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + notifications.wxpush.token }, body: JSON.stringify({ title, text, content: text }) }))
     } else {
-      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ title: 'Secrets Broker 授权提醒', content: text, token: notifications.wxpush.token }) }))
+      tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ title, content: text, token: notifications.wxpush.token }) }))
     }
   }
   if (tasks.length) {
@@ -3022,6 +3068,7 @@ export default {
           ntfy: { url: n.ntfy?.url ?? '', topic: n.ntfy?.topic ?? '', configured: Boolean(n.ntfy?.url && n.ntfy?.topic) },
           gotify: { url: n.gotify?.url ?? '', configured: Boolean(n.gotify?.url && n.gotify?.token) },
           wxpush: { url: n.wxpush?.url ?? '', format: n.wxpush?.format ?? 'form', configured: Boolean(n.wxpush?.url && n.wxpush?.token) },
+          templates: notificationTemplates(n),
         }, oidc: {
           issuer: effectiveOidc?.issuer ?? '',
           clientId: effectiveOidc?.clientId ?? '',
@@ -3055,6 +3102,31 @@ export default {
               }
             }
             state.settings.notifications[channel] = next
+          }
+          if (incoming.templates && typeof incoming.templates === 'object') {
+            // Template fields: a non-empty string replaces, '' clears back to
+            // the built-in default (see notificationTemplates). Capped length.
+            const stored = state.settings.notifications.templates ?? {}
+            const nextTemplates = { approval: { ...(stored.approval ?? {}) }, reminder: { ...(stored.reminder ?? {}) } }
+            for (const section of ['approval', 'reminder']) {
+              const inc = incoming.templates[section]
+              if (!inc || typeof inc !== 'object') continue
+              for (const [key, value] of Object.entries(inc)) {
+                if (key === 'labels' && section === 'approval' && value && typeof value === 'object') {
+                  const labels = { ...(nextTemplates.approval.labels ?? {}) }
+                  for (const [labelKey, labelValue] of Object.entries(value)) {
+                    if (typeof labelValue !== 'string') continue
+                    if (labelValue === '') delete labels[labelKey]
+                    else labels[labelKey] = labelValue.slice(0, 100)
+                  }
+                  nextTemplates.approval.labels = labels
+                } else if ((key === 'title' || key === 'body') && typeof value === 'string') {
+                  if (value === '') delete nextTemplates[section][key]
+                  else nextTemplates[section][key] = value.slice(0, 4000)
+                }
+              }
+            }
+            state.settings.notifications.templates = nextTemplates
           }
           if (body.oidc && typeof body.oidc === 'object') {
             const current = state.settings.oidc ?? {}

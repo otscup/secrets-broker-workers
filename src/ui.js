@@ -289,6 +289,20 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
       </div>
       <div style="margin-top:12px"><button class="primary" id="settings-save">保存通知设置</button><button id="notify-test" style="margin-left:8px">发送测试通知</button><button id="notify-test-approval" style="margin-left:8px">发送模拟授权通知</button></div><div class="status" id="settings-status"></div>
     </div>
+    <div class="card"><h2>通知模板</h2><div class="hint">四个渠道共用同一套审批模板，改完保存即生效、不用重新部署。占位符：审批用 {agent}、{name}、{time}、{origin}；提醒用 {lines}、{origin}。把某个字段清空并保存，即恢复内置默认文案。微信（wxpush）没有按钮，发送时会自动在正文后附上带签名的批准链接。</div>
+      <h2 style="font-size:13px;margin-top:10px">授权审批通知</h2>
+      <label class="field">标题</label><input id="tpl-ap-title">
+      <label class="field">正文</label><textarea id="tpl-ap-body" rows="5" style="width:100%"></textarea>
+      <div class="grid2">
+        <div><label class="field">按钮 · 仅本次</label><input id="tpl-lb-once"></div>
+        <div><label class="field">按钮 · 24 小时</label><input id="tpl-lb-24h"></div>
+        <div><label class="field">按钮 · 拒绝</label><input id="tpl-lb-deny"></div>
+        <div><label class="field">按钮 · 永久</label><input id="tpl-lb-always"></div>
+      </div>
+      <h2 style="font-size:13px;margin-top:12px">授权到期提醒</h2>
+      <label class="field">标题</label><input id="tpl-rm-title">
+      <label class="field">正文</label><textarea id="tpl-rm-body" rows="5" style="width:100%"></textarea>
+    </div>
     <div class="card"><h2>Bitwarden 文件夹</h2><div class="hint">只同步指定文件夹；留空表示全部。文件夹列表来自 NodeWarden folders。</div><div class="row" style="margin-top:8px"><select id="vault-folder" style="flex:1"><option value="">全部文件夹</option></select><button id="vault-folder-save" class="primary">保存文件夹</button></div><div class="hint" id="vault-folder-status" style="margin-top:8px"></div></div>
     <div class="card"><h2>Bitwarden 账户</h2><div class="hint">选择读取哪个 NodeWarden 用户；切换后会清除当前解锁会话，需要用该用户主密码重新解锁。</div><div class="row" style="margin-top:8px"><select id="vault-email" style="flex:1"></select><button id="vault-switch" class="primary">切换账户</button></div><div class="hint" id="vault-email-status" style="margin-top:8px"></div></div>
     <div class="card"><h2>OIDC 登录</h2><div class="hint">这里填的配置会保存到 Durable Object，不需要重新部署；留空的 secret 表示保留原值。</div>
@@ -552,6 +566,10 @@ async function loadSettings() {
     $('gotify-status').textContent = n.gotify?.configured ? '已配置（token 已保存）' : '未配置'
     $('wxpush-url').value = n.wxpush?.url || ''; $('wxpush-format').value = n.wxpush?.format || 'form'
     $('wxpush-status').textContent = n.wxpush?.configured ? '已配置（token 已保存）' : '未配置'
+    const tpl = n.templates || {}; const tplAp = tpl.approval || {}; const tplLb = tplAp.labels || {}; const tplRm = tpl.reminder || {}
+    $('tpl-ap-title').value = tplAp.title || ''; $('tpl-ap-body').value = tplAp.body || ''
+    $('tpl-lb-once').value = tplLb.once || ''; $('tpl-lb-24h').value = tplLb['24h'] || ''; $('tpl-lb-deny').value = tplLb.deny || ''; $('tpl-lb-always').value = tplLb.always || ''
+    $('tpl-rm-title').value = tplRm.title || ''; $('tpl-rm-body').value = tplRm.body || ''
     const oidc = data.oidc || {}
     $('oidc-issuer').value = oidc.issuer || ''; $('oidc-client-id').value = oidc.clientId || ''; $('oidc-redirect').value = oidc.redirectUri || ''; $('oidc-scope').value = oidc.scope || ''
     $('oidc-authorization').value = oidc.authorizationEndpoint || ''; $('oidc-token').value = oidc.tokenEndpoint || ''; $('oidc-userinfo').value = oidc.userinfoEndpoint || ''; $('oidc-jwks').value = oidc.jwksUri || ''
@@ -570,6 +588,10 @@ async function saveSettings() {
       ntfy: { url: $('ntfy-url').value, topic: $('ntfy-topic').value },
       gotify: { url: $('gotify-url').value, token: $('gotify-token').value },
       wxpush: { url: $('wxpush-url').value, token: $('wxpush-token').value, format: $('wxpush-format').value },
+      templates: {
+        approval: { title: $('tpl-ap-title').value, body: $('tpl-ap-body').value, labels: { once: $('tpl-lb-once').value, '24h': $('tpl-lb-24h').value, deny: $('tpl-lb-deny').value, always: $('tpl-lb-always').value } },
+        reminder: { title: $('tpl-rm-title').value, body: $('tpl-rm-body').value },
+      },
     }, oidc: {
       issuer: $('oidc-issuer').value, clientId: $('oidc-client-id').value, clientSecret: $('oidc-client-secret').value,
       redirectUri: $('oidc-redirect').value, scope: $('oidc-scope').value,
