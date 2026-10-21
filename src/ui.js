@@ -311,7 +311,7 @@ async function refreshCurrent() {
     if (view === 'overview') await Promise.all([loadState(), loadStats()])
     else if (view === 'items') await Promise.all([loadState(), loadItems()])
     else if (view === 'agents' || view === 'grants') await loadState()
-    else if (view === 'logs') await loadLogs(true)
+    else if (view === 'logs') { await loadState(); renderLogs() }
     else if (view === 'profile') await Promise.all([loadProfile(), loadState()])
     else if (view === 'settings') await loadSettings()
     toast('已刷新')
@@ -684,7 +684,7 @@ async function ensureGlobe() {
     const detail = String((error && (error.message || error.reason)) || error || 'unknown')
     try { console.error('[globe] load failed:', error) } catch {}
     const box = $('globe-box')
-    if (box) box.innerHTML = '<div class="globe-empty">地球组件不可用（不影响其他功能）<br><span style="font-size:11px;opacity:.7">' + escapeHtml(detail.slice(0, 160)) + '</span></div>'
+    if (box) box.innerHTML = '<div class="globe-empty">地球组件不可用（不影响其他功能）<br><span style="font-size:11px;opacity:.7">' + esc(detail.slice(0, 160)) + '</span></div>'
     const st = $('globe-status')
     if (st) st.textContent = '地球加载失败：' + detail.slice(0, 120)
     return null

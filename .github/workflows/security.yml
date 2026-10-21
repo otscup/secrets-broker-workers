@@ -89,3 +89,5 @@ jobs:
         run: npm run test:globe-earth
       - name: Globe init and failure reporting (Miniflare)
         run: npm run test:globe-init
+      - name: UI undefined-call scan
+        run: npm run test:ui-undefined
