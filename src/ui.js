@@ -1522,7 +1522,28 @@ function renderFillPolicies() {
 
 function renderGrants() {
   const grants = app.data.grants || []
-  $('grants-box').innerHTML = grants.length ? '<table><tr><th>Agent</th><th>条目</th><th>状态</th><th>模式</th><th>到期</th><th>读取</th><th>操作</th></tr>' + grants.map((grant) => { const status = grant.revokedAt ? '已撤销' : (grant.expiresAt && grant.expiresAt <= Date.now() ? '已过期' : (grant.maxReads && (grant.reads ?? 0) >= grant.maxReads ? '次数用尽' : '生效中')); return '<tr><td>' + esc(grant.agent) + '</td><td><b>' + esc(grant.name) + '</b></td><td>' + status + '</td><td>' + esc(grant.mode) + '</td><td>' + (grant.expiresAt ? new Date(grant.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</td><td>' + (grant.reads ?? 0) + (grant.maxReads ? ' / ' + grant.maxReads : '') + '</td><td><button class="small" data-grant-menu data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="更多">⋮</button></td></tr>' }).join('') + '</table>' : '<div class="hint">暂无授权</div>'
+  // A short label for the remaining time, so the row reads at a glance.
+  const remaining = (grant) => {
+    if (grant.revokedAt) return '已撤销'
+    if (!grant.expiresAt) return '永久'
+    const ms = grant.expiresAt - Date.now()
+    if (ms <= 0) return '已过期'
+    const days = Math.ceil(ms / 86400e3)
+    return days <= 1 ? Math.max(1, Math.ceil(ms / 3600e3)) + ' 小时' : days + ' 天'
+  }
+  const rows = grants.map((grant) => {
+    const state = grant.revokedAt ? '已撤销' : (grant.expiresAt && grant.expiresAt <= Date.now() ? '已过期' : (grant.maxReads && (grant.reads ?? 0) >= grant.maxReads ? '次数用尽' : '生效中'))
+    const bad = state === '已过期' || state === '已撤销' || state === '次数用尽'
+    return '<tr><td>' + esc(grant.agent) + '</td><td><b>' + esc(grant.name) + '</b></td>'
+      + '<td' + (bad ? ' style="color:var(--danger)"' : '') + '>' + esc(state) + '</td>'
+      + '<td>' + esc(grant.mode) + '</td>'
+      + '<td class="nowrap"><button class="pill" data-item-grant data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="点击修改时长和读取次数">' + esc(remaining(grant)) + '</button></td>'
+      + '<td>' + (grant.reads ?? 0) + (grant.maxReads ? ' / ' + grant.maxReads : '') + '</td>'
+      + '<td><button class="small" data-grant-menu data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="更多">⋮</button></td></tr>'
+  }).join('')
+  $('grants-box').innerHTML = grants.length
+    ? '<div class="hint">点「到期」那一列的时长即可延期或改读取次数。</div><table><tr><th>Agent</th><th>条目</th><th>状态</th><th>模式</th><th>到期</th><th>读取</th><th>操作</th></tr>' + rows + '</table>'
+    : '<div class="hint">暂无授权</div>'
 }
 function renderOauthClients() {
   const box = $('oauth-clients-box')
