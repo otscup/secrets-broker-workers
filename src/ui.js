@@ -138,6 +138,13 @@ html[data-theme="dark"] .agent-stat{box-shadow:none;background:#151f31}
 @media(max-width:420px){.agent-detail-grid{grid-template-columns:1fr}}
 .row{display:flex;gap:9px;flex-wrap:wrap;align-items:end}.row>*{flex:1;min-width:140px}.row button{flex:0 0 auto}
 .hidden{display:none!important}.status{min-height:18px;font-size:12px;color:var(--muted);margin-top:8px}.error{color:var(--danger)}.ok{color:var(--ok)}
+/* A collapsible settings card: the heading row is the toggle, so a long
+   settings page starts folded instead of being one wall of fields. */
+.card.collapsible>.card-toggle{cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px;margin:0 0 5px}
+.card.collapsible>.card-toggle .card-caret{color:var(--muted);font-size:11px;transition:transform .15s;display:inline-block}
+.card.collapsible.collapsed>.card-toggle .card-caret{transform:rotate(0)}
+.card.collapsible:not(.collapsed)>.card-toggle .card-caret{transform:rotate(90deg)}
+.card.collapsible.collapsed>.card-body{display:none}
 .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:14px}
 .kpi{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px}.kpi[data-kpi]{cursor:pointer;transition:border-color .15s,transform .15s}.kpi[data-kpi]:hover{border-color:var(--accent);transform:translateY(-1px)}.kpi .label{color:var(--muted);font-size:12px}.kpi .value{font-size:25px;font-weight:650;margin-top:2px}.kpi .sub{font-size:11px;color:var(--muted)}
 .kpi.warn .value{color:var(--warn)}
@@ -254,7 +261,6 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
       <div class="status" id="agent-status"></div>
     </div>
   </section>
-  </section>
 
   <section id="view-grants" class="view hidden">
     <div class="card" id="transfers-card"><h2>待复制到其他账户</h2><div class="hint">主账户分享后先进入队列；切回目标账户并解锁后自动复制到指定文件夹并生成授权。</div><div id="transfers-box" class="table-wrap" style="margin-top:10px"></div></div>
@@ -290,7 +296,8 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
 
   <section id="view-settings" class="view hidden">
     <div class="card"><h2>站点</h2><label class="field">站点名称</label><input id="site-name" placeholder="Secrets Broker"><div class="hint">显示在左上角，点击可回首页。</div></div>
-    <div class="card"><h2>通知渠道</h2><div class="hint">待批准请求会推送到这里。留空的 token 表示保留原值。</div>
+    <div class="card collapsible collapsed" id="card-notify-channels"><h2 class="card-toggle" data-collapse="card-notify-channels">通知渠道 <span class="card-caret">▸</span></h2><div class="hint">待批准请求会推送到这里。留空的 token 表示保留原值。</div>
+      <div class="card-body">
       <div class="grid2" style="margin-top:10px">
         <div><h2 style="font-size:13px">Telegram</h2><label class="field">Bot Token</label><input id="tg-token" type="password" placeholder="留空保留原值"><label class="field">Chat ID</label><input id="tg-chat" placeholder="例如 123456789"><div class="hint" id="tg-status"></div></div>
         <div><h2 style="font-size:13px">ntfy</h2><label class="field">服务器 URL</label><input id="ntfy-url" placeholder="https://ntfy.example.com"><label class="field">Topic</label><input id="ntfy-topic" placeholder="secrets-broker-xxxx"><div class="hint" id="ntfy-status"></div></div>
@@ -298,8 +305,10 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
         <div><h2 style="font-size:13px">Webhook（通用 / 兼容 wxpush）</h2><label class="field">URL</label><input id="wxpush-url" placeholder="https://example.com/webhook"><label class="field">Token</label><input id="wxpush-token" type="password" placeholder="留空保留原值"><label class="field">发送格式</label><select id="wxpush-format"><option value="form">表单（wxpush 兼容）</option><option value="json">JSON + Bearer Token</option></select><div class="hint" id="wxpush-status"></div></div>
       </div>
       <div style="margin-top:12px"><button class="primary" id="settings-save">保存通知设置</button><button id="notify-test" style="margin-left:8px">发送测试通知</button><button id="notify-test-approval" style="margin-left:8px">发送模拟授权通知</button></div><div class="status" id="settings-status"></div>
+      </div>
     </div>
-    <div class="card"><h2>通知模板</h2><div class="hint">四个渠道共用同一套审批模板，改完保存即生效、不用重新部署。占位符：审批用 {agent}、{name}、{time}、{origin}；提醒用 {lines}、{origin}。把某个字段清空并保存，即恢复内置默认文案。微信（wxpush）没有按钮，发送时会自动在正文后附上带签名的批准链接。</div>
+    <div class="card collapsible collapsed" id="card-notify-templates"><h2 class="card-toggle" data-collapse="card-notify-templates">通知模板 <span class="card-caret">▸</span></h2><div class="hint">四个渠道共用同一套审批模板，改完保存即生效、不用重新部署。占位符：审批用 {agent}、{name}、{time}、{origin}；提醒用 {lines}、{origin}。把某个字段清空并保存，即恢复内置默认文案。微信（wxpush）没有按钮，发送时会自动在正文后附上带签名的批准链接。</div>
+      <div class="card-body">
       <h2 style="font-size:13px;margin-top:10px">授权审批通知</h2>
       <label class="field">标题</label><input id="tpl-ap-title">
       <label class="field">正文</label><textarea id="tpl-ap-body" rows="5" style="width:100%"></textarea>
@@ -312,6 +321,7 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
       <h2 style="font-size:13px;margin-top:12px">授权到期提醒</h2>
       <label class="field">标题</label><input id="tpl-rm-title">
       <label class="field">正文</label><textarea id="tpl-rm-body" rows="5" style="width:100%"></textarea>
+      </div>
     </div>
     <div class="card"><h2>Bitwarden 文件夹</h2><div class="hint">只同步指定文件夹；留空表示全部。文件夹列表来自 NodeWarden folders。</div><div class="row" style="margin-top:8px"><select id="vault-folder" style="flex:1"><option value="">全部文件夹</option></select><button id="vault-folder-save" class="primary">保存文件夹</button></div><div class="hint" id="vault-folder-status" style="margin-top:8px"></div></div>
     <div class="card"><h2>Bitwarden 账户</h2><div class="hint">选择读取哪个 NodeWarden 用户；切换后会清除当前解锁会话，需要用该用户主密码重新解锁。</div><div class="row" style="margin-top:8px"><select id="vault-email" style="flex:1"></select><button id="vault-switch" class="primary">切换账户</button></div><div class="hint" id="vault-email-status" style="margin-top:8px"></div></div>
@@ -334,7 +344,6 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
         <div style="margin-top:10px"><button id="op-discover">从 Issuer 自动发现并填充</button><button class="primary" id="op-save" style="margin-left:8px">保存</button><button id="op-cancel" style="margin-left:8px">取消</button></div>
         <div class="hint" id="op-status" style="margin-top:8px"></div>
       </div>
-    </div>
     </div>
     <div class="card"><h2>浏览器通知</h2><div class="hint" id="browser-notify-status"></div><div style="margin-top:10px"><button id="enable-browser-notify">启用浏览器通知</button><button id="test-browser-notify">发送测试通知</button></div></div>
     <div class="card"><h2>MCP 接入</h2><div class="hint">HTTP MCP 地址（用 Agent Bearer token）：</div><div class="secret" id="mcp-url"></div><div class="hint" style="margin-top:8px">工具：list_secrets / request_access / get_secret。Codex、Hermes 可直接配置 HTTP MCP。</div></div>
@@ -445,6 +454,14 @@ document.querySelectorAll('#nav button').forEach((button) => { button.onclick = 
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
 $('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
+// Collapsible settings cards. One delegated handler covers every card, so a
+// new collapsible card needs no extra wiring.
+document.addEventListener('click', (event) => {
+  const toggle = event.target.closest('[data-collapse]')
+  if (!toggle) return
+  const card = $(toggle.dataset.collapse)
+  if (card) card.classList.toggle('collapsed')
+})
 const copyTokenBtn = $('copy-token'); if (copyTokenBtn) copyTokenBtn.onclick = async () => { try { await navigator.clipboard.writeText(app.token); toast('已复制 token') } catch { toast('复制失败', true) } }
 $('modal-close').onclick = () => show('modal', false)
 $('modal-body').addEventListener('click', (event) => { const grantEdit = event.target.closest('[data-item-grant]'); if (grantEdit) { openGrantMenu(grantEdit.dataset.agent, grantEdit.dataset.name); } })
@@ -556,14 +573,31 @@ fillPolicyLoaded()
 $('fp-save').addEventListener('click', saveFillPolicy)
 $('fp-delete').addEventListener('click', deleteFillPolicy)
 $('fp-legacy-box').addEventListener('click', async (event) => {
+  const regrantAll = event.target.closest('[data-fp-regrant-all]')
+  if (regrantAll) {
+    const entries = (app.data && app.data.legacyUnbound) || []
+    if (!entries.length) return
+    if (!confirm('按当前凭据重新授权全部 ' + entries.length + ' 条？旧授权会作废。')) return
+    let ok = 0
+    const failed = []
+    for (const entry of entries) {
+      try {
+        await api('/api/legacy/regrant', { method: 'POST', body: JSON.stringify({ agent: entry.agent, item: entry.name, action: 'secret.read', duration: '7d' }) })
+        ok += 1
+      } catch (error) { failed.push((entry.name || '') + ': ' + (error.message || '失败')) }
+    }
+    await loadState()
+    if (failed.length) toast('已重新授权 ' + ok + ' 条，' + failed.length + ' 条失败：' + failed.slice(0, 2).join('；'), true)
+    else toast('已重新授权 ' + ok + ' 条')
+    return
+  }
   const button = event.target.closest('[data-fp-regrant]')
   if (!button) return
   const row = button.closest('tr')
   const agent = row?.querySelector('.fp-grant-agent')?.value ?? ''
   const item = row?.querySelector('.fp-grant-item')?.value ?? ''
+  const duration = row?.querySelector('.fp-grant-duration')?.value || '7d'
   if (!agent || !item) return toast('缺少 Agent 或条目', true)
-  const duration = prompt('重新授权时长：1d / 7d / 30d / permanent', '7d')
-  if (!duration) return
   try {
     await api('/api/legacy/regrant', { method: 'POST', body: JSON.stringify({ agent, item, action: 'secret.read', duration }) })
     toast('已重新授权')
@@ -826,7 +860,7 @@ function renderStats() {
 }
 function renderItems() {
   const query = ($('item-filter')?.value || '').trim().toLowerCase(); const items = (app.items || []).filter((item) => !query || item.name.toLowerCase().includes(query) || String(item.url || '').toLowerCase().includes(query) || String(item.group || '').toLowerCase().includes(query))
-  $('items-box').innerHTML = items.length ? '<table><tr><th><input type="checkbox" id="select-all-items"></th><th>名称</th><th>最后活动</th><th>最后操作</th><th class="nowrap">免审批</th><th class="nowrap">操作</th></tr>' + items.map((item) => {
+  $('items-box').innerHTML = items.length ? '<table><tr><th><input type="checkbox" id="select-all-items"></th><th>名称</th><th>最后活动</th><th>最后操作</th><th class="nowrap">免审批</th><th class="nowrap">有效期</th><th class="nowrap">操作</th></tr>' + items.map((item) => {
     const when = item.lastActivityAt ? relativeTime(Date.parse(item.lastActivityAt)) : '无记录'
     const who = item.lastActor || '-'
     return '<tr><td><input type="checkbox" class="item-select" data-name="' + esc(item.name) + '" ' + (selectedItems.has(item.name) ? 'checked' : '') + '></td>' +
@@ -834,7 +868,7 @@ function renderItems() {
       '<td class="hint">' + esc(when) + '</td>' +
       '<td class="hint">' + esc(who) + '</td>' +
       '<td class="nowrap"><button class="small ' + (item.noApproval ? 'primary' : '') + '" data-policy="' + esc(item.name) + '">' + (item.noApproval ? '免审批' : '需审批') + '</button></td>' +
- + expiryBadge(item) +
+      expiryBadge(item) +
       '<td class="actions"><button class="small" data-read="' + esc(item.name) + '">读取</button><button class="small" data-item-menu="' + esc(item.name) + '" title="更多">⋮</button></td></tr>'
   }).join('') + '</table>' : '<div class="hint">没有条目</div>'
   const all = $('select-all-items')
@@ -1415,13 +1449,16 @@ function renderLegacyUnbound() {
   const entries = (app.data && app.data.legacyUnbound) || []
   if (!entries.length) { box.innerHTML = ''; return }
   const rows = entries.map((entry) =>
-    '<tr><td>' + esc(entry.agent || '') + '</td><td><b>' + esc(entry.name || '') + '</td><td>'
+    '<tr><td>' + esc(entry.agent || '') + '</td><td><b>' + esc(entry.name || '') + '</b></td><td>'
     + '<span style="color:var(--danger)">未绑定身份</span></td><td>'
     + '<input class="fp-grant-agent" type="hidden" value="' + esc(entry.agent || '') + '">'
     + '<input class="fp-grant-item" type="hidden" value="' + esc(entry.name || '') + '">'
+    + '<select class="fp-grant-duration"><option value="1d">1 天</option><option value="7d" selected>7 天</option><option value="30d">30 天</option><option value="permanent">永久</option></select> '
     + '<button class="small primary" data-fp-regrant>重新授权</button></td></tr>'
   ).join('')
-  box.innerHTML = '<div class="hint">以下旧授权缺少凭据身份绑定，不能自动迁移（同名条目可能已是另一个凭据）。请确认后点「重新授权」，按新的条目与时长重新签发。</div>'
+  box.innerHTML = '<div class="hint">以下旧授权是在凭据身份绑定存在之前建立的，Broker 无法证明这个名字今天仍指向同一个凭据（同名条目可能已被删除并重建），所以不能自动迁移。'
+    + '确认条目确实存在后点「重新授权」：会按当前凭据重新签发，旧的授权作废。这个操作由你确认，不会自动执行。</div>'
+    + '<div class="row" style="margin:8px 0"><button class="small primary" data-fp-regrant-all>全部按当前凭据重新授权（' + entries.length + ' 条）</button></div>'
     + '<table><tr><th>Agent</th><th>条目</th><th>状态</th><th>操作</th></tr>' + rows + '</table>'
 }
 
@@ -1571,9 +1608,10 @@ function itemInfoHtml(item) {
 }
 // The expiry field of the edit dialog. A secret without an expiry shows an
 // empty date, and an empty date on save means no expiry.
-// The expiry badge of an item. It only appears when a secret has one.
+// The expiry badge of an item. Every row needs the cell, so an item without an
+// expiry renders an empty one instead of shifting the row's columns.
 function expiryBadge(item) {
-  if (!item || !item.expiresAt) return ''
+  if (!item || !item.expiresAt) return '<td class="nowrap"></td>'
   const days = Math.ceil((item.expiresAt - Date.now()) / 86400e3)
   const text = days <= 0 ? '已过期' : (days <= 1 ? '今天到期' : days + ' 天后到期')
   return '<td class="nowrap"><span class="hint" style="color:var(--danger)">' + esc(text) + '</span></td>'

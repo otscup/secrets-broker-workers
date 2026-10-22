@@ -112,8 +112,8 @@ function createGlobe(container, options) {
   // A points layer, not a second sphere: a coincident sphere z-fights with
   // the earth and makes it flicker.
   const markerGeometry = new THREE.BufferGeometry()
-  const markerPoints = new THREE.Points(markerGeometry, markerMaterial)
   const markerMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 3.2, sizeAttenuation: false, transparent: true, opacity: 0.95, depthWrite: false })
+  const markerPoints = new THREE.Points(markerGeometry, markerMaterial)
   // The arcs are great circles, so a point on one is found by slerping the two
   // ends. The height follows the same curve the arc uses.
   function pointOnArc(arc, t) {

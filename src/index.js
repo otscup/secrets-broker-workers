@@ -908,10 +908,14 @@ async function addAudit(env, entry) {
 // The OIDC providers. The old single configuration is exposed as the
 // default provider, so an existing installation keeps working.
 function oidcProviders(state) {
-  const list = Object.values(state?.settings?.oidcProviders ?? {})
   const legacy = state?.settings?.oidc ?? {}
   const hasLegacy = Boolean(legacy.issuer && legacy.clientId)
-  return hasLegacy ? [{ id: 'default', label: '默认', legacy: true, ...legacy }, ...list] : list
+  const list = Object.values(state?.settings?.oidcProviders ?? {}).filter(Boolean)
+  // The legacy entry wins the id 'default': a stored provider of that name
+  // would otherwise appear twice, with the same id but a different config.
+  const ids = hasLegacy ? new Set(['default']) : new Set()
+  const unique = list.filter((entry) => (ids.has(entry.id) ? false : (ids.add(entry.id), true)))
+  return hasLegacy ? [{ id: 'default', label: '默认', legacy: true, ...legacy }, ...unique] : unique
 }
 
 // The provider a request refers to. Without a name the enabled one is used.
@@ -923,6 +927,36 @@ function pickOidcProvider(state, wanted) {
     if (found) return found
   }
   return providers.find((entry) => entry.enabled !== false) ?? providers[0]
+}
+
+// The identity bound to ONE provider. A binding is per provider, so a second
+// identity can be added without touching the first. Before the provider list
+// existed the install kept a single global identity (profile.oidcIssuer /
+// profile.oidcSub); that one belongs to the legacy 'default' provider only, and
+// treating it as that provider's binding is what keeps an existing installation
+// signed in instead of asking it to bind again. Any other provider — even one
+// with the same issuer — must bind on its own.
+function oidcBindingFor(state, provider) {
+  if (!provider) return null
+  const bound = state?.profile?.oidcBindings?.[provider.id]
+  if (bound) return bound
+  if (provider.id !== 'default') return null
+  const legacySub = String(state?.profile?.oidcSub ?? '')
+  const legacyIssuer = String(state?.profile?.oidcIssuer ?? '')
+  if (!legacySub || legacyIssuer !== provider.issuer) return null
+  return { providerId: provider.id, issuer: legacyIssuer, sub: legacySub, email: String(state?.profile?.oidcEmail ?? '') }
+}
+
+// Every provider with the identity bound to it, for the profile page. A legacy
+// identity is reported as its own provider's binding, so the page never offers
+// "bind" for an identity that already works.
+function oidcBindingMap(state) {
+  const map = {}
+  for (const provider of oidcProviders(state)) {
+    const binding = oidcBindingFor(state, provider)
+    if (binding) map[provider.id] = binding
+  }
+  return map
 }
 
 async function oidcConfig(env, request, state, provider) {
@@ -1387,6 +1421,10 @@ async function createCipher(env, db, session, fields, folderNameOverride) {
   await updateState(env, (next) => {
     next.itemGroups ??= {}
     if (fields.group && String(fields.group).trim()) next.itemGroups[name] = String(fields.group).trim()
+    // The new cipher's id is known here, so record it before anything can
+    // share the item. A share that cannot find an id writes an unbound grant.
+    next.itemIds ??= {}
+    next.itemIds[name] = id
     next.policies ??= {}
     // NOTE: /agent/items/save passes an explicit field allowlist without
     // noApproval, so Agents cannot self-grant it. Admin create flows here
@@ -1783,7 +1821,7 @@ async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now()) 
   const sentMap = state.reminderSent ?? {}
   const TTL = 20 * 3600e3
   const fresh = reminders.filter((r) => {
-    const key = r.agent + ' ' + r.kind + ' ' + (r.kind === 'expiring' || r.kind === 'secret-expiring' ? r.daysLeft : 'idle')
+    const key = r.agent + '\u0000' + r.kind + '\u0000' + (r.kind === 'expiring' || r.kind === 'secret-expiring' ? r.daysLeft : 'idle')
     const last = sentMap[key]
     return !(typeof last === 'number' && now - last < TTL)
   })
@@ -2491,6 +2529,20 @@ async function resolveItemId(env, db, session, name) {
   return found?.row?.id ?? ''
 }
 
+// The cipher id for a name, resolved from the live vault when the cache has no
+// entry. A share written without an id is a legacy grant with no identity
+// binding, which the read path then refuses as 'unbound-legacy-identity' — the
+// operator has to re-grant an authorisation they just created. Resolving here
+// keeps new shares bound from the start.
+async function ensureItemId(env, db, session, name) {
+  const state = await loadState(env)
+  const cached = state.itemIds?.[name]
+  if (cached) return cached
+  const resolved = await resolveItemId(env, db, session, name)
+  if (resolved) await updateState(env, (next) => { next.itemIds ??= {}; next.itemIds[name] = resolved; return next })
+  return resolved
+}
+
 
 // The agent-facing vocabulary for an access decision. It names the state, not
 // the internals, and never carries a credential or another account's details.
@@ -2891,7 +2943,7 @@ export default {
       if (request.method === 'GET') {
         const state = await loadState(env)
         const oidc = await oidcConfig(env, request, state)
-        return json({ profile: state.profile ?? {}, oidcEnabled: Boolean(oidc), oidcIssuer: oidc?.issuer ?? '', oidcLoginUrl: oidc ? '/oidc/login' : '', oidcProviders: oidcProviders(state).map((entry) => ({ id: entry.id, label: entry.label ?? '', issuer: entry.issuer ?? '', enabled: entry.enabled !== false })), oidcBindings: state.profile?.oidcBindings ?? {} })
+        return json({ profile: state.profile ?? {}, oidcEnabled: Boolean(oidc), oidcIssuer: oidc?.issuer ?? '', oidcLoginUrl: oidc ? '/oidc/login' : '', oidcProviders: oidcProviders(state).map((entry) => ({ id: entry.id, label: entry.label ?? '', issuer: entry.issuer ?? '', enabled: entry.enabled !== false })), oidcBindings: oidcBindingMap(state) })
       }
       if (request.method === 'POST') {
         const body = await request.json().catch(() => ({}))
@@ -2982,7 +3034,7 @@ export default {
             secretConfigured: Boolean(entry.clientSecret),
           })
         }
-        const bindings = state.profile?.oidcBindings ?? {}
+        const bindings = oidcBindingMap(state)
         return json({ providers: listed, bindings })
       }
       if (request.method === 'POST') {
@@ -3035,13 +3087,16 @@ export default {
       if (request.method === 'DELETE') {
         await updateState(env, (next) => {
           if (next.profile?.oidcBindings) delete next.profile.oidcBindings[id]
+          // Unbinding the legacy provider must also clear the single global
+          // identity, otherwise oidcBindingFor keeps reporting it as bound.
+          if (id === 'default' && next.profile) { delete next.profile.oidcSub; delete next.profile.oidcEmail }
           return next
         })
         await addAudit(env, { event: 'profile.oidc-unbind', provider: id })
         return json({ ok: true, id })
       }
       const state = await loadState(env)
-      return json({ bindings: state.profile?.oidcBindings ?? {} })
+      return json({ bindings: oidcBindingMap(state) })
     }
 
     if (url.pathname === '/api/oidc/status') {
@@ -3090,11 +3145,13 @@ export default {
         return new Response('<meta charset="utf-8"><h2>OIDC 状态校验失败</h2><p>这个链接是回调地址，不能直接打开；请从「个人资料 → 使用 OIDC 登录 / 绑定」重新发起。</p><p><a href="/?view=profile">回到个人资料</a></p>', { status: 400, headers: { 'content-type': 'text/html; charset=utf-8', 'set-cookie': clearOidcCookie } })
       }
       // The provider comes from the signed state cookie, so the callback
-      // uses the configuration the sign-in actually started with.
-      const oidc = await oidcConfig(env, request, cbState, pickOidcProvider(cbState, consumed.provider))
+      // uses the configuration the sign-in actually started with. The state is
+      // read before the provider is picked because the provider list lives in
+      // it; reading it later left `cbState` undefined and broke every callback.
+      const state = await loadState(env)
+      const oidc = await oidcConfig(env, request, state, pickOidcProvider(state, consumed.provider))
       if (!oidc) return failOidc('OIDC is not configured', 503)
       const stateData = { state: consumed.state, verifier: consumed.verifier, nonce: consumed.nonce, next: consumed.next }
-      const state = await loadState(env)
       const code = url.searchParams.get('code') ?? ''
       if (!code) return failOidc('missing authorization code', 400)
       try {
@@ -3120,10 +3177,12 @@ export default {
         if (user.iss != null && String(user.iss).replace(/\/$/, '') !== oidc.issuer) return failOidc('OIDC userinfo issuer mismatch', 403)
         const isAdmin = await adminAuthorized(request, env)
         if (stateData.next === 'profile' && !isAdmin) return failOidc('请先在 Secrets Broker 登录后再绑定 OIDC', 401)
-        const boundIssuer = String(state.profile?.oidcIssuer ?? '')
-        if (boundIssuer && boundIssuer !== oidc.issuer) return failOidc('OIDC issuer 与已绑定身份不一致', 403)
-        const boundSub = String(state.profile?.oidcSub ?? '')
-        if (boundSub && claims.sub !== boundSub) return failOidc('OIDC 身份与已绑定账户不一致', 403)
+        // The check is per provider. The old global issuer/sub check ran on
+        // every sign-in, so any second identity was rejected as "not the bound
+        // one" and every existing binding looked broken.
+        const binding = oidcBindingFor(state, oidc)
+        if (binding?.sub && claims.sub !== binding.sub) return failOidc('这个服务商已绑定另一个身份，请先在个人资料里解绑再绑定', 403)
+        const boundSub = String(binding?.sub ?? '')
         if (!boundSub && !isAdmin) {
           const allowedSub = String(env.OIDC_ALLOWED_SUB ?? '')
           const allowedEmail = String(env.OIDC_ALLOWED_EMAIL ?? '')
@@ -3133,20 +3192,27 @@ export default {
         }
         await updateState(env, (next) => {
           next.profile ??= {}
-          next.profile.oidcIssuer = oidc.issuer
           // Each provider is bound on its own, so a second identity provider
           // can be added without replacing the first one.
           next.profile.oidcBindings ??= {}
           next.profile.oidcBindings[oidc.id] = {
             providerId: oidc.id, issuer: oidc.issuer, sub: claims.sub,
-            email: String(user.email ?? ''), name: givenName,
+            email: String(user.email ?? ''), name: String(user.name ?? user.preferred_username ?? ''),
             avatarUrl: String(user.picture ?? ''), boundAt: new Date().toISOString(),
           }
-          next.profile.oidcSub = claims.sub
-          next.profile.oidcEmail = String(user.email ?? next.profile.email ?? '')
-          next.profile.name = String(user.name ?? user.preferred_username ?? next.profile.name ?? '')
-          next.profile.email = String(user.email ?? next.profile.email ?? '')
-          next.profile.avatarUrl = String(user.picture ?? next.profile.avatarUrl ?? '')
+          // The single global identity (oidcIssuer/oidcSub) predates the
+          // provider list and belongs to the legacy 'default' provider. Writing
+          // it from any provider would silently steal the default binding.
+          if (oidc.id === 'default') {
+            next.profile.oidcIssuer = oidc.issuer
+            next.profile.oidcSub = claims.sub
+            next.profile.oidcEmail = String(user.email ?? next.profile.email ?? '')
+          }
+          // Sign-in only fills what is still empty, so a name or avatar the
+          // operator set by hand is not replaced by the identity provider.
+          next.profile.name ||= String(user.name ?? user.preferred_username ?? '')
+          next.profile.email ||= String(user.email ?? '')
+          next.profile.avatarUrl ||= String(user.picture ?? '')
           return next
         })
         const cookie = await createAdminCookie(env, request)
@@ -4292,9 +4358,9 @@ export default {
           // write both the legacy mirror and a preapproved read capability.
           const shareExpiresAt = seconds > 0 ? Date.now() + seconds * 1000 : null
           const shareMaxUses = maxReads
-          const shareItemId = state.itemIds?.[item] ?? ''
+          const shareItemId = await ensureItemId(env, env.NODEWARDEN_DB, session, item)
           await updateState(env, (next) => {
-            next.grants[grantKey(agentName, item)] = { agent: agentName, name: item, mode: 'share', createdAt: nowIso(), expiresAt: shareExpiresAt ?? 0, reads: 0, maxReads: shareMaxUses, revokedAt: null, noApproval: true, account: session.email }
+            next.grants[grantKey(agentName, item)] = { agent: agentName, name: item, mode: 'share', createdAt: nowIso(), expiresAt: shareExpiresAt ?? 0, reads: 0, maxReads: shareMaxUses, revokedAt: null, noApproval: true, account: session.email, itemId: shareItemId }
             if (shareItemId) {
               next.capabilities ??= {}
               const ckey = capabilityKey(agentName, shareItemId, 'secret.read')
@@ -4344,9 +4410,9 @@ export default {
           continue
         }
         const oneExpiresAt = seconds > 0 ? Date.now() + seconds * 1000 : null
-        const oneItemId = state.itemIds?.[name] ?? ''
+        const oneItemId = await ensureItemId(env, env.NODEWARDEN_DB, session, name)
         await updateState(env, (next) => {
-          next.grants[grantKey(agentName, name)] = { agent: agentName, name, mode: 'share', createdAt: nowIso(), expiresAt: oneExpiresAt ?? 0, reads: 0, maxReads, revokedAt: null, noApproval: true, account: session.email }
+          next.grants[grantKey(agentName, name)] = { agent: agentName, name, mode: 'share', createdAt: nowIso(), expiresAt: oneExpiresAt ?? 0, reads: 0, maxReads, revokedAt: null, noApproval: true, account: session.email, itemId: oneItemId }
           if (oneItemId) {
             next.capabilities ??= {}
             const ckey = capabilityKey(agentName, oneItemId, 'secret.read')

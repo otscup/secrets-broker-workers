@@ -109,8 +109,12 @@ jobs:
         run: npm run test:fill-task
       - name: Secret expiry (P3.1)
         run: npm run test:secret-expiry
+      - name: OIDC providers and identity binding
+        run: npm run test:oidc-providers
       - name: CSS integrity
         run: npm run test:css
+      - name: HTML structure guard
+        run: npm run test:html-structure
       - name: Fixed overview layout (browser)
         run: npm run test:layout2
       - name: Mobile and globe sizing
