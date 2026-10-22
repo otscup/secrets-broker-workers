@@ -187,6 +187,17 @@ export class BrokerState extends DurableObject {
       }
       const stored = await this.ctx.storage.transaction(async (txn) => {
         const ledger = (await txn.get('fillAuthorizations')) ?? {}
+        // The policy revision is checked in the same transaction that stores
+        // the authorization, so a nonce is never minted under a policy that
+        // has already been changed.
+        const store = (await txn.get('state')) ?? {}
+        const current = store.fillPolicies?.[record.itemId] ?? null
+        if (!current) return { ok: false, reason: 'policy-missing' }
+        if (record.policyRevision && record.policyRevision !== current.policyRevision) {
+          return { ok: false, reason: 'policy-revised' }
+        }
+        if (!String(current.origins ?? []).includes(record.origin)) return { ok: false, reason: 'origin-not-allowed' }
+        if (!String(current.actions ?? []).includes(record.action)) return { ok: false, reason: 'action-not-allowed' }
         if (ledger[record.nonce]) return { ok: false, reason: 'nonce-exists' }
         ledger[record.nonce] = record
         // Keep the ledger bounded; expired entries are pruned on write.
@@ -201,7 +212,7 @@ export class BrokerState extends DurableObject {
     }
     if (url.pathname === '/fill/consume' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
-      const { nonce, agent, itemId, accountId, origin, policy } = body ?? {}
+      const { nonce, agent, itemId, accountId, origin } = body ?? {}
       if (!nonce) return json({ ok: false, reason: 'nonce-missing' })
       const result = await this.ctx.storage.transaction(async (txn) => {
         const ledger = (await txn.get('fillAuthorizations')) ?? {}
@@ -215,12 +226,22 @@ export class BrokerState extends DurableObject {
           return { ok: false, reason: 'account-mismatch' }
         }
         if (record.origin && origin && record.origin !== origin) return { ok: false, reason: 'origin-mismatch' }
-        // The policy is re-checked here, inside the same transaction that
-        // consumes the nonce, so narrowing the policy cannot race a redemption.
-        if (policy) {
-          if (record.origin && !policy.allowedOrigins?.includes(record.origin)) return { ok: false, reason: 'origin-not-allowed' }
-          if (record.action && !policy.allowedActions?.includes(record.action)) return { ok: false, reason: 'action-not-allowed' }
+        // The authoritative policy is read here, inside the same transaction
+        // that consumes the nonce. The Worker cannot supply a snapshot, so a
+        // policy that was narrowed or deleted after the authorization was
+        // issued is refused. A policy that was deleted and recreated carries a
+        // new revision, so the old authorization does not match it either.
+        const store = (await txn.get('state')) ?? {}
+        const current = store.fillPolicies?.[record.itemId] ?? null
+        if (!current) return { ok: false, reason: 'policy-missing' }
+        if (!record.policyRevision || record.policyRevision !== current.policyRevision) {
+          return { ok: false, reason: 'policy-revised' }
         }
+        if (current.accountId && accountId && String(current.accountId).toLowerCase() !== String(accountId).toLowerCase()) {
+          return { ok: false, reason: 'policy-account-mismatch' }
+        }
+        if (!String(current.origins ?? []).includes(record.origin)) return { ok: false, reason: 'origin-not-allowed' }
+        if (!String(current.actions ?? []).includes(record.action)) return { ok: false, reason: 'action-not-allowed' }
         record.consumedAt = Date.now()
         ledger[nonce] = record
         await txn.put('fillAuthorizations', ledger)
@@ -1165,6 +1186,25 @@ function publicState(state) {
     profile: state.profile ?? {},
     grants: Object.values(state.grants ?? {}),
     pending: Object.values(state.pending ?? {}),
+    // Legacy grants that have no recorded identity binding cannot be migrated
+    // safely, so the admin has to re-grant them against a concrete item.
+    // Metadata only: agent, item name and the reason.
+    legacyUnbound: Object.entries(state.grants ?? {})
+      .filter(([, grant]) => grant && !grant.revokedAt && !grant.migratedToCapability)
+      .filter(([grantKeyName, grant]) => {
+        const subject = String(grantKeyName).split('\u0000')[0]
+        const name = String(grantKeyName).split('\u0000')[1]
+        if (state.legacyItemBindings?.[subject + '\u0000' + name]) return false
+        if (typeof grant.itemId === 'string' && grant.itemId) return false
+        return true
+      })
+      .map(([grantKeyName, grant]) => ({
+        agent: grant.agent ?? String(grantKeyName).split('\u0000')[0],
+        name: grant.name ?? String(grantKeyName).split('\u0000')[1],
+        mode: grant.mode ?? '',
+        expiresAt: grant.expiresAt ?? 0,
+        reason: 'identity-unbound',
+      })),
     // Web fill policies for the admin UI: which credential is a website
     // login, which origins it may be filled into, and whether plaintext reads
     // are allowed. Metadata only, never a credential value.
@@ -1640,10 +1680,10 @@ function fillAuthTtlMs(env) {
 // Stored under its own top-level key so the main state shape is untouched.
 // The DO transaction is the only place an authorization can be redeemed, so a
 // replayed nonce or a concurrent second request cannot both succeed.
-async function issueFillAuthorization(env, { nonce, agent, itemId, itemName, accountId, origin, action, ttlMs }) {
+async function issueFillAuthorization(env, { nonce, agent, itemId, itemName, accountId, origin, action, ttlMs, policyRevision }) {
   const now = Date.now()
   const expiresAt = now + ttlMs
-  const record = { nonce, agent, itemId, itemName: itemName ?? '', accountId, origin, action, issuedAt: now, expiresAt, consumedAt: 0 }
+  const record = { nonce, agent, itemId, itemName: itemName ?? '', accountId, origin, action, policyRevision: policyRevision ?? '', issuedAt: now, expiresAt, consumedAt: 0 }
   const response = await stateStub(env).fetch('https://state/fill/issue', {
     method: 'POST',
     body: JSON.stringify({ record }),
@@ -1653,10 +1693,10 @@ async function issueFillAuthorization(env, { nonce, agent, itemId, itemName, acc
 
 // Redeem exactly once. Returns the binding so the execution layer can check
 // that the origin it is about to fill matches the authorized one.
-async function consumeFillAuthorization(env, { nonce, agent, itemId, accountId, origin, policy }) {
+async function consumeFillAuthorization(env, { nonce, agent, itemId, accountId, origin }) {
   const response = await stateStub(env).fetch('https://state/fill/consume', {
     method: 'POST',
-    body: JSON.stringify({ nonce, agent, itemId, accountId, origin, policy: policy ?? null }),
+    body: JSON.stringify({ nonce, agent, itemId, accountId, origin }),
   })
   return response.json()
 }
@@ -1982,6 +2022,39 @@ async function resolveItemId(env, db, session, name) {
 }
 
 
+// The agent-facing vocabulary for an access decision. It names the state, not
+// the internals, and never carries a credential or another account's details.
+function accessStatusLabel(access) {
+  if (access.status === 'allowed') return { status: 'allowed', message: 'access already allowed; use get_secret' }
+  if (access.status === 'pending') return { status: 'pending', message: 'pending approval: ' + access.approvalUrl }
+  const reason = String(access.reason ?? '')
+  if (reason === 'unbound-legacy-identity') {
+    return { status: 'identity-unbound', message: 'the existing authorisation is not bound to a credential id; an administrator must re-grant it' }
+  }
+  if (reason === 'revoked' || reason === 'legacy-revoked') {
+    return { status: 'revoked', message: 'the authorisation was revoked' }
+  }
+  if (reason === 'read-forbidden-by-kind') {
+    return { status: 'read-forbidden-by-kind', message: 'this credential is classified as a website login and can only be filled in, not read' }
+  }
+  if (reason === 'expired' || reason === 'legacy-expired') {
+    return { status: 'expired', message: 'the authorisation has expired' }
+  }
+  if (reason === 'exhausted' || reason === 'legacy-exhausted') {
+    return { status: 'exhausted', message: 'the authorisation has no uses left' }
+  }
+  if (reason === 'account-mismatch' || reason === 'legacy-cross-account') {
+    return { status: 'account-mismatch', message: 'the authorisation belongs to a different account' }
+  }
+  if (reason === 'item-id-unresolved') {
+    return { status: 'identity-unbound', message: 'the credential id could not be resolved; an administrator must re-grant it' }
+  }
+  if (reason === 'no-plaintext-read-policy') {
+    return { status: 'read-forbidden-by-kind', message: 'plaintext reads are not enabled for this credential' }
+  }
+  return { status: 'forbidden', message: access.error ?? 'access denied' }
+}
+
 async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx, consumeRead = true, action = 'secret.read', target = null }) {
   if (agent.account && session.email && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) return { status: 'forbidden', error: 'agent is bound to another vault account' }
   // Legacy scope is only a fallback for secret.read; it must not pre-block an
@@ -2003,10 +2076,10 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     // A capability that exists but is expired/revoked/exhausted/cross-account
     // is decisive. Never fall through to approval, legacy grants or legacy
     // scope — that would resurrect access the operator already withdrew.
-    if (decision.capabilityDecisive) return { status: 'forbidden', error: `capability ${decision.reason}: access denied` }
+    if (decision.capabilityDecisive) return { status: 'forbidden', error: `capability ${decision.reason}: access denied`, reason: decision.reason }
     // Not capability-eligible at all -> hard deny. Eligible-but-unapproved
     // falls through to the approval gate below (pending), never a bypass.
-    if (!decision.grantEligible && !decision.legacy) return { status: 'forbidden', error: 'agent not allowed to read this item' }
+    if (!decision.grantEligible && !decision.legacy) return { status: 'forbidden', error: 'agent not allowed to read this item', reason: 'not-granted' }
   }
   const policy = state.policies?.[name]
   // Approval gate.
@@ -2035,18 +2108,25 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   // Failed upstream calls still count (no infinite failure-retry bypass).
   // Whenever a capability exists it is the sole counter — including for
   // legacy agents. The legacy path never skips consumption.
-  if (consumeRead && decision.capability) {
-    // Resolve a lazily-migrated (not yet persisted) capability through the DO
-    // first, so the record and its counter exist before the consume step.
+  if (decision.capability) {
+    // The DO is the authority. A pending migration is materialised first so
+    // the identity binding is proven: a legacy grant without one is refused
+    // with 'unbound-legacy-identity' here, exactly as on the read path. This
+    // runs for a status query too, so request_access cannot report access that
+    // the real use would refuse.
     if (decision.capability.__pendingMigration) {
       const ensured = await ensureCapability(env, { subjectId: agentName, itemId, action, accountId: session.email, legacyName: name })
-      if (!ensured?.ok) return { status: 'forbidden', error: `capability migration rejected: ${ensured?.reason ?? 'unknown'}` }
+      if (!ensured?.ok) return { status: 'forbidden', error: 'capability migration rejected: ' + (ensured?.reason ?? 'unknown'), reason: ensured?.reason ?? 'migration-rejected' }
     }
-    const consumed = await consumeCapability(env, decision.capabilityKey, session.email, action)
-    if (!consumed?.ok) return { status: 'forbidden', error: `capability no longer valid: ${consumed?.reason ?? 'unknown'}` }
+    // The counter is only spent on a real use. A status check leaves the
+    // capability exactly as it was.
+    if (consumeRead) {
+      const consumed = await consumeCapability(env, decision.capabilityKey, session.email, action)
+      if (!consumed?.ok) return { status: 'forbidden', error: 'capability no longer valid: ' + (consumed?.reason ?? 'unknown'), reason: consumed?.reason ?? 'capability-invalid' }
+    }
   } else if (legacyGrant && consumeRead) {
     const consumed = await consumeGrant(env, agentName, name)
-    if (!consumed?.ok) return { status: 'forbidden', error: 'grant is no longer valid' }
+    if (!consumed?.ok) return { status: 'forbidden', error: 'grant is no longer valid', reason: 'grant-invalid' }
   }
   if (action === 'secret.use') {
     // The caller (http_request) performs the fetch; this returns metadata only.
@@ -2070,10 +2150,10 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   const readGuard = plaintextReadAllowed(state, resolvedItemId)
   if (!readGuard.ok) {
     await addAudit(env, { event: 'secret.read-deny', agent: agentName, name, reason: readGuard.reason })
-    return { status: 'forbidden', error: 'plaintext read is not allowed for this credential: ' + readGuard.reason }
+    return { status: 'forbidden', error: 'plaintext read is not allowed for this credential: ' + readGuard.reason, reason: readGuard.reason }
   }
   await addAudit(env, { event: 'secret.read', agent: agentName, name, mode: policy?.noApproval ? 'no-approval' : 'grant', via: 'agent', legacy: decision.legacy === true })
-  return { status: 'ok', itemId: resolvedItemId, value: result.value, url: result.url }
+  return { status: 'allowed', itemId: resolvedItemId, value: result.value, url: result.url }
 }
 
 function statsFor(state, range) {
@@ -2702,11 +2782,10 @@ export default {
       // The policy that is in force RIGHT NOW, handed to the DO so the check
       // and the nonce consumption share one transaction. A policy narrowed
       // after the authorization was issued invalidates it.
-      const currentPolicy = fillPolicyFor(state, itemId, origin)
-      const policySnapshot = currentPolicy.ok
-        ? { allowedOrigins: currentPolicy.policy.origins ?? [], allowedActions: currentPolicy.policy.actions ?? [] }
-        : { allowedOrigins: [], allowedActions: [] }
-      const consumed = await consumeFillAuthorization(env, { nonce, agent, itemId, accountId: session.email, origin, policy: policySnapshot })
+      // The DO reads the authoritative policy in the same transaction that
+      // consumes the nonce, so no snapshot is passed in and a stale one can
+      // never be used to redeem.
+      const consumed = await consumeFillAuthorization(env, { nonce, agent, itemId, accountId: session.email, origin })
       if (!consumed?.ok) {
         await addAudit(env, { event: 'fill.redeem-deny', agent, itemId, origin, reason: consumed?.reason ?? 'unknown' })
         return fail('authorization is not valid: ' + (consumed?.reason ?? 'unknown'), 403)
@@ -2724,6 +2803,65 @@ export default {
       // Agent and never written to the audit log.
       return json({ username: found.username, password: found.value, totp: found.totp, origin: record.origin, action: record.action })
     }
+    // Admin: re-grant a legacy authorisation to a concrete credential.
+    //
+    // A legacy grant that has no recorded identity binding cannot be migrated:
+    // its name may now denote a different cipher. This endpoint is therefore a
+    // NEW authorisation by the admin, not a restoration of the old one. It
+    // never widens the old grant: the admin states the item, the action and
+    // the duration, and the new capability is bounded by exactly those terms.
+    if (url.pathname === '/api/legacy/regrant' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const agentName = String(body.agent ?? '').trim()
+      const itemName = String(body.item ?? '').trim()
+      const action = String(body.action ?? 'secret.read')
+      if (!agentName || !itemName) return fail('agent and item are required', 400)
+      if (!SECRET_ACTIONS.has(action)) return fail('unknown action', 400)
+      // The target is resolved from the live vault, never from the old grant.
+      // A same-named item that was deleted and recreated therefore resolves to
+      // the NEW cipher id, and the admin is granting against that id.
+      const itemId = await resolveItemId(env, env.NODEWARDEN_DB, session, itemName)
+      if (!itemId) return fail('item not found', 404)
+      const accountId = String(session.email ?? '').trim()
+      if (!isWellFormedAccountId(accountId)) return fail('account scope unavailable', 403)
+      const state = await loadState(env)
+      const key = capabilityKey(agentName, itemId, action)
+      const existing = state.capabilities?.[key] ?? null
+      if (existing) {
+        const status = capabilityStatus(existing)
+        if (status === 'valid' || status === 'expiring') return fail('a live capability already exists for this item and action', 409)
+      }
+      // The duration is stated by the admin and capped. The old grant's terms
+      // are NOT inherited: a re-grant can never be longer than what the admin
+      // asks for here.
+      const duration = CAPABILITY_DURATIONS[body.duration ?? '1d']
+      if (duration === undefined) return fail('unknown duration', 400)
+      const now = Date.now()
+      await updateState(env, (next) => {
+        next.capabilities ??= {}
+        next.capabilities[key] = {
+          id: key, subjectId: agentName, accountId, itemId, itemName, action,
+          mode: 'preapproved', createdAt: new Date(now).toISOString(), createdBy: 'admin:legacy-regrant',
+          expiresAt: duration === null ? null : now + duration,
+          maxUses: null, usedCount: 0,
+          revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1,
+        }
+        // The name is now bound to this cipher id, so a later rename or a
+        // delete-and-recreate cannot re-point it.
+        next.legacyItemBindings ??= {}
+        next.legacyItemBindings[agentName + '\u0000' + itemName] = { itemId, boundAt: new Date(now).toISOString(), boundBy: 'admin:legacy-regrant' }
+        // The old grant no longer needs to be migrated: it is superseded.
+        const oldGrant = next.grants?.[grantKey(agentName, itemName)]
+        if (oldGrant && !oldGrant.revokedAt) oldGrant.revokedAt = new Date(now).toISOString()
+        return next
+      })
+      await addAudit(env, { event: 'legacy.regrant', agent: agentName, name: itemName, itemId, action, duration: body.duration ?? '1d', account: accountId })
+      return json({ ok: true, agent: agentName, item: itemName, itemId, action, duration: body.duration ?? '1d' })
+    }
+
     if (url.pathname === '/api/fill/policy' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
@@ -2750,6 +2888,9 @@ export default {
           state.fillPolicies ??= {}
           state.fillPolicies[itemId] = {
             itemId, accountId: session.email, origins, actions,
+            // A fresh revision on every change. It is unique, so a policy that
+            // is deleted and recreated never matches an old authorization.
+            policyRevision: crypto.randomUUID(),
             autoApprove: body.autoApprove === true, updatedAt: nowIso(),
           }
         } else {
@@ -3841,11 +3982,14 @@ export default {
           if (name === 'request_access') {
             const secretName = String(args.name ?? '')
             if (!secretName) return result(text('name is required', true))
+            // The same authority checks as the real use, minus the counter:
+            // the DO still validates the identity binding, so a legacy grant
+            // without one is reported here instead of at read time.
             const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx, consumeRead: false })
-            if (access.status === 'pending') return result(text(`pending approval: ${access.approvalUrl}`))
-            if (access.status === 'forbidden') return result(text(access.error, true))
-            if (access.status === 'notfound') return result(text(access.error, true))
-            return result(text('access already allowed; use get_secret'))
+            const label = accessStatusLabel(access)
+            if (label.status === 'allowed') return result(text(label.message))
+            if (label.status === 'pending') return result(text(label.message))
+            return result(text(label.message, true))
           }
           if (name === 'get_secret') {
             if (env.MCP_ALLOW_READ !== '1') return result(text('get_secret is disabled; set MCP_ALLOW_READ=1 to expose values', true))
@@ -3949,6 +4093,7 @@ export default {
             const issued = await issueFillAuthorization(env, {
               nonce, agent: resolved.name, itemId: access.itemId ?? '', itemName: secretName, accountId: session.email,
               origin: requestedOrigin.origin, action: String(args.action ?? 'login'), ttlMs: fillAuthTtlMs(env),
+              policyRevision: String(policy.policy?.policyRevision ?? ''),
             })
             if (!issued?.ok) return result(text('fill authorization could not be issued', true))
             await addAudit(env, { event: 'fill.authorize', agent: resolved.name, name: secretName, origin: requestedOrigin.origin, approval: access.approval ?? 'policy' })

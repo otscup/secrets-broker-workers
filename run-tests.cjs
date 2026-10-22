@@ -6,10 +6,17 @@ const path = require('node:path')
 const SRC = 'E:/DeepSeek workers/secrets-broker-workers'
 // A unique directory per run avoids clashing with an earlier run that still
 // holds files open, which Windows refuses to delete.
-const RUN = path.join(os.tmpdir ? os.tmpdir() : require('node:os').tmpdir(), 'sb-test-run-' + process.pid + '-' + Date.now())
+// One shared mirror per machine: the node_modules copy is expensive and does
+// not change between runs, so it is created once and reused.
+const RUN = path.join(os.tmpdir ? os.tmpdir() : require('node:os').tmpdir(), 'sb-test-run-shared')
 
 function mirror() {
-  fs.rmSync(RUN, { recursive: true, force: true })
+  // The node_modules copy is the expensive part, so it happens once. The
+  // sources are refreshed on every run.
+  const fresh = !fs.existsSync(path.join(RUN, 'node_modules'))
+  if (fresh) {
+    fs.rmSync(RUN, { recursive: true, force: true })
+  }
   fs.mkdirSync(RUN, { recursive: true })
   const copy = (rel) => {
     const from = path.join(SRC, rel)
@@ -28,7 +35,7 @@ function mirror() {
       fs.copyFileSync(path.join(SRC, name), path.join(RUN, name))
     }
   }
-  fs.cpSync(path.join(SRC, 'node_modules'), path.join(RUN, 'node_modules'), { recursive: true, force: true })
+  if (fresh) fs.cpSync(path.join(SRC, 'node_modules'), path.join(RUN, 'node_modules'), { recursive: true, force: true })
 }
 
 const args = process.argv.slice(2)

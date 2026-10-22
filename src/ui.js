@@ -260,13 +260,14 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div class="card" id="transfers-card"><h2>待复制到其他账户</h2><div class="hint">主账户分享后先进入队列；切回目标账户并解锁后自动复制到指定文件夹并生成授权。</div><div id="transfers-box" class="table-wrap" style="margin-top:10px"></div></div>
     <div class="card"><h2>待批准请求</h2><div class="hint">点按钮即授权；同 Docker 版的 once/1h/24h/7d/永久。</div><div id="pending-box" class="table-wrap" style="margin-top:10px"></div></div>
     <div class="card"><h2>网页填充规则</h2>
-      <div class="hint">把凭据标记为 <b>api</b>（API Key，可按需允许明文读取）或 <b>web</b>（网站登录，只能填充到指定网站，Agent 永远拿不到明文）。</div>
+      <div class="hint">把凭据标记为 <b>api</b>（API Key，可按需允许明文读取）或 <b>web</b>（网站登录，只能填充到指定网站，Agent 永远拿不到明文）。<b>未分类的凭据保持旧版授权行为</b>，Agent 仍可能直接读取其明文——建议逐个分类。</div>
       <div class="row" style="margin:10px 0;flex-wrap:wrap"><label class="field" style="flex:1;min-width:200px">凭据名称<input id="fp-item" placeholder="例如 github.com"></label><label class="field" style="flex:1;min-width:160px">类型<select id="fp-kind"><option value="api">api（API Key）</option><option value="web">web（网站登录）</option></select></label></div>
       <div id="fp-web-fields" class="hidden"><label class="field">允许的 origin（每行一个，必须是 https://host 或 https://host:port）</label><textarea id="fp-origins" rows="3" placeholder="https://example.com"></textarea><label class="field">允许的动作</label><select id="fp-actions" multiple size="2"><option value="login">login（登录）</option></select><div class="hint">只做精确匹配：example.com.evil.test、任意子域或其他端口都不会被放行。</div></div>
-      <label class="chk" id="fp-read-row" style="margin-top:8px"><input type="checkbox" id="fp-read"> 允许 Agent 直接读取明文（仅 api 凭据；默认拒绝，30 天后自动失效）</label>
+      <label class="chk" id="fp-read-row" style="margin-top:8px"><input type="checkbox" id="fp-read"> 允许 Agent 直接读取明文（仅 api 凭据；未勾选时拒绝，30 天后自动失效）</label>
       <div class="row" style="margin-top:10px"><button class="primary" id="fp-save">保存规则</button><button class="danger" id="fp-delete">删除规则</button></div><div class="status" id="fp-status"></div>
       <div id="fp-exec-note" class="hint" style="margin-top:10px"></div>
       <div id="fp-list" class="table-wrap" style="margin-top:10px"></div>
+      <div id="fp-legacy-box" class="table-wrap" style="margin-top:10px"></div>
     </div>
     <div class="card"><h2>有效授权</h2><div id="grants-box" class="table-wrap"></div></div>
     <div class="card"><h2>OAuth 客户端</h2><div class="hint">每个连接（Muse、Codex、ChatGPT 等）在首次授权时会注册一个客户端。重复或失效的注册可以逐个撤销，撤销会同时清除它的 token。</div><div id="oauth-clients-box" class="table-wrap" style="margin-top:10px"></div></div>
@@ -533,6 +534,21 @@ $('fp-item').addEventListener('input', fillPolicyLoaded)
 fillPolicyLoaded()
 $('fp-save').addEventListener('click', saveFillPolicy)
 $('fp-delete').addEventListener('click', deleteFillPolicy)
+$('fp-legacy-box').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-fp-regrant]')
+  if (!button) return
+  const row = button.closest('tr')
+  const agent = row?.querySelector('.fp-grant-agent')?.value ?? ''
+  const item = row?.querySelector('.fp-grant-item')?.value ?? ''
+  if (!agent || !item) return toast('缺少 Agent 或条目', true)
+  const duration = prompt('重新授权时长：1d / 7d / 30d / permanent', '7d')
+  if (!duration) return
+  try {
+    await api('/api/legacy/regrant', { method: 'POST', body: JSON.stringify({ agent, item, action: 'secret.read', duration }) })
+    toast('已重新授权')
+    await loadState()
+  } catch (error) { toast(error.message || '重新授权失败', true) }
+})
 $('oauth-clients-box').addEventListener('click', async (event) => {
   const button = event.target.closest('[data-oauth-revoke]')
   if (!button) return
@@ -566,7 +582,7 @@ async function checkPendingNotifications() {
 }
 function startPendingPolling() { updateBrowserNotifyStatus(); if (pendingTimer) return; checkPendingNotifications(); pendingTimer = setInterval(checkPendingNotifications, 15000) }
 let globeBooted = false
-async function loadState() { try { app.data = await api('/api/state'); renderNoticeBar(); if (!globeBooted) { globeBooted = true; try { initGlobe() } catch {} } renderAgents(); renderPending(); renderGrants(); renderFillPolicies(); renderOauthClients(); renderTransfers(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
+async function loadState() { try { app.data = await api('/api/state'); renderNoticeBar(); if (!globeBooted) { globeBooted = true; try { initGlobe() } catch {} } renderAgents(); renderPending(); renderGrants(); renderFillPolicies(); renderLegacyUnbound(); renderOauthClients(); renderTransfers(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
 async function loadItems() { status('item-status', '加载中…'); try { const result = await api('/api/items'); app.items = result.items || []; renderItems(); status('item-status', '共 ' + app.items.length + ' 个条目'); if (result.completedTransfers?.length) { toast('已自动复制：' + result.completedTransfers.join('、')); await loadState() } } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } else status('item-status', error.message, 'error') } }
 async function loadStats() { try { app.stats = await api('/api/stats?range=' + app.range); renderStats() } catch {} }
 async function loadSettings() {
@@ -1277,6 +1293,26 @@ function pendingActionLabel(entry) {
 function fillPolicyState() {
   return (app.data && app.data.fillPolicies) || { items: [], executionLayer: false }
 }
+
+// Legacy grants that carry no identity binding cannot be migrated, so the
+// admin has to re-grant them against a concrete item. The table shows only
+// the agent, the item and the state; no credential value is involved.
+function renderLegacyUnbound() {
+  const box = $('fp-legacy-box')
+  if (!box) return
+  const entries = (app.data && app.data.legacyUnbound) || []
+  if (!entries.length) { box.innerHTML = ''; return }
+  const rows = entries.map((entry) =>
+    '<tr><td>' + esc(entry.agent || '') + '</td><td><b>' + esc(entry.name || '') + '</td><td>'
+    + '<span style="color:var(--danger)">未绑定身份</span></td><td>'
+    + '<input class="fp-grant-agent" type="hidden" value="' + esc(entry.agent || '') + '">'
+    + '<input class="fp-grant-item" type="hidden" value="' + esc(entry.name || '') + '">'
+    + '<button class="small primary" data-fp-regrant>重新授权</button></td></tr>'
+  ).join('')
+  box.innerHTML = '<div class="hint">以下旧授权缺少凭据身份绑定，不能自动迁移（同名条目可能已是另一个凭据）。请确认后点「重新授权」，按新的条目与时长重新签发。</div>'
+    + '<table><tr><th>Agent</th><th>条目</th><th>状态</th><th>操作</th></tr>' + rows + '</table>'
+}
+
 function renderFillPolicies() {
   const list = $('fp-list')
   if (!list) return
@@ -1288,7 +1324,7 @@ function renderFillPolicies() {
       : '尚未配置真实浏览器执行层：填充请求无法完成实际网页登录，Agent 也不会拿到凭据明文。'
     note.style.color = state.executionLayer ? '' : 'var(--danger)'
   }
-  if (!state.items.length) { list.innerHTML = '<div class="hint">还没有配置任何填充规则。默认所有凭据都不可被 Agent 直接读取明文。</div>'; return }
+  if (!state.items.length) { list.innerHTML = '<div class="hint">还没有配置任何填充规则。注意：未分类的凭据保持旧版授权行为，Agent 仍可能直接读取其明文。标为 web 的凭据只能被填充，永不返回明文。</div>'; return }
   const rows = state.items.map((entry) => {
     const read = entry.plaintextRead
       ? (entry.plaintextReadExpiresAt && entry.plaintextReadExpiresAt < Date.now() ? '已过期' : '允许')
