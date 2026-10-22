@@ -31,10 +31,14 @@ const body = src.slice(start, end)
   else fail('A4', JSON.stringify({ code, label }))
 }
 {
+  // Every request still gets its own route; the route is now a chain of legs
+  // (so a long haul can pass over different waypoints), and the operator leg is
+  // built the same way rather than as one straight arc.
   const onePerEvent = /for \(const \{ ev, g, color \} of located\)/.test(body)
-  const opLeg = /startLat: opLat, startLng: opLon, endLat: startLat/.test(body)
-  if (onePerEvent && opLeg) pass('A5 one arc per request plus operator leg')
-  else fail('A5', JSON.stringify({ onePerEvent, opLeg }))
+  const opLeg = /buildLegs\(opLat, opLon, startLat, startLon/.test(body)
+  const legsDrawn = /for \(const leg of legs\)/.test(body)
+  if (onePerEvent && opLeg && legsDrawn) pass('A5 one route per request plus operator leg, each drawn as legs')
+  else fail('A5', JSON.stringify({ onePerEvent, opLeg, legsDrawn }))
 }
 {
   if (/size: 0\.7, color: '#ffd166'/.test(body)) pass('A6 operator marker keeps a distinct colour')

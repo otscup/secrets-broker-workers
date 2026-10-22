@@ -5,7 +5,7 @@ import {
   b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, decryptStr, encryptStr, extractSecret, extractUsername, extractTotp,
   hmacSha256, hmacToken, pbkdf2, sha256Base64, unwrapWithKek, wrapWithKek, bytesToB64,
 } from './crypto.js'
-import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub } from './oidc.js'
+import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, ALLOWED_ALGS } from './oidc.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -3106,6 +3106,58 @@ export default {
       for (const entry of oidcProviders(state)) { if (entry.enabled === false) continue; list.push({ id: entry.id, label: entry.label ?? '', issuer: entry.issuer ?? '' }) }
       return json({ enabled: Boolean(oidc), providers: list, issuer: oidc?.issuer ?? '' })
     }
+    // Diagnose one provider without leaving the broker: discovery, the id_token
+    // signing algorithms the provider advertises, and whether the authorization
+    // endpoint actually accepts this client id. A wrong client id used to show up
+    // as an error page at the identity provider with no hint of the cause.
+    if (url.pathname === '/api/oidc/probe') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const provider = pickOidcProvider(state, url.searchParams.get('provider'))
+      const oidc = await oidcConfig(env, request, state, provider)
+      if (!oidc) return fail('OIDC is not configured', 400)
+      const report = { provider: oidc.id, issuer: oidc.issuer, clientId: oidc.clientId, redirectUri: oidc.redirectUri, problems: [] }
+      try {
+        const endpoints = await oidcEndpoints(oidc)
+        report.authorizationEndpoint = endpoints.authorization ?? ''
+        report.tokenEndpoint = endpoints.token ?? ''
+        report.hasSecret = Boolean(oidc.clientSecret)
+        const discovery = await oidcDiscovery(oidc.issuer).catch(() => null)
+        report.signingAlgs = discovery?.id_token_signing_alg_values_supported ?? null
+        if (Array.isArray(report.signingAlgs) && report.signingAlgs.length) {
+          const supported = report.signingAlgs.filter((alg) => ALLOWED_ALGS.has(alg))
+          if (!supported.length) report.problems.push('issuer only signs with ' + report.signingAlgs.join('/') + ', which the broker cannot verify')
+        }
+        // Ask the authorization endpoint about this client. Providers differ;
+        // a redirect to their own sign-in page means the client id is accepted.
+        if (endpoints.authorization) {
+          const probe = new URL(endpoints.authorization)
+          probe.searchParams.set('client_id', oidc.clientId)
+          probe.searchParams.set('redirect_uri', oidc.redirectUri)
+          probe.searchParams.set('response_type', 'code')
+          probe.searchParams.set('scope', oidc.scope)
+          probe.searchParams.set('state', 'probe')
+          probe.searchParams.set('code_challenge', base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode('probe-verifier')))))
+          probe.searchParams.set('code_challenge_method', 'S256')
+          probe.searchParams.set('nonce', 'probe')
+          const response = await fetch(probe.toString(), { redirect: 'manual' })
+          const text = await response.text().catch(() => '')
+          report.authorizeStatus = response.status
+          report.redirected = Boolean(response.headers.get('location'))
+          // An error page naming invalid_client (or a redirect carrying
+          // error=invalid_client) is the authoritative "this client id is not
+          // registered here" signal.
+          const combined = String(response.headers.get('location') ?? '') + ' ' + text
+          if (/invalid_client|client not found|unknown client/i.test(combined)) {
+            report.problems.push('the authorization endpoint does not know this client id (' + oidc.clientId + '); register it at the issuer')
+          }
+          if (/pkce is required/i.test(combined)) report.pkce = true
+        }
+      } catch (error) {
+        report.problems.push(String((error && error.message) || error))
+      }
+      return json(report)
+    }
     if (url.pathname === '/oidc/login') {
       const state = await loadState(env)
       const oidc = await oidcConfig(env, request, state, pickOidcProvider(state, url.searchParams.get('provider')))
@@ -3130,6 +3182,18 @@ export default {
         target.searchParams.set('nonce', nonce)
         const prompt = url.searchParams.get('prompt')
         if (prompt === 'login' || prompt === 'consent') target.searchParams.set('prompt', prompt)
+        // Ask the provider whether it knows this client before sending the
+        // operator there. A client id that was never registered used to dump the
+        // user on the provider's own error page ("client not found") with no clue
+        // which provider or which id was wrong; now the broker says it.
+        try {
+          const check = await fetch(target.toString(), { redirect: 'manual' })
+          const text = await check.text().catch(() => '')
+          const combined = String(check.headers.get('location') ?? '') + ' ' + text
+          if (/invalid_client|client not found|unknown client/i.test(combined)) {
+            return fail(`OIDC 服务商「${oidc.label || oidc.id}」不认这个 client id（${oidc.clientId}）。请到该服务商后台登记这个 client，并在「设置 → OIDC 登录」里改成它分配给你的 client id 和 secret。`, 400)
+          }
+        } catch { /* the provider may not allow a probe; the real redirect still runs */ }
         return new Response(null, { status: 302, headers: { location: target.toString(), 'set-cookie': `oidc_state=${cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600` } })
       } catch (error) { return fail(String(error.message ?? error), 502) }
     }
@@ -3486,7 +3550,9 @@ export default {
       // A same-named item that was deleted and recreated therefore resolves to
       // the NEW cipher id, and the admin is granting against that id.
       const itemId = await resolveItemId(env, env.NODEWARDEN_DB, session, itemName)
-      if (!itemId) return fail('item not found', 404)
+      // Name the item: a retry that only says "item not found" gives no way to
+      // tell which credential is gone.
+      if (!itemId) return fail('凭据「' + itemName + '」在 vault 里已不存在，无法重新授权；请先删除这条旧授权', 404)
       const accountId = String(session.email ?? '').trim()
       if (!isWellFormedAccountId(accountId)) return fail('account scope unavailable', 403)
       const state = await loadState(env)

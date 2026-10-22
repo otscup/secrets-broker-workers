@@ -8,8 +8,6 @@
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
-export const ALLOWED_ALGS = new Set(['RS256', 'RS384', 'RS512', 'ES256', 'ES384', 'ES512'])
-
 const ALG_PARAMS = {
   RS256: { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
   RS384: { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-384' },
@@ -17,7 +15,14 @@ const ALG_PARAMS = {
   ES256: { name: 'ECDSA', hash: 'SHA-256' },
   ES384: { name: 'ECDSA', hash: 'SHA-384' },
   ES512: { name: 'ECDSA', hash: 'SHA-512' },
+  // Ed25519. auth-cf (better-auth) signs id_tokens with EdDSA, so without this
+  // every sign-in through it failed at signature verification.
+  EdDSA: { name: 'Ed25519' },
 }
+
+// Algorithms accepted for an id_token signature. EdDSA is Ed25519 only: Ed448
+// is not what any of our providers issue and WebCrypto does not expose it.
+export const ALLOWED_ALGS = new Set(Object.keys(ALG_PARAMS))
 
 const EC_CURVE = { ES256: 'P-256', ES384: 'P-384', ES512: 'P-521' }
 
@@ -73,12 +78,18 @@ export async function verifyJwtSignature(parsed, jwks) {
     if (Array.isArray(key.key_ops) && key.key_ops.length && !key.key_ops.includes('verify')) return false
     if (key.alg && key.alg !== alg) return false
     if (EC_CURVE[alg] && key.kty === 'EC' && key.crv && key.crv !== EC_CURVE[alg]) return false
+    // EdDSA is Ed25519 only, and only an OKP key can verify it. Rejecting the
+    // wrong key type here turns a confusing import error into a clear reason.
+    if (alg === 'EdDSA' && (key.kty !== 'OKP' || (key.crv && key.crv !== 'Ed25519'))) return false
     return true
   })
   if (!usable.length) throw new Error('no jwks key matches id_token (kid/key mismatch)')
   if (!webcrypto?.subtle) throw new Error('WebCrypto unavailable')
   const base = ALG_PARAMS[alg]
-  const params = EC_CURVE[alg] ? { name: base.name, hash: base.hash, namedCurve: EC_CURVE[alg] } : { name: base.name, hash: base.hash }
+  // Ed25519 takes no hash: its import/verify params are just the algorithm name.
+  const params = alg === 'EdDSA'
+    ? { name: base.name }
+    : (EC_CURVE[alg] ? { name: base.name, hash: base.hash, namedCurve: EC_CURVE[alg] } : { name: base.name, hash: base.hash })
   const data = encoder.encode(signingInput)
   const signatureBytes = b64urlDecode(signature)
   let lastError = new Error('id_token signature verification failed')

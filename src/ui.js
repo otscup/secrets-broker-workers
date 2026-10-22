@@ -234,7 +234,10 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div class="card"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>
   </section>
 
-  <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读），这里可以设置免审批策略和读取。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div></section>
+  <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读），这里可以设置免审批策略和读取。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
+    <div class="card"><h2>已分类的凭据</h2><div class="hint">在密钥列表里点条目即可逐个设置。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。<b>未分类的凭据保持旧版授权行为</b>，Agent 仍可能直接读到明文。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap" style="margin-top:10px"></div></div>
+    <div class="card" id="fp-legacy-card" style="display:none"><h2>需要重新授权的旧授权</h2><div id="fp-legacy-box" class="table-wrap" style="margin-top:10px"></div></div>
+  </section>
 
   <section id="view-agents" class="view hidden">
     <div class="card">
@@ -265,17 +268,7 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
   <section id="view-grants" class="view hidden">
     <div class="card" id="transfers-card"><h2>待复制到其他账户</h2><div class="hint">主账户分享后先进入队列；切回目标账户并解锁后自动复制到指定文件夹并生成授权。</div><div id="transfers-box" class="table-wrap" style="margin-top:10px"></div></div>
     <div class="card"><h2>待批准请求</h2><div class="hint">点按钮即授权；同 Docker 版的 once/1h/24h/7d/永久。</div><div id="pending-box" class="table-wrap" style="margin-top:10px"></div></div>
-    <div class="card"><h2>网页填充规则</h2>
-      <div class="hint">把凭据标记为 <b>api</b>（API Key，可按需允许明文读取）或 <b>web</b>（网站登录，只能填充到指定网站，Agent 永远拿不到明文）。<b>未分类的凭据保持旧版授权行为</b>，Agent 仍可能直接读取其明文——建议逐个分类。</div>
-      <div class="row" style="margin:10px 0;flex-wrap:wrap"><label class="field" style="flex:1;min-width:200px">凭据名称<input id="fp-item" placeholder="例如 github.com"></label><label class="field" style="flex:1;min-width:160px">类型<select id="fp-kind"><option value="api">api（API Key）</option><option value="web">web（网站登录）</option></select></label></div>
-      <div id="fp-web-fields" class="hidden"><label class="field">允许的 origin（每行一个，必须是 https://host 或 https://host:port）</label><textarea id="fp-origins" rows="3" placeholder="https://example.com"></textarea><label class="field">允许的动作</label><select id="fp-actions" multiple size="2"><option value="login">login（登录）</option></select><div class="hint">只做精确匹配：example.com.evil.test、任意子域或其他端口都不会被放行。</div></div>
-      <label class="chk" id="fp-read-row" style="margin-top:8px"><input type="checkbox" id="fp-read"> 允许 Agent 直接读取明文（仅 api 凭据；未勾选时拒绝，30 天后自动失效）</label>
-      <div class="row" style="margin-top:10px"><button class="primary" id="fp-save">保存规则</button><button class="danger" id="fp-delete">删除规则</button></div><div class="status" id="fp-status"></div>
-      <div id="fp-exec-note" class="hint" style="margin-top:10px"></div>
-      <div id="fp-list" class="table-wrap" style="margin-top:10px"></div>
-      <div id="fp-legacy-box" class="table-wrap" style="margin-top:10px"></div>
-    </div>
-    <div class="card"><h2>有效授权</h2><div id="grants-box" class="table-wrap"></div></div>
+    <div class="card"><h2>有效授权</h2><div class="hint">过期的授权会显示「已过期」，点该行的时长即可延期。</div><div id="grants-box" class="table-wrap"></div></div>
     <div class="card"><h2>OAuth 客户端</h2><div class="hint">每个连接（Muse、Codex、ChatGPT 等）在首次授权时会注册一个客户端。重复或失效的注册可以逐个撤销，撤销会同时清除它的 token。</div><div id="oauth-clients-box" class="table-wrap" style="margin-top:10px"></div></div>
   </section>
 
@@ -341,8 +334,9 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
         <label class="field">Userinfo Endpoint</label><input id="op-userinfo" placeholder="https://auth.example.com/userinfo">
         <label class="field">JWKS URI</label><input id="op-jwks" placeholder="https://auth.example.com/jwks">
         <label class="chk" style="display:block;margin-top:8px"><input type="checkbox" id="op-enabled" checked> 启用这个服务商</label>
-        <div style="margin-top:10px"><button id="op-discover">从 Issuer 自动发现并填充</button><button class="primary" id="op-save" style="margin-left:8px">保存</button><button id="op-cancel" style="margin-left:8px">取消</button></div>
+        <div style="margin-top:10px"><button id="op-discover">从 Issuer 自动发现并填充</button><button id="op-probe">检测这个服务商</button><button class="primary" id="op-save" style="margin-left:8px">保存</button><button id="op-cancel" style="margin-left:8px">取消</button></div>
         <div class="hint" id="op-status" style="margin-top:8px"></div>
+        <div id="op-probe-result" style="margin-top:8px"></div>
       </div>
     </div>
     <div class="card"><h2>浏览器通知</h2><div class="hint" id="browser-notify-status"></div><div style="margin-top:10px"><button id="enable-browser-notify">启用浏览器通知</button><button id="test-browser-notify">发送测试通知</button></div></div>
@@ -452,7 +446,7 @@ async function lock() {
 $('lock').onclick = lock; $('lock2').onclick = lock
 document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings(); if (view === 'profile') loadProfile() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
 // Collapsible settings cards. One delegated handler covers every card, so a
 // new collapsible card needs no extra wiring.
@@ -567,40 +561,22 @@ document.addEventListener('click', async (event) => {
 })
 $('pending-box').addEventListener('click', async (event) => { const button = event.target.closest('[data-decide]'); if (!button) return; try { await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.decide }) }); await Promise.all([loadState(), loadStats(), loadItems()]); toast('已处理') } catch (error) { toast(error.message, true) } })
 $('grants-box').addEventListener('click', (event) => { const menu = event.target.closest('[data-grant-menu]'); if (menu) openGrantMenu(menu.dataset.agent, menu.dataset.name) })
-$('fp-kind').addEventListener('change', fillKindChanged)
-$('fp-item').addEventListener('input', fillPolicyLoaded)
-fillPolicyLoaded()
-$('fp-save').addEventListener('click', saveFillPolicy)
-$('fp-delete').addEventListener('click', deleteFillPolicy)
+// "修改" on a classified credential opens that item's own editor.
+$('fp-list').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-fp-edit]')
+  if (button && button.dataset.fpEdit) openItemMenu(button.dataset.fpEdit)
+})
 $('fp-legacy-box').addEventListener('click', async (event) => {
-  const regrantAll = event.target.closest('[data-fp-regrant-all]')
-  if (regrantAll) {
-    const entries = (app.data && app.data.legacyUnbound) || []
-    if (!entries.length) return
-    if (!confirm('按当前凭据重新授权全部 ' + entries.length + ' 条？旧授权会作废。')) return
-    let ok = 0
-    const failed = []
-    for (const entry of entries) {
-      try {
-        await api('/api/legacy/regrant', { method: 'POST', body: JSON.stringify({ agent: entry.agent, item: entry.name, action: 'secret.read', duration: '7d' }) })
-        ok += 1
-      } catch (error) { failed.push((entry.name || '') + ': ' + (error.message || '失败')) }
-    }
-    await loadState()
-    if (failed.length) toast('已重新授权 ' + ok + ' 条，' + failed.length + ' 条失败：' + failed.slice(0, 2).join('；'), true)
-    else toast('已重新授权 ' + ok + ' 条')
-    return
-  }
   const button = event.target.closest('[data-fp-regrant]')
   if (!button) return
-  const row = button.closest('tr')
-  const agent = row?.querySelector('.fp-grant-agent')?.value ?? ''
-  const item = row?.querySelector('.fp-grant-item')?.value ?? ''
-  const duration = row?.querySelector('.fp-grant-duration')?.value || '7d'
+  const agent = button.dataset.agent || ''
+  const item = button.dataset.name || ''
   if (!agent || !item) return toast('缺少 Agent 或条目', true)
+  // Seven days is the default the operator can extend afterwards from the
+  // grants page, so the click needs no extra dialog.
   try {
-    await api('/api/legacy/regrant', { method: 'POST', body: JSON.stringify({ agent, item, action: 'secret.read', duration }) })
-    toast('已重新授权')
+    await api('/api/legacy/regrant', { method: 'POST', body: JSON.stringify({ agent, item, action: 'secret.read', duration: '7d' }) })
+    toast('已重新授权 ' + item + '（7 天）')
     await loadState()
   } catch (error) { toast(error.message || '重新授权失败', true) }
 })
@@ -748,6 +724,36 @@ async function discoverOidcProvider() {
     if (data.scope) $('op-scope').value = data.scope
     status('op-status', '已自动填充，保存后生效', 'ok')
   } catch (error) { status('op-status', error.message, 'error') }
+}
+
+// Probe a saved provider: discovery, its advertised id_token algorithms, and
+// whether the authorization endpoint actually recognises this client id. A
+// mis-registered client used to surface only as an error page at the provider.
+async function probeOidcProvider() {
+  const box = $('op-probe-result')
+  if (!box) return
+  const id = $('op-id').value.trim()
+  if (!id) { status('op-status', '先填写并保存 ID，再检测', 'error'); return }
+  box.innerHTML = '<div class="hint">检测中…</div>'
+  try {
+    const report = await api('/api/oidc/probe?provider=' + encodeURIComponent(id))
+    const lines = []
+    lines.push('<div class="hint">issuer：<code>' + esc(report.issuer) + '</code></div>')
+    lines.push('<div class="hint">client id：<code>' + esc(report.clientId) + '</code></div>')
+    lines.push('<div class="hint">redirect：<code>' + esc(report.redirectUri) + '</code></div>')
+    lines.push('<div class="hint">client secret：' + (report.hasSecret ? '已保存' : '未配置（public client 可留空）') + '</div>')
+    if (report.signingAlgs) lines.push('<div class="hint">id_token 签名算法：' + esc((report.signingAlgs || []).join(', ') || '未声明') + '</div>')
+    if (report.problems && report.problems.length) {
+      for (const problem of report.problems) {
+        lines.push('<div class="hint" style="color:var(--danger)">✗ ' + esc(problem) + '</div>')
+      }
+    } else {
+      lines.push('<div class="hint" style="color:var(--ok)">✓ 端点、client id 和签名算法都可用</div>')
+    }
+    box.innerHTML = lines.join('')
+  } catch (error) {
+    box.innerHTML = '<div class="hint" style="color:var(--danger)">检测失败：' + esc(error.message) + '</div>'
+  }
 }
 
 async function loadSettings() {
@@ -1366,63 +1372,94 @@ function pendingDetailHtml(entry) {
 // The web fill policy card. Every call goes through the admin API, which
 // checks the admin cookie and the unlocked vault on the server.
 // Show the stored policy for the item so the admin edits the real state.
-function fillPolicyLoaded() {
-  const item = $('fp-item').value.trim()
-  const entry = fillPolicyState().items.find((e) => e.itemName === item)
-  if (!entry) {
-    $('fp-kind').value = 'api'
-    $('fp-origins').value = ''
-    $('fp-read').checked = false
-    fillKindChanged()
-    return
-  }
-  $('fp-kind').value = entry.kind
-  $('fp-origins').value = (entry.origins || []).join('\n')
-  $('fp-read').checked = entry.plaintextRead === true
-  for (const option of $('fp-actions').options) option.selected = (entry.actions || []).includes(option.value)
-  fillKindChanged()
+// Per-item fill editor, rendered inside the item detail dialog so the operator
+// never retypes a credential name. Returns the markup; wire() attaches handlers.
+function fillEditorHtml(item) {
+  const entry = (fillPolicyState().items || []).find((e) => e.itemName === item.name || e.itemId === item.id) || null
+  const kind = entry ? entry.kind : ''
+  const origins = entry ? (entry.origins || []).join('\n') : ''
+  const actions = entry ? (entry.actions || []) : ['login']
+  const read = Boolean(entry && entry.plaintextRead)
+  return '<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px">'
+    + '<b>网页填充与明文读取</b>'
+    + '<div class="hint" style="margin-top:4px">api = API Key，可按需允许 Agent 读取明文；web = 网站登录，只能被填充到指定网站，Agent 永远拿不到明文。未分类则保持旧版授权行为。</div>'
+    + '<label class="field">类型</label><select id="fe-kind">'
+    + '<option value=""' + (kind === '' ? ' selected' : '') + '>未分类（旧版行为）</option>'
+    + '<option value="api"' + (kind === 'api' ? ' selected' : '') + '>api（API Key）</option>'
+    + '<option value="web"' + (kind === 'web' ? ' selected' : '') + '>web（网站登录，只能填充）</option>'
+    + '</select>'
+    + '<div id="fe-web" class="' + (kind === 'web' ? '' : 'hidden') + '">'
+    + '<label class="field">允许填充的 origin（每行一个，https://host 或 https://host:port）</label>'
+    + '<textarea id="fe-origins" rows="3" style="width:100%" placeholder="https://example.com">' + esc(origins) + '</textarea>'
+    + '<div class="hint">只做精确匹配：example.com.evil.test、任意子域或其他端口都不会被放行。</div></div>'
+    + '<label class="chk" id="fe-read-row" style="margin-top:8px' + (kind === 'web' ? ';display:none' : '') + '"><input type="checkbox" id="fe-read"' + (read ? ' checked' : '') + '> 允许 Agent 直接读取明文（仅 api；30 天后自动失效）</label>'
+    + '<div class="row" style="margin-top:10px"><button class="primary" id="fe-save">保存</button>' + (entry ? '<button class="danger" id="fe-clear">清除分类</button>' : '') + '</div>'
+    + '<div class="status" id="fe-status"></div></div>'
 }
-function fillKindChanged() {
-  const isWeb = $('fp-kind').value === 'web'
-  $('fp-web-fields').classList.toggle('hidden', !isWeb)
-  $('fp-read-row').classList.toggle('hidden', isWeb)
-}
-async function saveFillPolicy() {
-  const item = $('fp-item').value.trim()
-  if (!item) return status('fp-status', '请填写凭据名称', true)
-  const kind = $('fp-kind').value
-  const body = { item, kind }
-  if (kind === 'web') {
-    const origins = $('fp-origins').value.split('\n').map((line) => line.trim()).filter(Boolean)
-    const actions = [...$('fp-actions').selectedOptions].map((option) => option.value)
-    if (!origins.length) return status('fp-status', 'web 凭据至少需要一个 https origin', true)
-    if (!actions.length) return status('fp-status', '请选择至少一个动作', true)
-    body.origins = origins
-    body.actions = actions
+
+function wireFillEditor(item) {
+  const kind = $('fe-kind')
+  if (!kind) return
+  const sync = () => {
+    const isWeb = kind.value === 'web'
+    const web = $('fe-web')
+    if (web) web.classList.toggle('hidden', !isWeb)
+    const readRow = $('fe-read-row')
+    if (readRow) readRow.style.display = isWeb ? 'none' : ''
   }
-  try {
-    await api('/api/fill/policy', { method: 'POST', body: JSON.stringify(body) })
-    if (kind === 'api' && $('fp-read').checked) {
-      await api('/api/fill/read-policy', { method: 'POST', body: JSON.stringify({ item, allow: true, ttlDays: 30 }) })
-    } else if (kind === 'api') {
-      await api('/api/fill/read-policy', { method: 'POST', body: JSON.stringify({ item, allow: false }) })
+  kind.onchange = sync
+  sync()
+  $('fe-save').onclick = async () => {
+    const value = kind.value
+    if (!value) return status('fe-status', '请选择 api 或 web', true)
+    try {
+      if (value === 'web') {
+        const origins = $('fe-origins').value.split('\n').map((line) => line.trim()).filter(Boolean)
+        if (!origins.length) return status('fe-status', 'web 凭据至少需要一个 https origin', true)
+        await api('/api/fill/policy', { method: 'POST', body: JSON.stringify({ item: item.name, kind: 'web', origins, actions: ['login'] }) })
+      } else {
+        await api('/api/fill/policy', { method: 'POST', body: JSON.stringify({ item: item.name, kind: 'api' }) })
+        await api('/api/fill/read-policy', { method: 'POST', body: JSON.stringify({ item: item.name, allow: $('fe-read').checked, ttlDays: 30 }) })
+      }
+      status('fe-status', '已保存', false)
+      await loadState()
+    } catch (error) { status('fe-status', error.message || '保存失败', true) }
+  }
+  const clear = $('fe-clear')
+  if (clear) clear.onclick = async () => {
+    if (!confirm('清除「' + item.name + '」的分类和相关授权？')) return
+    try {
+      await api('/api/fill/policy/delete', { method: 'POST', body: JSON.stringify({ item: item.name }) })
+      status('fe-status', '已清除', false)
+      await loadState()
+    } catch (error) { status('fe-status', error.message || '清除失败', true) }
+  }
+}
+
+// Classify several credentials at once from the bulk bar. The kind is the only
+// thing that makes sense in bulk; origins are per credential by nature.
+function openBulkKind() {
+  if (!selectedItems.size) return
+  openModal('批量分类 ' + selectedItems.size + ' 个凭据', '<div class="hint">把选中的凭据标记为 api（API Key，可按需允许明文读取）或 web（网站登录，只能填充）。web 凭据还需要逐个填写允许的 origin。</div><label class="field">类型</label><select id="bk-kind"><option value="api">api（API Key）</option><option value="web">web（网站登录）</option></select><div class="row" style="margin-top:12px"><button class="primary" id="bk-save">应用</button></div><div class="status" id="bk-status"></div>')
+  $('bk-save').onclick = async () => {
+    const kind = $('bk-kind').value
+    const names = [...selectedItems]
+    let ok = 0
+    const failed = []
+    for (const name of names) {
+      try {
+        await api('/api/fill/policy', { method: 'POST', body: JSON.stringify({ item: name, kind, ...(kind === 'web' ? { origins: [], actions: ['login'] } : {}) }) })
+        ok += 1
+      } catch (error) {
+        // A web credential needs at least one origin, so bulk web is expected to
+        // fail per item; report it instead of pretending it worked.
+        failed.push(name + ': ' + (error.message || '失败'))
+      }
     }
-    status('fp-status', '已保存', false)
     await loadState()
-  } catch (error) {
-    status('fp-status', error.message || '保存失败', true)
-  }
-}
-async function deleteFillPolicy() {
-  const item = $('fp-item').value.trim()
-  if (!item) return status('fp-status', '请填写要删除的凭据名称', true)
-  if (!confirm('删除「' + item + '」的填充规则和明文读取授权？')) return
-  try {
-    await api('/api/fill/policy/delete', { method: 'POST', body: JSON.stringify({ item }) })
-    status('fp-status', '已删除', false)
-    await loadState()
-  } catch (error) {
-    status('fp-status', error.message || '删除失败', true)
+    show('modal', false)
+    if (failed.length) toast('已分类 ' + ok + ' 个，' + failed.length + ' 个需要逐个设置（web 需要 origin）', true)
+    else toast('已分类 ' + ok + ' 个')
   }
 }
 
@@ -1440,25 +1477,24 @@ function fillPolicyState() {
   return (app.data && app.data.fillPolicies) || { items: [], executionLayer: false }
 }
 
-// Legacy grants that carry no identity binding cannot be migrated, so the
-// admin has to re-grant them against a concrete item. The table shows only
-// the agent, the item and the state; no credential value is involved.
+// Legacy grants written before credential identity binding existed cannot be
+// migrated safely. There is no separate repair screen: re-sharing the item from
+// the items page writes a bound authorisation, which supersedes the old one.
+// The card stays hidden unless such a grant actually exists.
 function renderLegacyUnbound() {
+  const card = $('fp-legacy-card')
   const box = $('fp-legacy-box')
-  if (!box) return
+  if (!box || !card) return
   const entries = (app.data && app.data.legacyUnbound) || []
-  if (!entries.length) { box.innerHTML = ''; return }
+  if (!entries.length) { card.style.display = 'none'; box.innerHTML = ''; return }
+  card.style.display = ''
   const rows = entries.map((entry) =>
     '<tr><td>' + esc(entry.agent || '') + '</td><td><b>' + esc(entry.name || '') + '</b></td><td>'
-    + '<span style="color:var(--danger)">未绑定身份</span></td><td>'
-    + '<input class="fp-grant-agent" type="hidden" value="' + esc(entry.agent || '') + '">'
-    + '<input class="fp-grant-item" type="hidden" value="' + esc(entry.name || '') + '">'
-    + '<select class="fp-grant-duration"><option value="1d">1 天</option><option value="7d" selected>7 天</option><option value="30d">30 天</option><option value="permanent">永久</option></select> '
-    + '<button class="small primary" data-fp-regrant>重新授权</button></td></tr>'
+    + '<span style="color:var(--danger)">旧授权，无身份绑定</span></td><td>'
+    + '<button class="small primary" data-fp-regrant data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '">重新授权</button></td></tr>'
   ).join('')
-  box.innerHTML = '<div class="hint">以下旧授权是在凭据身份绑定存在之前建立的，Broker 无法证明这个名字今天仍指向同一个凭据（同名条目可能已被删除并重建），所以不能自动迁移。'
-    + '确认条目确实存在后点「重新授权」：会按当前凭据重新签发，旧的授权作废。这个操作由你确认，不会自动执行。</div>'
-    + '<div class="row" style="margin:8px 0"><button class="small primary" data-fp-regrant-all>全部按当前凭据重新授权（' + entries.length + ' 条）</button></div>'
+  box.innerHTML = '<div class="hint">这些授权是在凭据身份绑定存在之前建立的，Broker 无法证明这个名字今天仍指向同一个凭据（同名条目可能已被删除并重建），所以不会自动迁移。'
+    + '点「重新授权」会按<b>当前</b>凭据重新签发，旧授权同时作废。</div>'
     + '<table><tr><th>Agent</th><th>条目</th><th>状态</th><th>操作</th></tr>' + rows + '</table>'
 }
 
@@ -1473,15 +1509,15 @@ function renderFillPolicies() {
       : '尚未配置真实浏览器执行层：填充请求无法完成实际网页登录，Agent 也不会拿到凭据明文。'
     note.style.color = state.executionLayer ? '' : 'var(--danger)'
   }
-  if (!state.items.length) { list.innerHTML = '<div class="hint">还没有配置任何填充规则。注意：未分类的凭据保持旧版授权行为，Agent 仍可能直接读取其明文。标为 web 的凭据只能被填充，永不返回明文。</div>'; return }
+  if (!state.items.length) { list.innerHTML = '<div class="hint">还没有分类任何凭据。点上面列表里的「分类」按钮即可。</div>'; return }
   const rows = state.items.map((entry) => {
     const read = entry.plaintextRead
       ? (entry.plaintextReadExpiresAt && entry.plaintextReadExpiresAt < Date.now() ? '已过期' : '允许')
       : '拒绝'
     const origins = entry.origins.length ? entry.origins.map((o) => '<code>' + esc(o) + '</code>').join('<br>') : '-'
-    return '<tr><td><code>' + esc(entry.itemId) + '</code></td><td>' + esc(entry.kind) + '</td><td>' + origins + '</td><td>' + esc((entry.actions || []).join(', ') || '-') + '</td><td>' + read + '</td></tr>'
+    return '<tr><td><b>' + esc(entry.itemName || entry.itemId) + '</b></td><td>' + esc(entry.kind) + '</td><td>' + origins + '</td><td>' + esc((entry.actions || []).join(', ') || '-') + '</td><td>' + read + '</td><td class="nowrap"><button class="small" data-fp-edit="' + esc(entry.itemName || '') + '">修改</button></td></tr>'
   }).join('')
-  list.innerHTML = '<table><tr><th>凭据 ID</th><th>类型</th><th>允许的 origin</th><th>动作</th><th>明文读取</th></tr>' + rows + '</table>'
+  list.innerHTML = '<table><tr><th>凭据</th><th>类型</th><th>允许的 origin</th><th>动作</th><th>明文读取</th><th>操作</th></tr>' + rows + '</table>'
 }
 
 function renderGrants() {
@@ -1625,10 +1661,11 @@ function expiresField(item) {
 function openItemMenu(name) {
   const item = app.items.find((entry) => entry.name === name); if (!item) return
   const agents = app.data.agents || []
-  openModal('条目「' + name + '」', itemInfoHtml(item) + '<label class="field">名称</label><input id="mi-name" value="' + esc(item.name) + '"><label class="field">用户名（留空不改）</label><input id="mi-username" value="' + esc(item.username || '') + '"><label class="field">TOTP Secret（留空不改）</label><input id="mi-totp" value="' + esc(item.totp || '') + '"><label class="field">分组</label><input id="mi-group" value="' + esc(item.group || '') + '" placeholder="例如 blog/prod"><label class="field">网址</label><input id="mi-url" value="' + esc(item.url || '') + '"><label class="field">备注（留空不改）</label><input id="mi-notes" placeholder="新的备注"><label class="field">新密钥值（留空不改）</label><input id="mi-value" type="password" placeholder="留空保留原值"><label class="chk" style="margin-top:8px"><input type="checkbox" id="mi-noapproval" ' + (item.noApproval ? 'checked' : '') + '> 免审批（自动读取，仍记录）</label><div class="row" style="margin-top:14px"><button class="primary" id="mi-save">保存修改</button><button id="mi-share">分享</button><button class="danger" id="mi-delete">删除</button></div><div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div class="hint">分享给 Agent（同账户直接授权；跨账户会先复制到目标账户文件夹，切回目标账户解锁后自动完成）</div><label class="field">Agent</label><select id="mi-share-agent" multiple size="3">' + agents.map((agent) => '<option value="' + esc(agent.name) + '">' + esc(agent.alias || agent.name) + '</option>').join('') + '</select><label class="field">跨账户目标文件夹（同账户可留空）</label><input id="mi-share-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="mi-share-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mi-share-reads" type="number" min="1"></div>' + expiresField(item) + '</div>')
+  openModal('条目「' + name + '」', itemInfoHtml(item) + '<label class="field">名称</label><input id="mi-name" value="' + esc(item.name) + '"><label class="field">用户名（留空不改）</label><input id="mi-username" value="' + esc(item.username || '') + '"><label class="field">TOTP Secret（留空不改）</label><input id="mi-totp" value="' + esc(item.totp || '') + '"><label class="field">分组</label><input id="mi-group" value="' + esc(item.group || '') + '" placeholder="例如 blog/prod"><label class="field">网址</label><input id="mi-url" value="' + esc(item.url || '') + '"><label class="field">备注（留空不改）</label><input id="mi-notes" placeholder="新的备注"><label class="field">新密钥值（留空不改）</label><input id="mi-value" type="password" placeholder="留空保留原值"><label class="chk" style="margin-top:8px"><input type="checkbox" id="mi-noapproval" ' + (item.noApproval ? 'checked' : '') + '> 免审批（自动读取，仍记录）</label><div class="row" style="margin-top:14px"><button class="primary" id="mi-save">保存修改</button><button id="mi-share">分享</button><button class="danger" id="mi-delete">删除</button></div><div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div class="hint">分享给 Agent（同账户直接授权；跨账户会先复制到目标账户文件夹，切回目标账户解锁后自动完成）</div><label class="field">Agent</label><select id="mi-share-agent" multiple size="3">' + agents.map((agent) => '<option value="' + esc(agent.name) + '">' + esc(agent.alias || agent.name) + '</option>').join('') + '</select><label class="field">跨账户目标文件夹（同账户可留空）</label><input id="mi-share-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="mi-share-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mi-share-reads" type="number" min="1"></div>' + expiresField(item) + fillEditorHtml(item) + '</div>')
   $('mi-share-sync').onclick = () => { show('modal', false); selectedItems.clear(); selectedItems.add(item.name); openBulkShare() }
   $('mi-save').onclick = async () => { try { await api('/api/items/update', { method: 'POST', body: JSON.stringify({ name: item.name, newName: $('mi-name').value.trim(), username: $('mi-username').value, totp: $('mi-totp').value, group: $('mi-group').value.trim(), url: $('mi-url').value.trim(), notes: $('mi-notes').value.trim() ? $('mi-notes').value : undefined, value: $('mi-value').value, noApproval: $('mi-noapproval').checked, expiresAt: $('mi-expires').value }) }); show('modal', false); await Promise.all([loadItems(), loadState()]); toast('已保存') } catch (error) { toast(error.message, true) } }
   $('mi-delete').onclick = async () => { if (!confirm('删除条目「' + item.name + '」？')) return; try { await api('/api/items/delete', { method: 'POST', body: JSON.stringify({ name: item.name }) }); show('modal', false); await Promise.all([loadItems(), loadState()]); toast('已删除') } catch (error) { toast(error.message, true) } }
+  wireFillEditor(item)
   $('mi-share').onclick = async () => { const agents = [...$('mi-share-agent').selectedOptions].map((option) => option.value); if (!agents.length) return toast('至少选择一个 Agent', true); try { const result = await api('/api/grants/share', { method: 'POST', body: JSON.stringify({ name: $('mi-name').value.trim() || item.name, agents, seconds: Number($('mi-share-seconds').value), maxReads: $('mi-share-reads').value || null, targetFolder: $('mi-share-folder').value.trim() }) }); show('modal', false); await loadState(); if (result.queued?.length) toast('已加入跨账户复制队列，切回目标账户并解锁后自动复制'); else toast('已分享') } catch (error) { toast(error.message, true) } }
 }
 async function saveAgentFromModal(originalName) {

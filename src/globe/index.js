@@ -114,24 +114,53 @@ function createGlobe(container, options) {
   const markerGeometry = new THREE.BufferGeometry()
   const markerMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 3.2, sizeAttenuation: false, transparent: true, opacity: 0.95, depthWrite: false })
   const markerPoints = new THREE.Points(markerGeometry, markerMaterial)
-  // The arcs are great circles, so a point on one is found by slerping the two
-  // ends. The height follows the same curve the arc uses.
-  function pointOnArc(arc, t) {
-    const start = new THREE.Vector3()
-      .set(Math.cos(arc.startLng * Math.PI / 180) * Math.cos(arc.startLat * Math.PI / 180),
-        Math.sin(arc.startLat * Math.PI / 180),
-        -Math.sin(arc.startLng * Math.PI / 180) * Math.cos(arc.startLat * Math.PI / 180))
-    const end = new THREE.Vector3()
-      .set(Math.cos(arc.endLng * Math.PI / 180) * Math.cos(arc.endLat * Math.PI / 180),
-        Math.sin(arc.endLat * Math.PI / 180),
-        -Math.sin(arc.endLng * Math.PI / 180) * Math.cos(arc.endLat * Math.PI / 180))
+  // A route is a chain of legs, each a great-circle segment between two
+  // waypoints. A marker at t walks the chain by arc length, so it always sits
+  // on the line that is actually drawn instead of on an independent great
+  // circle. Each leg is drawn as its own arc, and each leg gets a share of the
+  // travel time proportional to how far it is, so the light does not crawl
+  // through a short hop and jump across a long one.
+  const toVec = (lat, lng) => new THREE.Vector3().set(
+    Math.cos(lng * Math.PI / 180) * Math.cos(lat * Math.PI / 180),
+    Math.sin(lat * Math.PI / 180),
+    -Math.sin(lng * Math.PI / 180) * Math.cos(lat * Math.PI / 180),
+  )
+  function legAngle(leg) {
+    return toVec(leg.fromLat, leg.fromLng).angleTo(toVec(leg.toLat, leg.toLng))
+  }
+  function legPoint(leg, t) {
+    const start = toVec(leg.fromLat, leg.fromLng)
+    const end = toVec(leg.toLat, leg.toLng)
     const angle = start.angleTo(end)
-    if (angle === 0) return start.multiplyScalar(GLOBE_RADIUS * (1 + (arc.altitude ?? 0.2)))
-    const sinAngle = Math.sin(angle)
-    const a = Math.sin((1 - t) * angle) / sinAngle
-    const b = Math.sin(t * angle) / sinAngle
-    const point = start.multiplyScalar(a).add(end.multiplyScalar(b)).normalize()
-    return point.multiplyScalar(GLOBE_RADIUS * (1 + (arc.altitude ?? 0.2) * Math.sin(Math.PI * t)))
+    let point
+    if (angle === 0) point = start.clone()
+    else {
+      const sinAngle = Math.sin(angle)
+      const a = Math.sin((1 - t) * angle) / sinAngle
+      const b = Math.sin(t * angle) / sinAngle
+      point = start.multiplyScalar(a).add(end.multiplyScalar(b)).normalize()
+    }
+    return point.multiplyScalar(GLOBE_RADIUS * (1 + (leg.altitude ?? 0.2) * Math.sin(Math.PI * t)))
+  }
+  function pointOnArc(route, t) {
+    const legs = route.legs || []
+    if (!legs.length) return toVec(route.startLat ?? 0, route.startLng ?? 0).multiplyScalar(GLOBE_RADIUS)
+    let total = 0
+    const spans = []
+    for (const leg of legs) { const a = legAngle(leg); spans.push(a); total += a }
+    if (!(total > 0)) return legPoint(legs[0], t)
+    // Walk the legs, giving each its share of the journey.
+    let walked = 0
+    const target = Math.min(1, Math.max(0, t)) * total
+    for (let i = 0; i < legs.length; i += 1) {
+      const span = spans[i]
+      if (target <= walked + span || i === legs.length - 1) {
+        const local = span > 0 ? (target - walked) / span : 0
+        return legPoint(legs[i], Math.min(1, Math.max(0, local)))
+      }
+      walked += span
+    }
+    return legPoint(legs[legs.length - 1], 1)
   }
   function setDirectionMarkers(arcList) {
     for (const marker of markers) markerGroup.remove(marker)
@@ -250,52 +279,106 @@ function createGlobe(container, options) {
       // position there is nothing to draw an arc to, so none is drawn.
       const broker = resolveBrokerNode(o.broker, operator)
       // Requests from the same place overlap into a single line, so each one
-      // gets a deterministic offset. The offsets spread over a wide area and
-      // the heights cover the whole range, so the trails read as scattered
-      // departures instead of one dense bundle.
+      // gets a deterministic offset. The offsets spread over a wide area, so the
+      // trails read as scattered departures instead of one dense bundle.
+      //
+      // A real flight keeps its two endpoints fixed but picks a different route
+      // in between, so a route here is a chain of legs through waypoints
+      // scattered off the direct great circle. The endpoints are never moved;
+      // only what the line passes over changes. three-globe's arc layer only
+      // accepts a start and an end, so each leg is drawn as its own arc and the
+      // direction light walks the whole chain.
+      const buildLegs = (fromLat, fromLng, toLat, toLng, seed, hops) => {
+        const legs = []
+        let aLat = fromLat
+        let aLng = fromLng
+        // A deterministic pseudo-random stream per route, so a route is stable
+        // across refreshes and across animation frames. The raw seed is mixed
+        // with xorshift32 first: feeding adjacent integers straight into a
+        // linear congruential generator yields near-identical first outputs,
+        // which collapsed every waypoint onto the same latitude.
+        let state = (seed || 1) >>> 0
+        const rand = () => {
+          state ^= state << 13; state >>>= 0
+          state ^= state >>> 17
+          state ^= state << 5; state >>>= 0
+          return state / 4294967296
+        }
+        rand(); rand()
+        for (let i = 1; i <= hops; i += 1) {
+          const last = i === hops
+          let bLat
+          let bLng
+          if (last) { bLat = toLat; bLng = toLng }
+          else {
+            // A waypoint sits off the straight line between the two ends. The
+            // lateral offset is what makes one route bow north (via Russia) and
+            // another bow south (via Australia) for the same pair.
+            const frac = i / hops
+            const midLat = aLat + (toLat - aLat) * frac
+            const midLng = aLng + (toLng - aLng) * frac
+            bLat = midLat + (rand() - 0.5) * 2 * 26
+            bLng = midLng + (rand() - 0.5) * 2 * 16
+            bLat = Math.max(-84, Math.min(84, bLat))
+            bLng = ((bLng + 540) % 360) - 180
+          }
+          legs.push({
+            fromLat: aLat, fromLng: aLng, toLat: bLat, toLng: bLng,
+            // Each leg bows at its own height, so the route climbs continuously
+            // instead of stepping.
+            altitude: 0.06 + rand() * 0.5,
+          })
+          aLat = bLat
+          aLng = bLng
+        }
+        return legs
+      }
       const perSpot = new Map()
       const arcs = []
+      // The chain each direction light walks. Kept apart from the drawn arcs,
+      // because one route is several arcs.
+      const routes = []
       for (const { ev, g, color } of located) {
         const spot = g.lat + ',' + g.lon
         const index = perSpot.get(spot) || 0
         perSpot.set(spot, index + 1)
         // Deterministic jitter keeps the layout stable between refreshes.
-        const seed = Math.abs(Math.round((g.lat * 1000) + (g.lon * 977) + index * 7919))
+        const seed = Math.abs(Math.round((g.lat * 1000) + (g.lon * 977) + index * 7919)) || 1
         // A wide ring around the location, so the trails do not pile up.
         const spread = index === 0 ? 0 : 3 + ((seed % 37) / 37) * 14
         const bearing = (seed % 360) * (Math.PI / 180)
-        const dLat = Math.cos(bearing) * spread
-        const dLon = Math.sin(bearing) * spread
-        const startLat = g.lat + dLat
-        const startLon = g.lon + dLon
-        // The height covers the whole range in even steps, so the trails are
-        // spread from low to high instead of forming two clumps.
-        const altitude = 0.08 + ((seed % 29) / 29) * 0.55 + (index % 5) * 0.06
-        if (broker) {
-          // The request itself: the agent location -> the broker.
+        const startLat = g.lat + Math.cos(bearing) * spread
+        const startLon = g.lon + Math.sin(bearing) * spread
+        if (!broker) continue
+        // One or two waypoints: two gives the long-haul variety, short hops stay
+        // closer to the direct line. Endpoints are exact either way.
+        const hops = seed % 3 === 0 ? 2 : 1
+        const legs = buildLegs(startLat, startLon, broker.lat, broker.lon, seed, hops)
+        for (const leg of legs) {
           arcs.push({
-            startLat, startLng: startLon, endLat: broker.lat, endLng: broker.lon,
+            startLat: leg.fromLat, startLng: leg.fromLng, endLat: leg.toLat, endLng: leg.toLng,
             color: [color, '#7fc7ff'],
-            altitude,
-            stroke: 0.1 + ((seed % 7) / 7) * 0.26,
-            // The marker starts at a different point on every arc, so the
-            // direction reads as many separate flights.
-            phase: (seed % 100) / 100,
+            altitude: leg.altitude,
+            stroke: 0.1 + ((seed % 7) / 7) * 0.2,
           })
-          // The operator leg, when the operator sits somewhere else.
-          if (opLat !== null && opLon !== null && (Math.abs(g.lat - opLat) > 0.01 || Math.abs(g.lon - opLon) > 0.01)) {
+        }
+        routes.push({ legs, color, phase: (seed % 100) / 100 })
+        // The operator leg, when the operator sits somewhere else.
+        if (opLat !== null && opLon !== null && (Math.abs(g.lat - opLat) > 0.01 || Math.abs(g.lon - opLon) > 0.01)) {
+          const opLegs = buildLegs(opLat, opLon, startLat, startLon, seed + 7, 1)
+          for (const leg of opLegs) {
             arcs.push({
-              startLat: opLat, startLng: opLon, endLat: startLat, endLng: startLon,
+              startLat: leg.fromLat, startLng: leg.fromLng, endLat: leg.toLat, endLng: leg.toLng,
               color: ['#ffd166', color],
-              altitude: altitude * 0.6 + 0.04,
-              stroke: 0.1 + ((seed % 5) / 5) * 0.16,
-              phase: ((seed % 100) / 100 + 0.5) % 1,
+              altitude: leg.altitude * 0.7 + 0.04,
+              stroke: 0.1 + ((seed % 5) / 5) * 0.14,
             })
           }
+          routes.push({ legs: opLegs, color: '#ffd166', phase: ((seed % 100) / 100 + 0.5) % 1 })
         }
       }
       globe.arcsData(showArcs ? arcs : [])
-      setDirectionMarkers(showArcs ? arcs : [])
+      setDirectionMarkers(showArcs ? routes : [])
 
       // Country codes sit on the globe, one per visited country.
       const labels = []
