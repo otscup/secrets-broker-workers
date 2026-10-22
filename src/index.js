@@ -3,11 +3,12 @@ import { uiHtml } from './ui.js'
 import { LOGO_PNG_B64, FAVICON_ICO_B64 } from './logo.js'
 import {
   b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, decryptStr, encryptStr, extractSecret, extractUsername, extractTotp,
-  hmacToken, pbkdf2, sha256Base64, unwrapWithKek, wrapWithKek, bytesToB64,
+  hmacSha256, hmacToken, pbkdf2, sha256Base64, unwrapWithKek, wrapWithKek, bytesToB64,
 } from './crypto.js'
 import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub } from './oidc.js'
 
 const encoder = new TextEncoder()
+const decoder = new TextDecoder()
 const SESSION_COOKIE = 'broker_admin'
 const json = (data, status = 200, headers = {}) => Response.json(data, { status, headers })
 const securityHeaders = {
@@ -249,6 +250,211 @@ export class BrokerState extends DurableObject {
       })
       return json(result)
     }
+    // ── Fill task control plane ──────────────────────────────────────────
+    // Every task transition runs inside one transaction, so exactly one
+    // executor can claim a task and a task can never move backwards.
+    // Store a new task. A task is created in the authorized state: the agent
+    // already passed the broker's policy and approval checks.
+    // List the tasks. The broker uses this to enforce the concurrency caps.
+    // Burn the task credential's nonce. A task credential may be used once, and
+    // the burn happens in the same transaction as the task state check.
+    // The item name is needed to read the credential. It stays inside the
+    // broker: the executor receives the value, never the name.
+    if (url.pathname === '/fill/task/secret' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const taskId = String(body.taskId ?? '')
+      if (!taskId) return json({ ok: false, reason: 'invalid' })
+      const ledger = (await this.ctx.storage.get('fillTasks')) ?? {}
+      const task = ledger[taskId]
+      if (!task) return json({ ok: false, reason: 'unknown-task' })
+      return json({ ok: true, itemName: task.itemName ?? '', cipherId: task.cipherId })
+    }
+
+    if (url.pathname === '/fill/task/burn' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const { taskId, nonce } = body ?? {}
+      if (!taskId || !nonce) return json({ ok: false, reason: 'invalid' })
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const burned = (await txn.get('fillTaskNonces')) ?? {}
+        if (burned[nonce]) return { ok: false, reason: 'already-consumed' }
+        burned[nonce] = { taskId, at: Date.now() }
+        // Keep the burn list bounded.
+        const cutoff = Date.now() - 60 * 60 * 1000
+        for (const [key, entry] of Object.entries(burned)) {
+          if (entry && entry.at < cutoff) delete burned[key]
+        }
+        await txn.put('fillTaskNonces', burned)
+        return { ok: true }
+      })
+      return json(result)
+    }
+
+    if (url.pathname === '/fill/task/list' && request.method === 'POST') {
+      const ledger = (await this.ctx.storage.get('fillTasks')) ?? {}
+      const tasks = Object.values(ledger).map((task) => ({
+        taskId: task.taskId, state: task.state, agent: task.agent, accountId: task.accountId,
+        cipherId: task.cipherId, executorId: task.executorId, origin: task.origin,
+        action: task.action, updatedAt: task.updatedAt ?? 0, createdAt: task.createdAt ?? 0,
+        cancelRequested: task.cancelRequested === true,
+      }))
+      return json({ ok: true, tasks })
+    }
+
+    if (url.pathname === '/fill/task/store' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const task = body && typeof body.task === 'object' ? body.task : null
+      if (!task || !task.taskId || !task.executorId || !task.cipherId || !task.origin) {
+        return json({ ok: false, reason: 'invalid' })
+      }
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const ledger = (await txn.get('fillTasks')) ?? {}
+        if (ledger[task.taskId]) return { ok: false, reason: 'task-exists' }
+        // Bound the ledger: a terminal task older than an hour is dropped.
+        const cutoff = Date.now() - 60 * 60 * 1000
+        for (const [id, entry] of Object.entries(ledger)) {
+          if (entry && entry.updatedAt && entry.updatedAt < cutoff && FILL_TASK_TERMINAL.has(entry.state)) delete ledger[id]
+        }
+        ledger[task.taskId] = task
+        await txn.put('fillTasks', ledger)
+        return { ok: true }
+      })
+      return json(result)
+    }
+
+    if (url.pathname === '/fill/task/transition' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const { taskId, to, executorId, nonce } = body ?? {}
+      if (!taskId || !to) return json({ ok: false, reason: 'invalid' })
+      if (!FILL_TASK_STATES.has(String(to))) return json({ ok: false, reason: 'unknown-state' })
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const ledger = (await txn.get('fillTasks')) ?? {}
+        const task = ledger[taskId]
+        if (!task) return { ok: false, reason: 'unknown-task' }
+        const now = Date.now()
+        // An expired task cannot be revived by any transition.
+        if (task.state !== to && FILL_TASK_TERMINAL.has(task.state)) {
+          return { ok: false, reason: 'task-terminal', state: task.state }
+        }
+        if (task.state === to) return { ok: true, state: to, task, unchanged: true }
+        const allowed = FILL_TASK_TRANSITIONS[task.state] ?? []
+        if (!allowed.includes(String(to))) {
+          return { ok: false, reason: 'illegal-transition', state: task.state }
+        }
+        // A task may only be claimed by the executor it was issued to, and
+        // only once: the first claim wins.
+        if (to === 'claimed') {
+          if (!executorId || task.executorId !== String(executorId)) {
+            return { ok: false, reason: 'executor-mismatch' }
+          }
+          if (task.claimedBy) return { ok: false, reason: 'already-claimed', state: task.state }
+          task.claimedBy = String(executorId)
+          task.claimedAt = now
+        }
+        // Only the claimed executor may report progress or completion.
+        if ((to === 'running' || to === 'completed' || to === 'failed') && task.claimedBy) {
+          if (String(executorId ?? '') !== task.claimedBy) {
+            return { ok: false, reason: 'executor-mismatch' }
+          }
+        }
+        task.state = String(to)
+        task.updatedAt = now
+        if (to === 'completed') task.completedAt = now
+        if (to === 'cancelled') task.cancelledAt = now
+        ledger[taskId] = task
+        await txn.put('fillTasks', ledger)
+        return { ok: true, state: task.state, task }
+      })
+      return json(result)
+    }
+    // Claim the next task for an executor. The transition to 'claimed' and
+    // the assignment happen in the same transaction, so two executors
+    // polling at once never receive the same task.
+    if (url.pathname === '/fill/task/claim' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const executorId = String(body.executorId ?? '')
+      if (!executorId) return json({ ok: false, reason: 'invalid' })
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const ledger = (await txn.get('fillTasks')) ?? {}
+        const now = Date.now()
+        const candidate = Object.values(ledger)
+          .filter((task) => task.state === 'authorized' && task.cancelRequested !== true)
+          .filter((task) => !task.expiresAt || task.expiresAt > now)
+          .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))[0]
+        if (!candidate) return { ok: false, reason: 'no-task' }
+        candidate.state = 'claimed'
+        candidate.claimedBy = executorId
+        candidate.claimedAt = now
+        candidate.executorId = executorId
+        candidate.updatedAt = now
+        ledger[candidate.taskId] = candidate
+        await txn.put('fillTasks', ledger)
+        return { ok: true, task: candidate }
+      })
+      return json(result)
+    }
+    // Read one task. The scope is returned so the executor knows exactly
+    // which origin and action it may perform.
+    if (url.pathname === '/fill/task/get' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const taskId = String(body.taskId ?? '')
+      if (!taskId) return json({ ok: false, reason: 'invalid' })
+      const ledger = (await this.ctx.storage.get('fillTasks')) ?? {}
+      const task = ledger[taskId]
+      if (!task) return json({ ok: false, reason: 'unknown-task' })
+      return json({ ok: true, task: {
+        taskId: task.taskId, state: task.state, origin: task.origin, action: task.action,
+        executorId: task.executorId ?? '', claimedBy: task.claimedBy ?? '',
+        cipherId: task.cipherId, agent: task.agent, accountId: task.accountId,
+        policyRevision: task.policyRevision, expiresAt: task.expiresAt ?? 0,
+        cancelRequested: task.cancelRequested === true,
+      } })
+    }
+    // Expire the tasks that have been idle too long. Called by the Worker on
+    // a schedule; expiry is a normal terminal state, not an error.
+    if (url.pathname === '/fill/task/expire' && request.method === 'POST') {
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const ledger = (await txn.get('fillTasks')) ?? {}
+        const now = Date.now()
+        const expired = []
+        for (const [taskId, task] of Object.entries(ledger)) {
+          if (FILL_TASK_TERMINAL.has(task.state)) continue
+          const limit = FILL_TASK_TIMEOUT_MS[task.state] ?? 0
+          const deadline = (task.updatedAt ?? task.createdAt ?? now) + limit
+          if (now > deadline) {
+            task.state = 'expired'
+            task.updatedAt = now
+            task.expiredAt = now
+            ledger[taskId] = task
+            expired.push(taskId)
+          }
+        }
+        await txn.put('fillTasks', ledger)
+        return { ok: true, expired }
+      })
+      return json(result)
+    }
+    // Mark a task as cancel-requested. The executor confirms separately, so
+// the broker never claims a task is cancelled before the executor agrees.
+    if (url.pathname === '/fill/task/request-cancel' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const taskId = String(body.taskId ?? '')
+      if (!taskId) return json({ ok: false, reason: 'invalid' })
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const ledger = (await txn.get('fillTasks')) ?? {}
+        const task = ledger[taskId]
+        if (!task) return { ok: false, reason: 'unknown-task' }
+        if (FILL_TASK_TERMINAL.has(task.state)) {
+          return { ok: false, reason: 'task-terminal', state: task.state }
+        }
+        task.cancelRequested = true
+        task.updatedAt = Date.now()
+        ledger[taskId] = task
+        await txn.put('fillTasks', ledger)
+        return { ok: true, state: task.state, cancelRequested: true }
+      })
+      return json(result)
+    }
+
     if (url.pathname === '/state/mutate' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
       const ops = Array.isArray(body.ops) ? body.ops : null
@@ -1676,6 +1882,229 @@ function fillAuthTtlMs(env) {
   if (Number.isFinite(configured) && configured > 0) return Math.min(15 * 60 * 1000, configured)
   return 10 * 60 * 1000
 }
+// ── Web fill task control plane (P3.0) ────────────────────────────────────
+// A task is the unit of work an execution layer performs. The lifecycle is
+// created -> authorized -> claimed -> running -> completed, with denied,
+// expired, cancelled and failed as the other terminal states.
+//
+// Every transition is validated here and applied inside a Durable Object
+// transaction, so two executors can never claim the same task and a task can
+// never move backwards.
+const FILL_TASK_STATES = new Set(['created', 'authorized', 'claimed', 'running', 'completed', 'denied', 'expired', 'cancelled', 'failed'])
+// The states a task may move to from the current one. A state that is not
+// listed here can never be entered.
+const FILL_TASK_TRANSITIONS = {
+  created: ['authorized', 'denied', 'cancelled', 'expired', 'failed'],
+  authorized: ['claimed', 'denied', 'cancelled', 'expired', 'failed'],
+  claimed: ['running', 'cancelled', 'expired', 'failed'],
+  running: ['completed', 'cancelled', 'expired', 'failed'],
+  completed: [],
+  denied: [],
+  expired: [],
+  cancelled: [],
+  failed: [],
+}
+// A terminal state can never be reactivated.
+const FILL_TASK_TERMINAL = new Set(['completed', 'denied', 'expired', 'cancelled', 'failed'])
+// How long a task may stay in a non-terminal state before it is expired.
+const FILL_TASK_TIMEOUT_MS = {
+  created: 5 * 60 * 1000,
+  authorized: 10 * 60 * 1000,
+  claimed: 10 * 60 * 1000,
+  running: 5 * 60 * 1000,
+}
+// A task credential is short lived and bound to one task and one executor.
+const FILL_TASK_CREDENTIAL_TTL_MS = 5 * 60 * 1000
+
+// The scope of a task. Every field is bound into the task credential, so a
+// credential cannot be used for a different item, account, origin or action.
+function taskScope(task) {
+  return [
+    task.taskId, task.executorId, task.accountId, task.agent,
+    task.cipherId, task.origin, task.action, task.policyRevision,
+  ].map((value) => String(value ?? ''))
+}
+
+// The signed part of a task credential. The nonce and the expiry are inside
+// the signature, so neither can be changed.
+function taskCredentialPayload(task, nonce, expiresAt) {
+  return JSON.stringify({
+    s: taskScope(task),
+    n: nonce,
+    e: expiresAt,
+  })
+}
+
+// A task credential is HMAC signed with the task key. The key never leaves
+// the Worker secret store and is never handed to an Agent.
+async function signTaskCredential(env, task, nonce, expiresAt) {
+  const key = await taskSigningKey(env)
+  const payload = encoder.encode(taskCredentialPayload(task, nonce, expiresAt))
+  const signature = await hmacSha256(key, payload)
+  return base64Url(signature) + '.' + base64Url(payload)
+}
+
+// Verify a task credential and return the parsed scope, or null.
+async function verifyTaskCredential(env, token, task) {
+  if (!token || typeof token !== 'string') return null
+  const dot = token.lastIndexOf('.')
+  if (dot <= 0) return null
+  const signature = token.slice(0, dot)
+  const payload = token.slice(dot + 1)
+  let decoded
+  try { decoded = JSON.parse(decoder.decode(base64UrlDecode(payload))) } catch { return null }
+  if (!decoded || !Array.isArray(decoded.s)) return null
+  if (!Number.isFinite(Number(decoded.e)) || Number(decoded.e) < Date.now()) return null
+  if (!String(decoded.n ?? '')) return null
+  const expected = await hmacSha256(await taskSigningKey(env), encoder.encode(taskCredentialPayload(task, decoded.n, Number(decoded.e))))
+  if (!constantTimeEqual(encoder.encode(base64Url(expected)), encoder.encode(signature))) return null
+  if (!decoded.s.every((value, index) => value === taskScope(task)[index])) return null
+  return decoded
+}
+
+// Decode a base64url string. atob only understands the standard alphabet, so
+// the url-safe characters are mapped back first.
+function base64UrlDecode(text) {
+  const normalized = String(text).replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4)
+  return b64ToBytes(padded)
+}
+// The key that signs task credentials. It is a Worker secret and is never
+// sent to an Agent or an executor.
+async function taskSigningKey(env) {
+  const raw = String(env.FILL_TASK_SIGNING_KEY ?? '')
+  if (!raw) throw new Error('FILL_TASK_SIGNING_KEY is not configured')
+  return b64ToBytes(raw)
+}
+
+// The identity of an execution layer. A registered executor holds a secret
+// that is shown once; only its hash is stored, so a state dump cannot
+// impersonate an executor. This mirrors how Agent tokens are handled.
+function executorAuthOk(state, executorId, presented) {
+  const record = state.fillExecutors?.[executorId]
+  if (!record || record.revokedAt) return false
+  return constantTimeEqual(encoder.encode(record.hash), encoder.encode(presented))
+}
+
+// ── Rate limiting and concurrency caps ─────────────────────────────────────
+// The counters live in the main state, so they are updated through the same
+// compare-and-swap writer as everything else and survive a restart.
+const FILL_RATE_LIMITS = {
+  // tasks created per agent per minute
+  agentTasksPerMinute: 30,
+  // tasks that may be open at once for one account
+  accountConcurrent: 10,
+  // tasks that may be open at once for one credential
+  credentialConcurrent: 3,
+  // claims and redemptions per executor per minute
+  executorOpsPerMinute: 120,
+  // how often a failed task may be retried
+  maxRetries: 3,
+}
+
+// The counter lives in the main state, so it is written through the same
+// compare-and-swap writer as everything else and survives a restart.
+// Returns null when the action is allowed, otherwise the reason.
+// Returns null when the action is allowed, otherwise the reason.
+async function fillRateLimited(env, key, limit, windowMs) {
+  let reason = null
+  await updateState(env, (state) => {
+    const now = Date.now()
+    state.fillRateCounters ??= {}
+    const entry = state.fillRateCounters[key]
+    if (!entry || now - entry.startedAt > windowMs) {
+      state.fillRateCounters[key] = { count: 1, startedAt: now }
+      return state
+    }
+    entry.count += 1
+    if (entry.count > limit) reason = 'rate-limited'
+    return state
+  })
+  return reason
+}
+// Count the tasks that are still open for a given key. A task that has been
+// told to cancel no longer holds a slot: the executor is winding it down and
+// it must not block the queue.
+async function countOpenTasks(env, predicate) {
+  const response = await stateStub(env).fetch('https://state/fill/task/list', { method: 'POST', body: JSON.stringify({}) })
+  const payload = await response.json()
+  const tasks = Array.isArray(payload.tasks) ? payload.tasks : []
+  return tasks.filter((task) => !FILL_TASK_TERMINAL.has(task.state) && task.cancelRequested !== true && predicate(task)).length
+}
+
+// Cancel the open tasks that depend on a policy change, a revoked credential
+// or a locked vault. The tasks are marked cancel-requested so the executor
+// stops at its next checkpoint; the broker does not claim they are already
+// stopped.
+async function cancelTasksFor(env, predicate, reason) {
+  const response = await stateStub(env).fetch('https://state/fill/task/list', { method: 'POST', body: JSON.stringify({}) })
+  const payload = await response.json()
+  const tasks = Array.isArray(payload.tasks) ? payload.tasks : []
+  const affected = []
+  for (const task of tasks) {
+    if (FILL_TASK_TERMINAL.has(task.state)) continue
+    if (!predicate(task)) continue
+    const res = await stateStub(env).fetch('https://state/fill/task/request-cancel', {
+      method: 'POST',
+      body: JSON.stringify({ taskId: task.taskId }),
+    })
+    const outcome = await res.json()
+    if (outcome?.ok) affected.push(task.taskId)
+  }
+  if (affected.length) await addAudit(env, { event: 'fill.task.bulk-cancel', reason, count: affected.length })
+  return affected
+}
+
+// ── Worker side: task control plane endpoints ─────────────────────────────
+// The execution layer is identified by a registered executor secret, and
+// every task it works on is authorised by a separate short lived task
+// credential. The two are verified independently.
+async function registerFillExecutor(env, body) {
+  const executorId = String(body.executorId ?? '').trim()
+  if (!executorId || !/^[A-Za-z0-9._-]{3,64}$/.test(executorId)) return { ok: false, reason: 'invalid-executor-id' }
+  const secret = randomToken() + randomToken()
+  const hash = await sha256Base64(secret)
+  await updateState(env, (state) => {
+    state.fillExecutors ??= {}
+    state.fillExecutors[executorId] = { executorId, hash, createdAt: nowIso(), revokedAt: null, revokedBy: null }
+    return state
+  })
+  await addAudit(env, { event: 'fill.executor.register', executor: executorId })
+  // The secret is shown once and is never stored in plain form.
+  return { ok: true, executorId, secret }
+}
+
+// Resolve the executor identity from the request. The secret is compared as
+// a hash, so a state dump cannot be replayed as a credential.
+async function resolveFillExecutor(env, request) {
+  const executorId = String(request.headers.get('x-fill-executor-id') ?? '')
+  const secret = String(request.headers.get('x-fill-executor-secret') ?? '')
+  if (!executorId || !secret) return null
+  const state = await loadState(env)
+  if (!executorAuthOk(state, executorId, await sha256Base64(secret))) return null
+  return { executorId, state }
+}
+
+// Create a task for a credential. The task carries the full scope so the
+// credential that unlocks it is bound to exactly this work.
+async function createFillTask(env, { agent, accountId, cipherId, itemName, origin, action, policyRevision, executorId }) {
+  const taskId = 't_' + base64Url(crypto.getRandomValues(new Uint8Array(18)))
+  const now = Date.now()
+  const task = {
+    taskId, executorId, agent, accountId, cipherId, itemName, origin, action,
+    policyRevision, state: 'authorized', createdAt: now, updatedAt: now,
+    expiresAt: now + FILL_TASK_TIMEOUT_MS.authorized,
+    claimedBy: '', claimedAt: 0, cancelRequested: false,
+  }
+  const response = await stateStub(env).fetch('https://state/fill/task/store', {
+    method: 'POST',
+    body: JSON.stringify({ task }),
+  })
+  const stored = await response.json()
+  if (!stored?.ok) return { ok: false, reason: stored?.reason ?? 'store-failed' }
+  return { ok: true, task }
+}
+
 // ── Fill authorization ledger ─────────────────────────────────────────────
 // Stored under its own top-level key so the main state shape is untouched.
 // The DO transaction is the only place an authorization can be redeemed, so a
@@ -2264,6 +2693,20 @@ export default {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
       if (!session) return fail('vault locked', 423)
+      // The task belongs to the account that created it. A vault that is now
+      // unlocked with a different account must not redeem it, and the check
+      // happens before the credential is read so the refusal says nothing
+      // about the vault contents.
+      if (task.accountId && String(task.accountId).toLowerCase() !== String(session.email ?? '').toLowerCase()) {
+        await addAudit(env, { event: 'fill.redeem-deny', agent: task.agent, itemId: task.cipherId, origin: task.origin, taskId, reason: 'account-mismatch' })
+        return fail('task credential is not valid: account-mismatch', 403)
+      }
+      // The task belongs to the account that created it. A vault that is now
+      // unlocked with a different account must not redeem it.
+      if (task.accountId && String(task.accountId).toLowerCase() !== String(session.email ?? '').toLowerCase()) {
+        await addAudit(env, { event: 'fill.redeem-deny', agent: task.agent, itemId: task.cipherId, origin: task.origin, taskId, reason: 'account-mismatch' })
+        return fail('task credential is not valid: account-mismatch', 403)
+      }
       const body = await request.json().catch(() => ({}))
       const state = await loadState(env)
       const item = state.credentialRequests?.[String(body.id ?? '')]
@@ -2610,6 +3053,9 @@ export default {
       if (!(await verifyAdminPassword(env, state, body.password))) return fail('管理密码错误', 401)
       await stateStub(env).fetch('https://state/session', { method: 'DELETE' })
       await addAudit(env, { event: 'vault.lock', source: 'password-confirmed' })
+      // A locked vault ends every open task: the executor may no longer
+      // redeem a credential.
+      await cancelTasksFor(env, () => true, 'vault-locked')
       return json({ ok: true })
     }
     if (url.pathname === '/api/items/update' && request.method === 'POST') {
@@ -2766,6 +3212,10 @@ export default {
     // the execution layer's own token, which is never given to an Agent, and a
     // one-shot authorization bound to this exact item, account and origin.
     if (url.pathname === '/api/fill/execute' && request.method === 'POST') {
+      // Retired: the shared static token is not bound to a task or an
+      // executor, so it is disabled unless an operator explicitly opts in
+      // while migrating. The task control plane is the supported path.
+      if (String(env.FILL_LEGACY_EXECUTE_ENABLED ?? '0') !== '1') return fail('the legacy execute path is disabled; use the task control plane', 410)
       if (!executionLayerAuthorized(env, request)) return fail('unauthorized', 401)
       const body = await request.json().catch(() => ({}))
       const nonce = String(body.nonce ?? '')
@@ -2862,6 +3312,263 @@ export default {
       return json({ ok: true, agent: agentName, item: itemName, itemId, action, duration: body.duration ?? '1d' })
     }
 
+    // ── Fill task control plane (executor facing) ────────────────────────
+    // Every endpoint below requires the executor identity. The task
+    // credential is a second, independent check on the task itself.
+    if (url.pathname === '/api/fill/executors/register' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const result = await registerFillExecutor(env, body)
+      if (!result.ok) return fail(result.reason ?? 'invalid', 400)
+      return json(result)
+    }
+    if (url.pathname === '/api/fill/executors/revoke' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const executorId = String(body.executorId ?? '').trim()
+      if (!executorId) return fail('executorId required', 400)
+      await updateState(env, (state) => {
+        const record = state.fillExecutors?.[executorId]
+        if (record) { record.revokedAt = nowIso(); record.revokedBy = 'admin' }
+        return state
+      })
+      await addAudit(env, { event: 'fill.executor.revoke', executor: executorId })
+      return json({ ok: true, executorId })
+    }
+    // Claim the next task for this executor.
+    if (url.pathname === '/api/fill/tasks/claim' && request.method === 'POST') {
+      const executor = await resolveFillExecutor(env, request)
+      if (!executor) return fail('unauthorized', 401)
+      const state = executor.state
+      const limited = await fillRateLimited(env, 'exec:' + executor.executorId, FILL_RATE_LIMITS.executorOpsPerMinute, 60000)
+      if (limited) return fail('rate limited', 429)
+      const response = await stateStub(env).fetch('https://state/fill/task/claim', {
+        method: 'POST',
+        body: JSON.stringify({ executorId: executor.executorId }),
+      })
+      const result = await response.json()
+      if (!result?.ok) return json({ status: 'idle' })
+      const task = result.task
+      // The task credential is short lived and bound to this task, this
+      // executor, this account, agent, credential, origin, action and policy
+      // revision. The Agent never receives it.
+      const nonce = base64Url(crypto.getRandomValues(new Uint8Array(18)))
+      const expiresAt = Date.now() + FILL_TASK_CREDENTIAL_TTL_MS
+      // that actually owns the task.
+  // The scope is computed from the claimed task, so it names the executor
+      // that actually owns the task.
+      const scoped = { ...task, executorId: executor.executorId }
+      const credential = await signTaskCredential(env, scoped, nonce, expiresAt)
+          await addAudit(env, { event: 'fill.task.claim', agent: task.agent, itemId: task.cipherId, origin: task.origin, taskId: task.taskId, executor: executor.executorId })
+      return json({
+        ok: true,
+        taskId: task.taskId,
+        origin: task.origin,
+        action: task.action,
+        credential,
+        credentialExpiresAt: expiresAt,
+        policyRevision: task.policyRevision,
+      })
+    }
+
+    if (url.pathname === '/api/fill/task/redeem' && request.method === 'POST') {
+      const executor = await resolveFillExecutor(env, request)
+      if (!executor) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const taskId = String(body.taskId ?? '')
+      const credential = String(body.credential ?? '')
+      if (!taskId || !credential) return fail('taskId and credential are required', 400)
+      const state = executor.state
+      const limited = await fillRateLimited(env, 'exec:' + executor.executorId, FILL_RATE_LIMITS.executorOpsPerMinute, 60000)
+      if (limited) return fail('rate limited', 429)
+      // The task must exist and must be in a state that allows a redemption.
+      const taskResponse = await stateStub(env).fetch('https://state/fill/task/get', {
+        method: 'POST',
+        body: JSON.stringify({ taskId }),
+      })
+      const taskPayload = await taskResponse.json()
+      if (!taskPayload?.ok) return fail('unknown task', 404)
+      const task = taskPayload.task
+      if (task.executorId !== executor.executorId) return fail('executor-mismatch', 403)
+      if (task.cancelRequested === true) return fail('task cancelled', 409)
+      // The origin in the request has to match the origin of the task. A
+      // caller must not be able to redirect the credential elsewhere.
+      const asked = normalizeOrigin(body.origin)
+      if (asked && asked.origin !== task.origin) {
+        await addAudit(env, { event: 'fill.redeem-deny', agent: task.agent, itemId: task.cipherId, origin: task.origin, taskId, reason: 'origin-mismatch' })
+        return fail('task credential is not valid: origin-mismatch', 403)
+      }
+      if (!['claimed', 'running'].includes(task.state)) return fail('task is not claimable: ' + task.state, 409)
+      // The vault must still be unlocked.
+      const session = await getSession(env)
+      if (!session) return fail('vault locked', 423)
+      // The task belongs to the account that created it. A vault that is now
+      // unlocked with a different account must not redeem it, and the check
+      // happens before the credential is read so the refusal says nothing
+      // about the vault contents.
+      if (task.accountId && String(task.accountId).toLowerCase() !== String(session.email ?? '').toLowerCase()) {
+        await addAudit(env, { event: 'fill.redeem-deny', agent: task.agent, itemId: task.cipherId, origin: task.origin, taskId, reason: 'account-mismatch' })
+        return fail('task credential is not valid: account-mismatch', 403)
+      }
+      // The credential must be bound to exactly this task scope.
+      const verified = await verifyTaskCredential(env, credential, task)
+      if (!verified) return fail('task credential is not valid', 403)
+      // The stored task carries the item name so the broker can read the
+      // credential. The executor never sees the item name.
+      const stored = await stateStub(env).fetch('https://state/fill/task/secret', {
+        method: 'POST',
+        body: JSON.stringify({ taskId }),
+      })
+      const secret = await stored.json()
+      if (!secret?.ok) return fail('credential unavailable', 404)
+      const found = await readSecretFromRows(env, env.NODEWARDEN_DB, session, secret.itemName)
+      if (!found) return fail('credential not found', 404)
+      // One redemption per task: the credential nonce is burned atomically, so
+      // a replay of the same credential cannot fetch the value twice.
+      const burned = await stateStub(env).fetch('https://state/fill/task/burn', {
+        method: 'POST',
+        body: JSON.stringify({ taskId, nonce: verified.n }),
+      })
+      const burnResult = await burned.json()
+      if (!burnResult?.ok) return fail('task credential is not valid: ' + (burnResult?.reason ?? 'unknown'), 403)
+      await addAudit(env, { event: 'fill.redeem', agent: task.agent, itemId: task.cipherId, origin: task.origin, action: task.action, taskId: task.taskId, executor: executor.executorId })
+      return json({ username: found.username, password: found.value, totp: found.totp, origin: task.origin, action: task.action, taskId: task.taskId })
+    }
+    // The executor reports progress. The payload is a strict allowlist: a
+    // credential, a cookie, a page or a header can never travel this way.
+    if (url.pathname === '/api/fill/tasks/report' && request.method === 'POST') {
+      const executor = await resolveFillExecutor(env, request)
+      if (!executor) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const taskId = String(body.taskId ?? '')
+      const state = String(body.state ?? '')
+      if (!taskId) return fail('taskId required', 400)
+      if (!['running', 'completed', 'failed', 'cancelled'].includes(state)) return fail('unknown state', 400)
+      const taskResponse = await stateStub(env).fetch('https://state/fill/task/get', { method: 'POST', body: JSON.stringify({ taskId }) })
+      const taskPayload = await taskResponse.json()
+      if (!taskPayload?.ok) return fail('unknown task', 404)
+      const task = taskPayload.task
+      if (task.executorId !== executor.executorId) return fail('executor-mismatch', 403)
+      // A cancelled task stays cancelled: the executor cannot revive it by
+      // reporting a later state.
+      if (task.cancelRequested === true && state !== 'cancelled') {
+        return fail('task was cancelled', 409)
+      }
+      const outcome = String(body.outcome ?? '').slice(0, 32)
+      const errorCode = body.errorCode ? String(body.errorCode).slice(0, 64) : ''
+      const redirected = body.redirected === true
+      const captcha = body.captcha === true
+      const finalOrigin = normalizeOrigin(body.finalOrigin)?.origin ?? ''
+      const transition = await stateStub(env).fetch('https://state/fill/task/transition', {
+        method: 'POST',
+        body: JSON.stringify({ taskId, to: state, executorId: executor.executorId }),
+      })
+      const result = await transition.json()
+      if (!result?.ok) return fail(result?.reason ?? 'transition refused', 409)
+      // Only the allowed outcome fields are recorded.
+      await addAudit(env, {
+        event: 'fill.task.' + state, agent: task.agent, itemId: task.cipherId, origin: task.origin,
+        taskId, executor: executor.executorId, outcome, errorCode, redirected, captcha,
+      })
+      return json({ ok: true, state: result.state })
+    }
+    // The executor asks whether it may continue. A cancelled task is reported
+    // as cancelled, and the executor is expected to stop and destroy its
+    // browser context.
+    if (url.pathname === '/api/fill/tasks/status' && request.method === 'POST') {
+      const executor = await resolveFillExecutor(env, request)
+      if (!executor) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const taskId = String(body.taskId ?? '')
+      if (!taskId) return fail('taskId required', 400)
+      const taskResponse = await stateStub(env).fetch('https://state/fill/task/get', { method: 'POST', body: JSON.stringify({ taskId }) })
+      const taskPayload = await taskResponse.json()
+      if (!taskPayload?.ok) return fail('unknown task', 404)
+      const task = taskPayload.task
+      if (task.executorId !== executor.executorId) return fail('executor-mismatch', 403)
+      return json({ ok: true, state: task.state, cancelRequested: task.cancelRequested === true })
+    }
+
+    if (url.pathname === '/api/fill/task/redeem' && request.method === 'POST') {
+      const executor = await resolveFillExecutor(env, request)
+      if (!executor) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const taskId = String(body.taskId ?? '')
+      const credential = String(body.credential ?? '')
+      if (!taskId || !credential) return fail('taskId and credential are required', 400)
+      const state = executor.state
+      const limited = await fillRateLimited(env, 'exec:' + executor.executorId, FILL_RATE_LIMITS.executorOpsPerMinute, 60000)
+      if (limited) return fail('rate limited', 429)
+      // The task must exist and must be in a state that allows a redemption.
+      const taskResponse = await stateStub(env).fetch('https://state/fill/task/get', {
+        method: 'POST',
+        body: JSON.stringify({ taskId }),
+      })
+      const taskPayload = await taskResponse.json()
+      if (!taskPayload?.ok) return fail('unknown task', 404)
+      const task = taskPayload.task
+      if (task.executorId !== executor.executorId) return fail('executor-mismatch', 403)
+      if (task.cancelRequested === true) return fail('task cancelled', 409)
+      if (!['claimed', 'running'].includes(task.state)) return fail('task is not claimable: ' + task.state, 409)
+      // The vault must still be unlocked.
+      const session = await getSession(env)
+      if (!session) return fail('vault locked', 423)
+      // The credential must be bound to exactly this task scope.
+      const verified = await verifyTaskCredential(env, credential, task)
+      if (!verified) return fail('task credential is not valid', 403)
+      // The stored task carries the item name so the broker can read the
+      // credential. The executor never sees the item name.
+      const stored = await stateStub(env).fetch('https://state/fill/task/secret', {
+        method: 'POST',
+        body: JSON.stringify({ taskId }),
+      })
+      const secret = await stored.json()
+      if (!secret?.ok) return fail('credential unavailable', 404)
+      const found = await readSecretFromRows(env, env.NODEWARDEN_DB, session, secret.itemName)
+      if (!found) return fail('credential not found', 404)
+      // One redemption per task: the credential nonce is burned atomically, so
+      // a replay of the same credential cannot fetch the value twice.
+      const burned = await stateStub(env).fetch('https://state/fill/task/burn', {
+        method: 'POST',
+        body: JSON.stringify({ taskId, nonce: verified.n }),
+      })
+      const burnResult = await burned.json()
+      if (!burnResult?.ok) return fail('task credential is not valid: ' + (burnResult?.reason ?? 'unknown'), 403)
+      await addAudit(env, { event: 'fill.redeem', agent: task.agent, itemId: task.cipherId, origin: task.origin, action: task.action, taskId: task.taskId, executor: executor.executorId })
+      return json({ username: found.username, password: found.value, totp: found.totp, origin: task.origin, action: task.action, taskId: task.taskId })
+    }
+
+    // Admin: cancel a task. The broker records the request; the executor
+    // confirms separately, so the broker never claims a task is stopped
+    // before the executor agrees.
+    if (url.pathname === '/api/fill/tasks/cancel' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const taskId = String(body.taskId ?? '')
+      if (!taskId) return fail('taskId required', 400)
+      const reason = String(body.reason ?? 'admin').slice(0, 32)
+      const response = await stateStub(env).fetch('https://state/fill/task/request-cancel', {
+        method: 'POST',
+        body: JSON.stringify({ taskId }),
+      })
+      const result = await response.json()
+      if (!result?.ok) return fail(result?.reason ?? 'unknown task', 404)
+      await addAudit(env, { event: 'fill.task.cancel-requested', taskId, reason })
+      return json({ ok: true, taskId, state: result.state, cancelRequested: true })
+    }
+    // Admin: list the tasks, so the console can show what is open.
+    if (url.pathname === '/api/fill/tasks' && request.method === 'GET') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const response = await stateStub(env).fetch('https://state/fill/task/list', { method: 'POST', body: JSON.stringify({}) })
+      const payload = await response.json()
+      const tasks = Array.isArray(payload.tasks) ? payload.tasks : []
+      const state = await loadState(env)
+      const executors = Object.values(state.fillExecutors ?? {}).map((entry) => ({
+        executorId: entry.executorId, revokedAt: entry.revokedAt ?? '', createdAt: entry.createdAt ?? '',
+      }))
+      return json({ tasks, executors })
+    }
+
     if (url.pathname === '/api/fill/policy' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
@@ -2900,6 +3607,9 @@ export default {
         return state
       })
       await addAudit(env, { event: 'fill-policy.update', name: itemName, itemId, kind, origins, actions })
+      // The policy changed, so any task still working on this credential is
+      // cancelled. The executor stops at its next checkpoint.
+      await cancelTasksFor(env, (task) => task.cipherId === itemId, 'policy-changed')
       return json({ ok: true, itemId, kind, origins, actions })
     }
     if (url.pathname === '/api/fill/policies' && request.method === 'GET') {
@@ -2936,6 +3646,7 @@ export default {
         return state
       })
       await addAudit(env, { event: 'fill-policy.delete', name: itemName, itemId })
+      await cancelTasksFor(env, (task) => task.cipherId === itemId, 'policy-deleted')
       return json({ ok: true, itemId })
     }
     if (url.pathname === '/api/fill/read-policy' && request.method === 'POST') {
@@ -3392,6 +4103,8 @@ export default {
         return fail('grant not found', 404)
       }
       await addAudit(env, { event: 'grant.revoke', agent: agentName, name: itemName, account: sessionAccount, source: 'web', capabilities: revokedCapabilities.length })
+      // A revoked authorisation ends the open tasks that depend on it.
+      await cancelTasksFor(env, (task) => task.agent === agentName, 'capability-revoked')
       return json({ ok: true, revokedCapabilities: revokedCapabilities.length })
     }
     if (url.pathname === '/api/grants/sync' && request.method === 'POST') {
@@ -4083,25 +4796,43 @@ export default {
               await addAudit(env, { event: 'fill.deny', agent: resolved.name, name: secretName, origin: requestedOrigin.origin, reason: 'action-not-allowed' })
               return result(text('fill action is not allowed by the policy', true))
             }
-            // No execution layer configured: fail closed. The Agent must not
-            // receive the value, and there is nothing that can redeem a token.
-            if (!String(env.FILL_EXECUTION_TOKEN ?? '')) {
+            // Rate limits: one agent may not flood the executor queue.
+            const rateState = await loadState(env)
+            const agentLimited = await fillRateLimited(env, 'agent:' + resolved.name, FILL_RATE_LIMITS.agentTasksPerMinute, 60000)
+            if (agentLimited) {
+              await addAudit(env, { event: 'fill.deny', agent: resolved.name, name: secretName, origin: requestedOrigin.origin, reason: 'rate-limited' })
+              return result(text('too many fill requests, slow down', true))
+            }
+            // Concurrency caps: one account and one credential may only have
+            // a few tasks open at a time.
+            const openAccount = await countOpenTasks(env, (task) => task.accountId === session.email)
+            if (openAccount >= FILL_RATE_LIMITS.accountConcurrent) return result(text('too many open fill tasks for this account', true))
+            const openCredential = await countOpenTasks(env, (task) => task.cipherId === access.itemId)
+            if (openCredential >= FILL_RATE_LIMITS.credentialConcurrent) return result(text('too many open fill tasks for this credential', true))
+            // The task is routed to a registered executor. Without one the
+            // request fails closed: the Agent never receives the value and there
+            // is nothing that could redeem a credential.
+            const executors = Object.values(rateState.fillExecutors ?? {}).filter((entry) => entry && !entry.revokedAt)
+            if (!executors.length) {
               await addAudit(env, { event: 'fill.deny', agent: resolved.name, name: secretName, origin: requestedOrigin.origin, reason: 'no-execution-layer' })
               return result(text('fill execution layer is not configured', true))
             }
-            const nonce = base64Url(crypto.getRandomValues(new Uint8Array(24)))
-            const issued = await issueFillAuthorization(env, {
-              nonce, agent: resolved.name, itemId: access.itemId ?? '', itemName: secretName, accountId: session.email,
-              origin: requestedOrigin.origin, action: String(args.action ?? 'login'), ttlMs: fillAuthTtlMs(env),
-              policyRevision: String(policy.policy?.policyRevision ?? ''),
+            const executor = executors.sort((a, b) => String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? '')))[0]
+            const task = await createFillTask(env, {
+              agent: resolved.name, accountId: session.email, cipherId: access.itemId ?? '', itemName: secretName,
+              origin: requestedOrigin.origin, action: String(args.action ?? 'login'),
+              policyRevision: String(policy.policy?.policyRevision ?? ''), executorId: executor.executorId,
             })
-            if (!issued?.ok) return result(text('fill authorization could not be issued', true))
-            await addAudit(env, { event: 'fill.authorize', agent: resolved.name, name: secretName, origin: requestedOrigin.origin, approval: access.approval ?? 'policy' })
+            if (!task.ok) return result(text('the fill task could not be created', true))
+            await addAudit(env, { event: 'fill.authorize', agent: resolved.name, name: secretName, origin: requestedOrigin.origin, approval: access.approval ?? 'policy', taskId: task.task.taskId })
             await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: fillKind, action: 'secret.fill', ok: true })
-            // The nonce is the execution layer's handle. It is not a secret:
-            // redeeming it also requires the execution layer's own token.
-            return result(text(JSON.stringify({ taskId: nonce, origin: requestedOrigin.origin, expiresInSeconds: 600 })))
-          }
+            // The Agent learns the task id and the target origin. It never
+            // receives the task credential, which only the executor can read.
+            return result(text(JSON.stringify({
+              taskId: task.task.taskId, origin: requestedOrigin.origin,
+              state: task.task.state, expiresInSeconds: Math.floor((task.task.expiresAt - Date.now()) / 1000),
+            })))
+            }
           if (name === 'request_credential') {
             const secretName = String(args.name ?? '').trim()
             if (!secretName) return result(text('name is required', true))

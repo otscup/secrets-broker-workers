@@ -49,6 +49,7 @@ test-*.mjs
 !test-mf-fill.mjs
 !test-mf-fill-expiry.mjs
 !test-mf-fill-ui.mjs
+!test-mf-fill-task.mjs
 !test-mf-read-guard.mjs
 !test-mf-auth-consistency.mjs
 !test-mf-fill-mock.mjs

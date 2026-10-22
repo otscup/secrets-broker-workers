@@ -22,8 +22,8 @@ const mf = new Miniflare({
   compatibilityDate: '2024-01-01',
   scriptPath: 'src/index.js',
   durableObjects: { BROKER_STATE: 'BrokerState' },
-  vars: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, ADMIN_PASSWORD: 'p' },
-  bindings: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, ADMIN_PASSWORD: 'p' },
+  vars: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, FILL_LEGACY_EXECUTE_ENABLED: '1', FILL_TASK_SIGNING_KEY: Buffer.alloc(32, 21).toString('base64'), ADMIN_PASSWORD: 'p' },
+  bindings: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, FILL_LEGACY_EXECUTE_ENABLED: '1', FILL_TASK_SIGNING_KEY: Buffer.alloc(32, 21).toString('base64'), ADMIN_PASSWORD: 'p' },
   serviceBindings: { NODEWARDEN: async () => new Response('{}') },
   d1Databases: { NODEWARDEN_DB: 'mock-db' },
 })
@@ -52,6 +52,7 @@ async function putSession() {
   await stub.fetch('https://state/session', { method: 'PUT', body: JSON.stringify({ wrapped, expiresAt: 0 }) })
 }
 async function seedState(extra = {}) {
+  const previous = (await getState()) ?? {}
   const s = {
     agents: { [AGENT]: { hash, allow: [ITEM], groups: [], allowAll: false, write: false, legacy: false, account: ACCT, createdAt: '2024-01-01' } },
     oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {},
@@ -59,6 +60,11 @@ async function seedState(extra = {}) {
     settings: { notifications: {}, vaultEmail: ACCT },
     capabilities: {}, actionGrants: {}, usePolicies: {},
     itemIds: { [ITEM]: ITEM_ID },
+    fillExecutors: previous.fillExecutors ?? {},
+    fillRateCounters: previous.fillRateCounters ?? {},
+    adminSessions: previous.adminSessions ?? {},
+    credentialKinds: previous.credentialKinds ?? {},
+    fillPolicies: previous.fillPolicies ?? {},
     ...extra,
   }
   await stub.fetch('https://state/state', { method: 'PUT', body: JSON.stringify(s) })
@@ -96,18 +102,27 @@ function makeMockLayer() {
   const seen = []
   return {
     seen,
-    async redeem({ nonce, itemId, agent, origin }, token) {
-      const res = await mf.dispatchFetch('https://broker.test/api/fill/execute', {
+    // The layer claims a task, receives a task credential and redeems it. The
+    // credential is bound to this task and is usable once.
+    async redeem({ taskId }, token) {
+      const claim = await mf.dispatchFetch('https://broker.test/api/fill/tasks/claim', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-fill-execution-token': token },
-        body: JSON.stringify({ nonce, itemId, agent, origin }),
+        headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': token },
+        body: JSON.stringify({}),
+      })
+      const claimBody = await claim.json().catch(() => ({}))
+      if (claim.status !== 200) return { status: claim.status, body: claimBody, outcome: { ok: false } }
+      const res = await mf.dispatchFetch('https://broker.test/api/fill/task/redeem', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': token },
+        body: JSON.stringify({ taskId: claimBody.taskId, credential: claimBody.credential }),
       })
       const body = await res.json().catch(() => ({}))
       if (res.status === 200) {
         // A real layer would fill the field here and then discard the value.
-        seen.push({ origin, filled: true, hadValue: Boolean(body.password) })
+        seen.push({ origin: claimBody.origin, filled: true, hadValue: Boolean(body.password) })
       }
-      return { status: res.status, body, outcome: { ok: res.status === 200, origin } }
+      return { status: res.status, body, outcome: { ok: res.status === 200, origin: claimBody.origin } }
     },
   }
 }
@@ -116,6 +131,10 @@ function makeMockLayer() {
 await seedState()
 await putSession()
 const cookie = await adminLogin()
+// The task control plane routes a fill to a registered executor.
+const execReg = await adminPost('/api/fill/executors/register', { executorId: 'exec-registered' }, cookie)
+const EXEC_ID = execReg.body.executorId ?? 'exec-registered'
+const EXEC_SECRET = execReg.body.secret ?? ''
 await adminPost('/api/fill/policy', { item: ITEM, kind: 'web', origins: ['https://example.com'], actions: ['login'] }, cookie)
 {
   const st = await getState()
@@ -134,7 +153,7 @@ const layer = makeMockLayer()
 {
   const res = await mcp('secret.fill', { name: ITEM, origin: 'https://example.com' })
   const task = JSON.parse(toolText(res))
-  const r = await layer.redeem({ nonce: task.taskId, itemId: ITEM_ID, agent: AGENT, origin: task.origin }, EXEC_TOKEN)
+  const r = await layer.redeem({ taskId: task.taskId }, EXEC_SECRET)
   if (r.status === 200 && r.body.password === PASSWORD) pass('M1 the mock layer receives the credential')
   else fail('M1', 'status=' + r.status)
 }
@@ -150,7 +169,7 @@ const layer = makeMockLayer()
 {
   const res = await mcp('secret.fill', { name: ITEM, origin: 'https://example.com' })
   const task = JSON.parse(toolText(res))
-  const r = await layer.redeem({ nonce: task.taskId, itemId: ITEM_ID, agent: AGENT, origin: task.origin }, 'wrong-token')
+  const r = await layer.redeem({ taskId: task.taskId }, 'wrong-secret')
   if (r.status === 401) pass('M3 a wrong execution token is refused')
   else fail('M3', 'status=' + r.status)
 }
@@ -159,7 +178,7 @@ const layer = makeMockLayer()
 {
   const res = await mcp('secret.fill', { name: ITEM, origin: 'https://example.com' })
   const task = JSON.parse(toolText(res))
-  const r = await layer.redeem({ nonce: task.taskId, itemId: ITEM_ID, agent: AGENT, origin: task.origin }, EXEC_TOKEN)
+  const r = await layer.redeem({ taskId: task.taskId }, EXEC_SECRET)
   if (r.status === 200) pass('M4 a second task is served with a fresh authorization')
   else fail('M4', 'status=' + r.status)
 }

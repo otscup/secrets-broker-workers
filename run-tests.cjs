@@ -13,9 +13,11 @@ const RUN = path.join(os.tmpdir ? os.tmpdir() : require('node:os').tmpdir(), 'sb
 function mirror() {
   // The node_modules copy is the expensive part, so it happens once. The
   // sources are refreshed on every run.
-  const fresh = !fs.existsSync(path.join(RUN, 'node_modules'))
+  const fresh = !fs.existsSync(path.join(RUN, 'node_modules', 'ws'))
   if (fresh) {
-    fs.rmSync(RUN, { recursive: true, force: true })
+    // Windows may refuse to delete a tree that is still open. The contents
+    // are overwritten below, so a failed clean is not fatal.
+    try { fs.rmSync(RUN, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }) } catch {}
   }
   fs.mkdirSync(RUN, { recursive: true })
   const copy = (rel) => {

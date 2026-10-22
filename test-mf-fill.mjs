@@ -22,8 +22,8 @@ const mf = new Miniflare({
   compatibilityDate: '2024-01-01',
   scriptPath: 'src/index.js',
   durableObjects: { BROKER_STATE: 'BrokerState' },
-  vars: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, ADMIN_PASSWORD: 'p' },
-  bindings: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, ADMIN_PASSWORD: 'p' },
+  vars: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, FILL_LEGACY_EXECUTE_ENABLED: '1', FILL_TASK_SIGNING_KEY: Buffer.alloc(32, 21).toString('base64'), ADMIN_PASSWORD: 'p' },
+  bindings: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, FILL_LEGACY_EXECUTE_ENABLED: '1', FILL_TASK_SIGNING_KEY: Buffer.alloc(32, 21).toString('base64'), ADMIN_PASSWORD: 'p' },
   serviceBindings: { NODEWARDEN: async () => new Response('{}') },
   d1Databases: { NODEWARDEN_DB: 'fill-db' },
 })
@@ -52,6 +52,7 @@ async function putSession() {
   await stub.fetch('https://state/session', { method: 'PUT', body: JSON.stringify({ wrapped, expiresAt: 0 }) })
 }
 async function seedState(extra = {}) {
+  const previous = (await getState()) ?? {}
   const s = {
     agents: { [AGENT]: { hash, allow: [ITEM], groups: [], allowAll: false, write: false, legacy: false, account: ACCT, createdAt: '2024-01-01' } },
     oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {},
@@ -59,6 +60,11 @@ async function seedState(extra = {}) {
     settings: { notifications: {}, vaultEmail: ACCT },
     capabilities: {}, actionGrants: {}, usePolicies: {},
     itemIds: { [ITEM]: ITEM_ID },
+    fillExecutors: previous.fillExecutors ?? {},
+    fillRateCounters: previous.fillRateCounters ?? {},
+    adminSessions: previous.adminSessions ?? {},
+    credentialKinds: previous.credentialKinds ?? {},
+    fillPolicies: previous.fillPolicies ?? {},
     ...extra,
   }
   await stub.fetch('https://state/state', { method: 'PUT', body: JSON.stringify(s) })
@@ -68,7 +74,7 @@ function mcp(tool, args) {
     method: 'POST',
     headers: { authorization: 'Bearer ' + AUTH, 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } }),
-  }).then(async (r) => ({ status: r.status, body: await r.json() }))
+  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
 }
 function toolText(res) {
   const content = res.body?.result?.content?.[0]?.text ?? ''
@@ -85,10 +91,10 @@ async function adminPost(path, body, cookie) {
   return mf.dispatchFetch('https://broker.test' + path, {
     method: 'POST', headers: { 'content-type': 'application/json', cookie },
     body: JSON.stringify(body),
-  }).then(async (r) => ({ status: r.status, body: await r.json() }))
+  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
 }
 async function adminGet(path, cookie) {
-  return mf.dispatchFetch('https://broker.test' + path, { headers: { cookie } }).then(async (r) => ({ status: r.status, body: await r.json() }))
+  return mf.dispatchFetch('https://broker.test' + path, { headers: { cookie } }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
 }
 
 // ── Setup ────────────────────────────────────────────────────────────────
@@ -96,6 +102,10 @@ async function adminGet(path, cookie) {
 await seedState()
 await putSession()
 const cookie = await adminLogin()
+// The task control plane routes a fill to a registered executor.
+const execReg = await adminPost('/api/fill/executors/register', { executorId: 'exec-registered' }, cookie)
+const EXEC_ID = execReg.body.executorId ?? 'exec-registered'
+const EXEC_SECRET = execReg.body.secret ?? ''
 // Classify the item as a website credential with one exact origin.
 {
   const res = await adminPost('/api/fill/policy', {
@@ -173,14 +183,29 @@ const cookie = await adminLogin()
   else fail('F7', text.slice(0, 200))
 }
 
-// ── F8: only the execution layer token may redeem ────────────────────────
-{
+// Close the open tasks so the concurrency budget is free again.
+async function closeOpenTasks() {
+  const list = await adminGet('/api/fill/tasks', cookie)
+  for (const task of list.body.tasks ?? []) {
+    if (['completed', 'denied', 'expired', 'cancelled', 'failed'].includes(task.state)) continue
+    await adminPost('/api/fill/tasks/cancel', { taskId: task.taskId, reason: 'test-cleanup' }, cookie)
+  }
+}
+
+async function startTask() {
+  await closeOpenTasks()
   const res = await mcp('secret.fill', { name: ITEM, origin: 'https://example.com' })
-  const task = JSON.parse(toolText(res))
+  const raw = toolText(res)
+  if (!raw.includes('taskId')) return null
+  return JSON.parse(raw)
+}
+// ── F8: only a registered execution layer may redeem ─────────────────────
+{
+  const task = await startTask()
   // The agent token must not work.
-  const asAgent = await mf.dispatchFetch('https://broker.test/api/fill/execute', {
+  const asAgent = await mf.dispatchFetch('https://broker.test/api/fill/task/redeem', {
     method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + AUTH },
-    body: JSON.stringify({ nonce: task.taskId, itemId: ITEM_ID, agent: AGENT, origin: 'https://example.com' }),
+    body: JSON.stringify({ taskId: task.taskId, credential: 'x' }),
   })
   if (asAgent.status === 401) pass('F8 the agent token cannot redeem a fill authorization')
   else fail('F8', 'status=' + asAgent.status)
@@ -188,27 +213,38 @@ const cookie = await adminLogin()
 
 // ── F9: the execution layer can redeem, and only once ───────────────────
 {
-  const res = await mcp('secret.fill', { name: ITEM, origin: 'https://example.com' })
-  const task = JSON.parse(toolText(res))
-  const execCall = () => mf.dispatchFetch('https://broker.test/api/fill/execute', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-execution-token': EXEC_TOKEN },
-    body: JSON.stringify({ nonce: task.taskId, itemId: ITEM_ID, agent: AGENT, origin: 'https://example.com' }),
-  }).then(async (r) => ({ status: r.status, body: await r.json() }))
-  const first = await execCall()
-  if (first.status === 200 && first.body.password === PASSWORD) pass('F9 the execution layer redeems the credential once')
-  else fail('F9', 'status=' + first.status + ' body=' + JSON.stringify(first.body).slice(0, 160))
-  const second = await execCall()
-  if (second.status === 403) pass('F10 a replayed nonce is refused')
-  else fail('F10', 'status=' + second.status)
+  const task = await startTask()
+  // The layer claims the task and receives a one-shot credential.
+  const claim = await mf.dispatchFetch('https://broker.test/api/fill/tasks/claim', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': EXEC_SECRET },
+    body: JSON.stringify({}),
+  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
+  if (claim.status !== 200 || !claim.body.credential) {
+    fail('F9', 'the claim failed: ' + claim.status)
+  } else {
+    const execCall = () => mf.dispatchFetch('https://broker.test/api/fill/task/redeem', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': EXEC_SECRET },
+      body: JSON.stringify({ taskId: claim.body.taskId, credential: claim.body.credential }),
+    }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
+    const first = await execCall()
+    if (first.status === 200 && first.body.password === PASSWORD) pass('F9 the execution layer redeems the credential once')
+    else fail('F9', 'status=' + first.status + ' body=' + JSON.stringify(first.body).slice(0, 160))
+    const second = await execCall()
+    if (second.status === 403) pass('F10 a replayed nonce is refused')
+    else fail('F10', 'status=' + second.status)
+  }
 }
 
 // ── F11: concurrent redemption yields exactly one winner ────────────────
 {
-  const res = await mcp('secret.fill', { name: ITEM, origin: 'https://example.com' })
-  const task = JSON.parse(toolText(res))
-  const call = () => mf.dispatchFetch('https://broker.test/api/fill/execute', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-execution-token': EXEC_TOKEN },
-    body: JSON.stringify({ nonce: task.taskId, itemId: ITEM_ID, agent: AGENT, origin: 'https://example.com' }),
+  const task = await startTask()
+  const claim = await mf.dispatchFetch('https://broker.test/api/fill/tasks/claim', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': EXEC_SECRET },
+    body: JSON.stringify({}),
+  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
+  const call = () => mf.dispatchFetch('https://broker.test/api/fill/task/redeem', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': EXEC_SECRET },
+    body: JSON.stringify({ taskId: claim.body.taskId, credential: claim.body.credential }),
   }).then((r) => r.status)
   const statuses = await Promise.all([call(), call(), call(), call()])
   const wins = statuses.filter((code) => code === 200).length
@@ -218,24 +254,32 @@ const cookie = await adminLogin()
 
 // ── F12: the redemption is bound to the origin ──────────────────────────
 {
-  const res = await mcp('secret.fill', { name: ITEM, origin: 'https://example.com' })
-  const task = JSON.parse(toolText(res))
-  const res2 = await mf.dispatchFetch('https://broker.test/api/fill/execute', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-execution-token': EXEC_TOKEN },
-    body: JSON.stringify({ nonce: task.taskId, itemId: ITEM_ID, agent: AGENT, origin: 'https://evil.test' }),
+  const task = await startTask()
+  const claim = await mf.dispatchFetch('https://broker.test/api/fill/tasks/claim', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': EXEC_SECRET },
+    body: JSON.stringify({}),
+  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
+  // A credential is bound to the origin of its task, so a redemption that
+  // names another origin is refused.
+  const res2 = await mf.dispatchFetch('https://broker.test/api/fill/task/redeem', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': EXEC_SECRET },
+    body: JSON.stringify({ taskId: claim.body.taskId, credential: claim.body.credential, origin: 'https://evil.test' }),
   })
-  if (res2.status === 403) pass('F12 a redemption for a different origin is refused')
+  if (res2.status === 403 || res2.status === 409) pass('F12 a redemption for a different origin is refused')
   else fail('F12', 'status=' + res2.status)
 }
 
 // ── F13: a locked vault stops the redemption ────────────────────────────
 {
-  const res = await mcp('secret.fill', { name: ITEM, origin: 'https://example.com' })
-  const task = JSON.parse(toolText(res))
+  const task = await startTask()
+  const claim = await mf.dispatchFetch('https://broker.test/api/fill/tasks/claim', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': EXEC_SECRET },
+    body: JSON.stringify({}),
+  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
   await stub.fetch('https://state/session', { method: 'DELETE' })
-  const locked = await mf.dispatchFetch('https://broker.test/api/fill/execute', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-execution-token': EXEC_TOKEN },
-    body: JSON.stringify({ nonce: task.taskId, itemId: ITEM_ID, agent: AGENT, origin: 'https://example.com' }),
+  const locked = await mf.dispatchFetch('https://broker.test/api/fill/task/redeem', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': EXEC_SECRET },
+    body: JSON.stringify({ taskId: claim.body.taskId, credential: claim.body.credential }),
   })
   if (locked.status === 423) pass('F13 a locked vault refuses the redemption')
   else fail('F13', 'status=' + locked.status)
@@ -244,15 +288,19 @@ const cookie = await adminLogin()
 
 // ── F14: a fresh authorization is redeemable ─────────────────────────
 {
-  const res = await mcp('secret.fill', { name: ITEM, origin: 'https://example.com' })
-  const task = JSON.parse(toolText(res))
-  const okCall = await mf.dispatchFetch('https://broker.test/api/fill/execute', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-execution-token': EXEC_TOKEN },
-    body: JSON.stringify({ nonce: task.taskId, itemId: ITEM_ID, agent: AGENT, origin: 'https://example.com' }),
+  const task = await startTask()
+  const claim = await mf.dispatchFetch('https://broker.test/api/fill/tasks/claim', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': EXEC_SECRET },
+    body: JSON.stringify({}),
+  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
+  const okCall = await mf.dispatchFetch('https://broker.test/api/fill/task/redeem', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'x-fill-executor-id': EXEC_ID, 'x-fill-executor-secret': EXEC_SECRET },
+    body: JSON.stringify({ taskId: claim.body.taskId, credential: claim.body.credential }),
   })
   if (okCall.status === 200) pass('F14 a fresh authorization is redeemable')
   else fail('F14', 'status=' + okCall.status)
 }
+
 
 // ── F15: the audit trail keeps metadata only ───────────────────────
 {

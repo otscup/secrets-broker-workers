@@ -22,8 +22,8 @@ const mf = new Miniflare({
   compatibilityDate: '2024-01-01',
   scriptPath: 'src/index.js',
   durableObjects: { BROKER_STATE: 'BrokerState' },
-  vars: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, ADMIN_PASSWORD: 'p' },
-  bindings: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, ADMIN_PASSWORD: 'p' },
+  vars: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, FILL_LEGACY_EXECUTE_ENABLED: '1', FILL_TASK_SIGNING_KEY: Buffer.alloc(32, 21).toString('base64'), ADMIN_PASSWORD: 'p' },
+  bindings: { SESSION_KEK, MCP_ALLOW_READ: '1', FILL_EXECUTION_TOKEN: EXEC_TOKEN, FILL_LEGACY_EXECUTE_ENABLED: '1', FILL_TASK_SIGNING_KEY: Buffer.alloc(32, 21).toString('base64'), ADMIN_PASSWORD: 'p' },
   serviceBindings: { NODEWARDEN: async () => new Response('{}') },
   d1Databases: { NODEWARDEN_DB: 'fill-db' },
 })
@@ -52,6 +52,7 @@ async function putSession() {
   await stub.fetch('https://state/session', { method: 'PUT', body: JSON.stringify({ wrapped, expiresAt: 0 }) })
 }
 async function seedState(extra = {}) {
+  const previous = (await getState()) ?? {}
   const s = {
     agents: { [AGENT]: { hash, allow: [ITEM], groups: [], allowAll: false, write: false, legacy: false, account: ACCT, createdAt: '2024-01-01' } },
     oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {},
@@ -59,6 +60,11 @@ async function seedState(extra = {}) {
     settings: { notifications: {}, vaultEmail: ACCT },
     capabilities: {}, actionGrants: {}, usePolicies: {},
     itemIds: { [ITEM]: ITEM_ID },
+    fillExecutors: previous.fillExecutors ?? {},
+    fillRateCounters: previous.fillRateCounters ?? {},
+    adminSessions: previous.adminSessions ?? {},
+    credentialKinds: previous.credentialKinds ?? {},
+    fillPolicies: previous.fillPolicies ?? {},
     ...extra,
   }
   await stub.fetch('https://state/state', { method: 'PUT', body: JSON.stringify(s) })
@@ -96,6 +102,10 @@ async function adminGet(path, cookie) {
 await seedState()
 await putSession()
 const cookie = await adminLogin()
+// The task control plane routes a fill to a registered executor.
+const execReg = await adminPost('/api/fill/executors/register', { executorId: 'exec-registered' }, cookie)
+const EXEC_ID = execReg.body.executorId ?? 'exec-registered'
+const EXEC_SECRET = execReg.body.secret ?? ''
 await adminPost('/api/fill/policy', { item: ITEM, kind: 'web', origins: ['https://example.com'], actions: ['login'] }, cookie)
 {
   const st = await getState()
