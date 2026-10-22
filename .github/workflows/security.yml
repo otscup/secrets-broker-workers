@@ -117,6 +117,8 @@ jobs:
         run: npm run test:fill-placement
       - name: OIDC providers and identity binding
         run: npm run test:oidc-providers
+      - name: Login page lists every provider
+        run: npm run test:login-providers
       - name: CSS integrity
         run: npm run test:css
       - name: HTML structure guard
