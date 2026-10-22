@@ -119,6 +119,10 @@ jobs:
         run: npm run test:oidc-providers
       - name: Login page lists every provider
         run: npm run test:login-providers
+      - name: Default OIDC provider is editable
+        run: npm run test:oidc-default
+      - name: Grant delete and restore
+        run: npm run test:grant-delete
       - name: CSS integrity
         run: npm run test:css
       - name: HTML structure guard

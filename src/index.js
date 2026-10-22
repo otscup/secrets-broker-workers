@@ -915,7 +915,8 @@ function oidcProviders(state) {
   // would otherwise appear twice, with the same id but a different config.
   const ids = hasLegacy ? new Set(['default']) : new Set()
   const unique = list.filter((entry) => (ids.has(entry.id) ? false : (ids.add(entry.id), true)))
-  return hasLegacy ? [{ id: 'default', label: '默认', legacy: true, ...legacy }, ...unique] : unique
+  // The legacy slot carries its own label now, so renaming it sticks.
+  return hasLegacy ? [{ ...legacy, id: 'default', legacy: true, label: legacy.label || '默认' }, ...unique] : unique
 }
 
 // The provider a request refers to. Without a name the enabled one is used.
@@ -3104,6 +3105,22 @@ export default {
         await updateState(env, (next) => {
           next.settings ??= {}
           next.settings.oidcProviders ??= {}
+          // The 'default' provider IS the legacy single configuration. Writing
+          // it into the provider map created a hidden duplicate: oidcProviders()
+          // prefers the legacy entry, so the name never changed.
+          if (id === 'default' && next.settings.oidc) {
+            const legacy = next.settings.oidc
+            legacy.label = String(body.label ?? legacy.label ?? '').trim()
+            legacy.issuer = issuer
+            legacy.clientId = clientId
+            legacy.enabled = body.enabled !== false
+            for (const key of ['redirectUri', 'scope', 'authorizationEndpoint', 'tokenEndpoint', 'userinfoEndpoint', 'jwksUri']) {
+              if (typeof body[key] === 'string') legacy[key] = body[key].trim()
+            }
+            if (typeof body.clientSecret === 'string' && body.clientSecret.length > 0) legacy.clientSecret = body.clientSecret
+            if (body.clearSecret === true) delete legacy.clientSecret
+            return next
+          }
           const current = next.settings.oidcProviders[id] ?? {}
           const entry = { ...current, id, label: String(body.label ?? current.label ?? '').trim(), issuer, clientId, enabled: body.enabled !== false }
           for (const key of ['redirectUri', 'scope', 'authorizationEndpoint', 'tokenEndpoint', 'userinfoEndpoint', 'jwksUri']) {

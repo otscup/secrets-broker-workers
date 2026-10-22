@@ -8,7 +8,7 @@ export const uiHtml = String.raw`<!doctype html>
 :root{--bg:#f3f6fb;--card:#fff;--line:#e3e9f2;--text:#152033;--muted:#6b7890;--ok:#0f9d8a;--warn:#f2994a;--danger:#c0392b;--btn:#eef1f6;--ios-radius:20px;--ios-shadow:0 1px 2px rgba(20,40,80,.04),0 8px 24px rgba(20,40,80,.04)}
 .card,.kpi{border-radius:var(--ios-radius);box-shadow:var(--ios-shadow)}
 button{border-radius:10px}
-input,select{border-radius:12px;background:#f8f9fc}
+input,select,textarea{border-radius:12px;background:#f8f9fc}
 html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none;background:#151f31}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
 .wrap{max-width:1040px;margin:0 auto;padding:22px 24px 40px}
@@ -37,18 +37,18 @@ nav .icon-btn{width:30px;height:30px;margin-left:4px}
 .account-menu button:hover{background:var(--btn)}
 html[data-theme="dark"]{--bg:#0b1220;--card:#111a2b;--line:#24324a;--text:#e6edf7;--muted:#8fa1bd;--btn:#1b2940;--ok:#20b8a6}
 html[data-theme="dark"] body{background:var(--bg);color:var(--text)}
-html[data-theme="dark"] .kpi,html[data-theme="dark"] .seg,html[data-theme="dark"] input,html[data-theme="dark"] select,html[data-theme="dark"] .account-menu,html[data-theme="dark"] .donut-center{background:var(--card);color:var(--text)}
+html[data-theme="dark"] .kpi,html[data-theme="dark"] .seg,html[data-theme="dark"] input,html[data-theme="dark"] select,html[data-theme="dark"] textarea,html[data-theme="dark"] .account-menu,html[data-theme="dark"] .donut-center{background:var(--card);color:var(--text)}
 html[data-theme="dark"] nav button.active{background:#1b2940;color:var(--text)}
 html[data-theme="dark"] tbody tr:hover td{background:#172338}
 html[data-theme="dark"] .modal{background:rgba(0,0,0,.6)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;margin-bottom:14px;box-shadow:0 8px 24px rgba(20,40,80,.04)}
 h2{font-size:14px;margin:0 0 5px}.hint{color:var(--muted);font-size:12px}
 label.field{display:block;font-size:12px;color:var(--muted);margin:9px 0 4px}
-input,select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fff;font:inherit;outline:none}
+input,select,textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fff;font:inherit;outline:none;color:inherit}
 input[type=checkbox]{width:auto;min-width:0;height:auto;flex:0 0 auto;padding:0;accent-color:var(--ok)}
 .chk{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--text);min-width:0;margin:8px 0}
 .row .chk{flex:0 0 auto;min-width:auto}
-input:focus,select:focus{border-color:var(--ok)}
+input:focus,select:focus,textarea:focus{border-color:var(--ok)}
 button{border:0;border-radius:10px;padding:9px 13px;font:inherit;cursor:pointer;background:var(--btn);color:var(--text)}
 button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;color:var(--danger)}button.small{padding:5px 9px;font-size:12px;white-space:nowrap}
 .notice-bar{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:12px;margin-bottom:12px;cursor:pointer;border:1px solid transparent;font-size:13px;overflow:hidden}
@@ -236,7 +236,7 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
 
   <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读），这里可以设置免审批策略和读取。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
     <div class="card"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。<b>未分类的凭据保持旧版授权行为</b>，Agent 仍可能直接读到明文。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap" style="margin-top:10px"></div></div>
-    <div class="card" id="fp-legacy-card" style="display:none"><h2>需要重新授权的旧授权</h2><div id="fp-legacy-box" class="table-wrap" style="margin-top:10px"></div></div>
+    
   </section>
 
   <section id="view-agents" class="view hidden">
@@ -566,19 +566,31 @@ $('fp-list').addEventListener('click', (event) => {
   const button = event.target.closest('[data-fp-edit]')
   if (button && button.dataset.fpEdit) openItemMenu(button.dataset.fpEdit)
 })
-$('fp-legacy-box').addEventListener('click', async (event) => {
-  const button = event.target.closest('[data-fp-regrant]')
-  if (!button) return
-  const agent = button.dataset.agent || ''
-  const item = button.dataset.name || ''
-  if (!agent || !item) return toast('缺少 Agent 或条目', true)
-  // Seven days is the default the operator can extend afterwards from the
-  // grants page, so the click needs no extra dialog.
-  try {
-    await api('/api/legacy/regrant', { method: 'POST', body: JSON.stringify({ agent, item, action: 'secret.read', duration: '7d' }) })
-    toast('已重新授权 ' + item + '（7 天）')
-    await loadState()
-  } catch (error) { toast(error.message || '重新授权失败', true) }
+// In-table actions for a legacy grant with no identity binding. The delete path
+// uses /api/grants/delete, which is the same one every other row uses.
+$('grants-box').addEventListener('click', async (event) => {
+  const regrant = event.target.closest('[data-legacy-regrant]')
+  if (regrant) {
+    const agent = regrant.dataset.agent || ''
+    const name = regrant.dataset.name || ''
+    try {
+      await api('/api/legacy/regrant', { method: 'POST', body: JSON.stringify({ agent, item: name, action: 'secret.read', duration: '7d' }) })
+      toast('已重新授权 ' + name + '（7 天）')
+      await loadState()
+    } catch (error) { toast(error.message || '重新授权失败', true) }
+    return
+  }
+  const remove = event.target.closest('[data-legacy-delete]')
+  if (remove) {
+    const agent = remove.dataset.agent || ''
+    const name = remove.dataset.name || ''
+    if (!confirm('删除 ' + agent + ' → ' + name + ' 这条旧授权？')) return
+    try {
+      await api('/api/grants/delete', { method: 'POST', body: JSON.stringify({ agent, name }) })
+      toast('已删除')
+      await loadState()
+    } catch (error) { toast(error.message || '删除失败', true) }
+  }
 })
 $('oauth-clients-box').addEventListener('click', async (event) => {
   const button = event.target.closest('[data-oauth-revoke]')
@@ -1477,27 +1489,6 @@ function fillPolicyState() {
   return (app.data && app.data.fillPolicies) || { items: [], executionLayer: false }
 }
 
-// Legacy grants written before credential identity binding existed cannot be
-// migrated safely. There is no separate repair screen: re-sharing the item from
-// the items page writes a bound authorisation, which supersedes the old one.
-// The card stays hidden unless such a grant actually exists.
-function renderLegacyUnbound() {
-  const card = $('fp-legacy-card')
-  const box = $('fp-legacy-box')
-  if (!box || !card) return
-  const entries = (app.data && app.data.legacyUnbound) || []
-  if (!entries.length) { card.style.display = 'none'; box.innerHTML = ''; return }
-  card.style.display = ''
-  const rows = entries.map((entry) =>
-    '<tr><td>' + esc(entry.agent || '') + '</td><td><b>' + esc(entry.name || '') + '</b></td><td>'
-    + '<span style="color:var(--danger)">旧授权，无身份绑定</span></td><td>'
-    + '<button class="small primary" data-fp-regrant data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '">重新授权</button></td></tr>'
-  ).join('')
-  box.innerHTML = '<div class="hint">这些授权是在凭据身份绑定存在之前建立的，Broker 无法证明这个名字今天仍指向同一个凭据（同名条目可能已被删除并重建），所以不会自动迁移。'
-    + '点「重新授权」会按<b>当前</b>凭据重新签发，旧授权同时作废。</div>'
-    + '<table><tr><th>Agent</th><th>条目</th><th>状态</th><th>操作</th></tr>' + rows + '</table>'
-}
-
 function renderFillPolicies() {
   const list = $('fp-list')
   if (!list) return
@@ -1522,6 +1513,11 @@ function renderFillPolicies() {
 
 function renderGrants() {
   const grants = app.data.grants || []
+  // Legacy grants with no recorded identity binding are repaired here, in the
+  // same table: there is no separate screen for them. They cannot be migrated
+  // automatically because the name may now denote a different credential, so
+  // they are marked and the operator re-grants or deletes them in place.
+  const unbound = ((app.data && app.data.legacyUnbound) || []).filter((entry) => !grants.some((g) => g.agent === entry.agent && g.name === entry.name))
   // A short label for the remaining time, so the row reads at a glance.
   const remaining = (grant) => {
     if (grant.revokedAt) return '已撤销'
@@ -1533,7 +1529,7 @@ function renderGrants() {
   }
   const rows = grants.map((grant) => {
     const state = grant.revokedAt ? '已撤销' : (grant.expiresAt && grant.expiresAt <= Date.now() ? '已过期' : (grant.maxReads && (grant.reads ?? 0) >= grant.maxReads ? '次数用尽' : '生效中'))
-    const bad = state === '已过期' || state === '已撤销' || state === '次数用尽'
+    const bad = state !== '生效中'
     return '<tr><td>' + esc(grant.agent) + '</td><td><b>' + esc(grant.name) + '</b></td>'
       + '<td' + (bad ? ' style="color:var(--danger)"' : '') + '>' + esc(state) + '</td>'
       + '<td>' + esc(grant.mode) + '</td>'
@@ -1541,8 +1537,19 @@ function renderGrants() {
       + '<td>' + (grant.reads ?? 0) + (grant.maxReads ? ' / ' + grant.maxReads : '') + '</td>'
       + '<td><button class="small" data-grant-menu data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="更多">⋮</button></td></tr>'
   }).join('')
-  $('grants-box').innerHTML = grants.length
-    ? '<div class="hint">点「到期」那一列的时长即可延期或改读取次数。</div><table><tr><th>Agent</th><th>条目</th><th>状态</th><th>模式</th><th>到期</th><th>读取</th><th>操作</th></tr>' + rows + '</table>'
+  // An unbound legacy grant has no capability and no duration to show; its only
+  // useful actions are re-grant (which binds it) and delete.
+  const legacyRows = unbound.map((entry) =>
+    '<tr><td>' + esc(entry.agent || '') + '</td><td><b>' + esc(entry.name || '') + '</b></td>'
+    + '<td style="color:var(--danger)">需重新授权</td><td>' + esc(entry.mode || '') + '</td>'
+    + '<td class="nowrap"><span class="hint">无绑定</span></td><td>-</td>'
+    + '<td class="nowrap"><button class="small primary" data-legacy-regrant data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '">重新授权</button>'
+    + '<button class="small danger" data-legacy-delete data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" title="删除这条旧授权">删除</button></td></tr>'
+  ).join('')
+  const total = grants.length + unbound.length
+  $('grants-box').innerHTML = total
+    ? '<div class="hint">点「到期」那一列的时长即可延期或改读取次数。标为「需重新授权」的是凭据身份绑定之前建立的旧授权：Broker 无法证明这个名字今天仍指向同一个凭据，所以不会自动迁移，请重新授权或删除。</div>'
+      + '<table><tr><th>Agent</th><th>条目</th><th>状态</th><th>模式</th><th>到期</th><th>读取</th><th>操作</th></tr>' + rows + legacyRows + '</table>'
     : '<div class="hint">暂无授权</div>'
 }
 function renderOauthClients() {
