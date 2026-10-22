@@ -57,7 +57,7 @@ async function seedState(extra = {}) {
     agents: { [AGENT]: { hash, allow: [ITEM], groups: [], allowAll: false, write: false, legacy: false, account: ACCT, createdAt: '2024-01-01' } },
     oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {},
     policies: {}, grants: {}, pending: {}, audit: [], itemGroups: {}, security: {},
-    settings: { notifications: {}, vaultEmail: ACCT },
+    settings: { requireClassification: false, notifications: {}, vaultEmail: ACCT },
     capabilities: {}, actionGrants: {}, usePolicies: {},
     itemIds: { [ITEM]: ITEM_ID },
     fillExecutors: previous.fillExecutors ?? {},

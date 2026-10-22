@@ -1453,6 +1453,8 @@ function publicState(state) {
     policies: state.policies ?? {},
     itemGroups: state.itemGroups ?? {},
     profile: state.profile ?? {},
+    // The UI labels an unclassified credential differently depending on this.
+    requireClassification: requireClassification(state),
     grants: Object.values(state.grants ?? {}),
     pending: Object.values(state.pending ?? {}),
     // Legacy grants that have no recorded identity binding cannot be migrated
@@ -1950,10 +1952,19 @@ function plaintextReadAllowed(state, itemId) {
     if (policy.expiresAt && policy.expiresAt < Date.now()) return { ok: false, reason: 'policy-expired' }
     return { ok: true, policy }
   }
-  // An unclassified credential keeps the previous behaviour: the existing
-  // capability and approval flow already decides. Classification only adds
-  // the stricter rules for the items the admin has labelled.
+  // An unclassified credential is the risky case: nothing has been declared
+  // about it, so classification is what stops an agent reading its plaintext.
+  // The switch defaults ON: an unclassified credential is refused until the
+  // operator labels it. Setting requireClassification to false restores the old
+  // permissive behaviour for installations that need it.
+  if (requireClassification(state)) return { ok: false, reason: 'unclassified-credential' }
   return { ok: true }
+}
+
+// Whether an unclassified credential must be refused. Defaults to true so a
+// fresh install is safe; the operator can turn it off in 设置.
+function requireClassification(state) {
+  return state?.settings?.requireClassification !== false
 }
 // How long a fill authorization stays valid. Kept short on purpose: the
 // execution layer redeems it immediately.
@@ -2560,6 +2571,9 @@ function accessStatusLabel(access) {
   if (reason === 'read-forbidden-by-kind') {
     return { status: 'read-forbidden-by-kind', message: 'this credential is classified as a website login and can only be filled in, not read' }
   }
+  if (reason === 'unclassified-credential') {
+    return { status: 'unclassified-credential', message: 'this credential has not been classified, so plaintext reads are refused; an administrator must mark it as api (and allow reads) or web' }
+  }
   if (reason === 'expired' || reason === 'legacy-expired') {
     return { status: 'expired', message: 'the authorisation has expired' }
   }
@@ -2890,6 +2904,99 @@ export default {
       if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
       const state = await loadState(env)
       return json({ pending: Object.values(state.pending ?? {}).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, createdAt: entry.createdAt })), count: Object.keys(state.pending ?? {}).length })
+    }
+    // Read-only: which agents are using which credentials, derived from the audit
+    // trail and the live capabilities. This is the "who is using my keys" fact
+    // the plugin can show and the web page cannot put in front of the model.
+    // Metadata only: no value, no username, no TOTP.
+    if (url.pathname === '/api/plugin/usage' && request.method === 'GET') {
+      if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const now = Date.now()
+      const windowHours = Math.max(1, Math.min(24 * 30, Number(url.searchParams.get('hours')) || 24))
+      const since = now - windowHours * 3600e3
+      const byAgent = {}
+      const byItem = {}
+      let reads = 0
+      let denied = 0
+      for (const entry of state.audit ?? []) {
+        const at = Date.parse(entry.time ?? '')
+        if (!Number.isFinite(at) || at < since) continue
+        const event = String(entry.event ?? '')
+        if (event !== 'secret.read' && event !== 'secret.read-deny') continue
+        const agent = String(entry.agent ?? '') || '(admin)'
+        const name = String(entry.name ?? '') || '(unknown)'
+        if (event === 'secret.read-deny') {
+          denied += 1
+          const slot = byAgent[agent] ?? (byAgent[agent] = { agent, reads: 0, denied: 0, items: {}, lastAt: '' })
+          slot.denied += 1
+          if (!slot.lastAt || at > Date.parse(slot.lastAt)) slot.lastAt = new Date(at).toISOString()
+          continue
+        }
+        reads += 1
+        const slot = byAgent[agent] ?? (byAgent[agent] = { agent, reads: 0, denied: 0, items: {}, lastAt: '' })
+        slot.reads += 1
+        slot.items[name] = (slot.items[name] ?? 0) + 1
+        if (!slot.lastAt || at > Date.parse(slot.lastAt)) slot.lastAt = new Date(at).toISOString()
+        byItem[name] = (byItem[name] ?? 0) + 1
+      }
+      // Live authorisations, so the plugin can show what is currently allowed and
+      // how much of a bounded grant is left.
+      const capabilities = Object.values(state.capabilities ?? {})
+        .filter((cap) => !cap.revokedAt)
+        .filter((cap) => !cap.expiresAt || cap.expiresAt > now)
+        .map((cap) => ({
+          agent: cap.subjectId ?? '', name: cap.itemName ?? '', action: cap.action ?? '',
+          expiresAt: cap.expiresAt ?? null,
+          usesLeft: cap.maxUses == null ? null : Math.max(0, cap.maxUses - (cap.usedCount ?? 0)),
+          maxUses: cap.maxUses ?? null, usedCount: cap.usedCount ?? 0,
+        }))
+      const pending = Object.values(state.pending ?? {}).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, action: entry.action ?? '', createdAt: entry.createdAt ?? '' }))
+      return json({
+        windowHours, reads, denied,
+        agents: Object.values(byAgent).sort((a, b) => b.reads - a.reads),
+        items: Object.entries(byItem).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, reads: count })),
+        capabilities, pending,
+        requireClassification: requireClassification(state),
+      })
+    }
+    // Long poll: return as soon as the pending queue changes, so a plugin that is
+    // waiting on an approval resumes by itself instead of polling on a timer.
+    // It never approves anything; it only reports. Capped at 25s so the caller
+    // and the platform both stay inside their own timeouts.
+    if (url.pathname === '/api/plugin/wait' && request.method === 'GET') {
+      if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
+      // The caller passes the queue signature it last saw. If that already
+      // differs, the answer is immediate; otherwise poll the state until it
+      // changes or the window closes. Capped at 25s to stay inside the platform
+      // request limit.
+      const wanted = String(url.searchParams.get('since') ?? '')
+      const waitMs = Math.max(0, Math.min(25000, Number(url.searchParams.get('timeout')) || 20000))
+      const started = Date.now()
+      const snapshot = async () => {
+        const state = await loadState(env)
+        const ids = Object.keys(state.pending ?? {}).sort()
+        return {
+          count: ids.length,
+          ids,
+          signature: ids.join(','),
+          pending: Object.values(state.pending ?? {}).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, action: entry.action ?? '', createdAt: entry.createdAt ?? '' })),
+        }
+      }
+      let current = await snapshot()
+      // The signature the caller last saw. No since= means "tell me the current
+      // state", which is not a change.
+      const baseline = wanted || current.signature
+      if (current.signature === baseline) {
+        while (Date.now() - started < waitMs && current.signature === baseline) {
+          await new Promise((resolve) => setTimeout(resolve, 1000))
+          current = await snapshot()
+        }
+      }
+      const { signature, ids, ...rest } = current
+      void ids
+      void signature
+      return json({ ...rest, changed: current.signature !== baseline, waitedMs: Date.now() - started })
     }
     if (url.pathname === '/api/plugin/connect/save' && request.method === 'POST') {
       if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
@@ -4692,7 +4799,7 @@ export default {
           jwksUri: effectiveOidc?.jwksUri ?? '',
           configured: Boolean(effectiveOidc),
           secretConfigured: Boolean(state.settings?.oidc?.clientSecret || env.OIDC_CLIENT_SECRET),
-        }, vaultFolder: state.settings?.vaultFolder ?? '', vaultEmail: state.settings?.vaultEmail ?? '', siteName: state.settings?.siteName ?? 'Secrets Broker' })
+        }, vaultFolder: state.settings?.vaultFolder ?? '', vaultEmail: state.settings?.vaultEmail ?? '', siteName: state.settings?.siteName ?? 'Secrets Broker', requireClassification: requireClassification(state) })
       }
       if (request.method === 'POST') {
         const body = await request.json().catch(() => ({}))
@@ -4756,6 +4863,8 @@ export default {
           }
           if (typeof body.vaultEmail === 'string' && body.vaultEmail.trim()) state.settings.vaultEmail = body.vaultEmail.trim()
           if (typeof body.siteName === 'string' && body.siteName.trim()) state.settings.siteName = body.siteName.trim().slice(0, 60)
+          // Defaults to ON when absent, so nothing can turn it off by omission.
+          if (typeof body.requireClassification === 'boolean') state.settings.requireClassification = body.requireClassification
           return state
         })
         await addAudit(env, { event: 'settings.update', scope: 'notifications-oidc' })

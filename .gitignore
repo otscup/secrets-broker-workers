@@ -76,3 +76,5 @@ attach-route.mjs
 !test-mf-oidc-default-provider.mjs
 !test-mf-grant-delete-restore.mjs
 !test-mf-globe-routes.mjs
+!test-mf-require-classification.mjs
+!test-mf-plugin-endpoints.mjs

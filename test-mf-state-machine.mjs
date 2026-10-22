@@ -74,7 +74,7 @@ const GK = (a = AGENT) => a + '\u0000' + ITEM
 const capOf = (action, extra = {}) => ({ id: action === 'secret.use' ? UK() : CK(), subjectId: AGENT, accountId: ACCT, itemId: ITEM_ID, itemName: ITEM, action, mode: 'preapproved', createdAt: '2024-01-01', createdBy: 't', expiresAt: null, maxUses: null, usedCount: 0, revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1, ...extra })
 const AG = () => ({ [AGENT]: { hash, allow: [], groups: [], allowAll: false, write: false, legacy: false, account: ACCT } })
 function base(extra = {}) {
-  return { agents: AG(), policies: {}, grants: {}, pending: {}, audit: [], settings: { notifications: {} }, itemGroups: {}, actionGrants: {}, usePolicies: {}, capabilities: {}, itemIds: { [ITEM]: ITEM_ID }, ...extra }
+  return { agents: AG(), policies: {}, grants: {}, pending: {}, audit: [], settings: { requireClassification: false, notifications: {} }, itemGroups: {}, actionGrants: {}, usePolicies: {}, capabilities: {}, itemIds: { [ITEM]: ITEM_ID }, ...extra }
 }
 const POL = { [ITEM_ID]: { itemId: ITEM_ID, accountId: ACCT, hosts: ['api.example.invalid'], methods: ['GET'], pathPrefixes: ['/'], ports: ['443'] } }
 

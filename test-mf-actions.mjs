@@ -56,7 +56,7 @@ const getState = () => stub.fetch('https://state/state').then((r) => r.json()).t
 async function seedState(extra = {}) {
   const state = {
     agents: { 'hybrid-agent': { hash, alias: '', allow: [], groups: [], allowAll: false, write: false, legacy: false, account: 'vault@example.invalid', createdAt: '2024-01-01' } },
-    policies: {}, grants: {}, pending: {}, audit: [], settings: { notifications: {} },
+    policies: {}, grants: {}, pending: {}, audit: [], settings: { requireClassification: false, notifications: {} },
     itemGroups: {}, actionGrants: {}, usePolicies: {},
     ...extra,
   }
@@ -177,7 +177,7 @@ const textOf = (r) => r.body?.result?.content?.[0]?.text ?? ''
     agents: { 'hybrid-agent': { hash, allow: [], groups: [], allowAll: false, write: false, legacy: true, account: 'vault@example.invalid' } },
     actionGrants: { 'hybrid-agent\u0000item-1': { id: 'g1', subjectId: 'hybrid-agent', accountId: 'vault@example.invalid', itemId: 'item-1', itemName: 'plain-item', actions: ['secret.read'], legacy: false, createdAt: '2024-01-01' } },
     policies: { 'plain-item': { noApproval: true } },
-    settings: { notifications: {}, shadowPolicy: true },
+    settings: { requireClassification: false, notifications: {}, shadowPolicy: true },
   })
   await putSession()
   const r9 = await mcp('get_secret', { name: 'plain-item' })

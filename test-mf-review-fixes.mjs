@@ -84,7 +84,7 @@ const UK = (a) => a + '\u0000' + ITEM_ID + '\u0000secret.use'
 const GK = (a) => a + '\u0000' + ITEM
 const AG = { [AGENT]: { hash, allow: [], groups: [], allowAll: false, write: false, legacy: true, account: ACCT } }
 function base(extra = {}) {
-  return { agents: structuredClone(AG), policies: {}, grants: {}, pending: {}, audit: [], settings: { notifications: {} }, itemGroups: {}, actionGrants: {}, usePolicies: {}, capabilities: {}, itemIds: { [ITEM]: ITEM_ID }, ...extra }
+  return { agents: structuredClone(AG), policies: {}, grants: {}, pending: {}, audit: [], settings: { requireClassification: false, notifications: {} }, itemGroups: {}, actionGrants: {}, usePolicies: {}, capabilities: {}, itemIds: { [ITEM]: ITEM_ID }, ...extra }
 }
 const NAP = () => ({ [ITEM]: { noApproval: true } })
 const POL = { [ITEM_ID]: { itemId: ITEM_ID, accountId: ACCT, hosts: ['api.example.invalid'], methods: ['GET'], pathPrefixes: ['/'], ports: ['443'] } }
