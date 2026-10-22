@@ -10,11 +10,16 @@ MCP/OAuth 或 Agent token 读取密钥。
 
 相关仓库：
 
+- **在线 demo（无需自建，数据全部虚拟）**：<https://demo.otscup.com>
 - Docker / Node 参考实现：<https://github.com/otscup/secrets-broker>
 - Agent Skill（MCP + stdio 桥接器）：<https://github.com/otscup/secrets-broker-skill>
 - DSH 插件（设置页内处理待审批）：[`dsh-plugin/`](dsh-plugin/)
 
 ## English
+
+**Try it without setting anything up:** <https://demo.otscup.com> — the real UI
+against a virtual vault. No NodeWarden, no real credentials, and its own OIDC
+provider, so the whole flow is clickable in a minute.
 
 Cloudflare Workers-native implementation of Secrets Broker. It reads a
 Bitwarden-compatible vault from **NodeWarden's D1 database**, decrypts items in
