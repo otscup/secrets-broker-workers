@@ -68,3 +68,11 @@ attach-route.mjs
 *.log
 
 !test-mf-globe-fanout.mjs
+!test-mf-html-structure.mjs
+!test-mf-oidc-providers.mjs
+!test-mf-oidc-eddsa.mjs
+!test-mf-fill-placement.mjs
+!test-mf-login-providers.mjs
+!test-mf-oidc-default-provider.mjs
+!test-mf-grant-delete-restore.mjs
+!test-mf-globe-routes.mjs
