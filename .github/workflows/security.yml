@@ -105,8 +105,10 @@ jobs:
         run: npm run test:donut
       - name: Web fill (P1)
         run: npm run test:fill
-  - name: Fill task control plane (P3.0)
-    run: npm run test:fill-task
+      - name: Fill task control plane (P3.0)
+        run: npm run test:fill-task
+      - name: Secret expiry (P3.1)
+        run: npm run test:secret-expiry
       - name: CSS integrity
         run: npm run test:css
       - name: Fixed overview layout (browser)

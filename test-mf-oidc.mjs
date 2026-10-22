@@ -30,8 +30,8 @@ const mf = new Miniflare({
 const ns = await mf.getDurableObjectNamespace('BROKER_STATE')
 const stub = ns.get(ns.idFromName('global'))
 
-async function signCookie(state, verifier, nonce, next, expires) {
-  const payload = state + '|' + verifier + '|' + nonce + '|' + next + '|' + expires
+async function signCookie(state, verifier, nonce, next, expires, provider = 'default') {
+  const payload = provider + '|' + state + '|' + verifier + '|' + nonce + '|' + next + '|' + expires
   const kb = await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode('cookie:' + FAKE_KEK_B64))
   const key = await webcrypto.subtle.importKey('raw', kb, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
   const sig = await webcrypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload))
@@ -66,6 +66,13 @@ const EXP = Date.now() + 10 * 60 * 1000
   const r = await post(c, 'mf-fresh')
   if (r.ok && r.nonce === 'n2' && r.next === 'profile') pass('MF-T3 independent state consumes ok')
   else fail('MF-T3 fresh', JSON.stringify(r))
+}
+// MF-T4: the provider id survives the consume round trip
+{
+  const cookie = await signCookie('mf-provider-state', 'v', 'n', '', Date.now() + 10 * 60 * 1000, 'corp')
+  const out = await post(cookie, 'mf-provider-state')
+  if (out.ok && out.provider === 'corp') pass('MF-T4 the provider id survives the consume round trip')
+  else fail('MF-T4', JSON.stringify(out))
 }
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length

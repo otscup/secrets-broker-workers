@@ -29,16 +29,16 @@ const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
   if (card) pass('M3 enlarged globe is a card (inset 6%)')
   else fail('M3', 'still full screen')
 }
-// M4: the sphere renders about 15% smaller
+// M4: the sphere renders about 12% bigger than it used to
 {
   const cam = /camera\.position\.set\(([^)]*)\)/.exec(globe)
   const pos = cam ? cam[1].split(',').map((v) => Number(v.trim())) : [0, 90, 320]
   const dist = Math.hypot(pos[0], pos[1], pos[2])
   const fov = 42 * Math.PI / 180
   const pct = (2 * 100 / (2 * Math.tan(fov / 2) * dist)) * 100
-  const prev = (2 * 100 / (2 * Math.tan(fov / 2) * Math.hypot(0, 90, 320))) * 100
-  const smaller = ((prev - pct) / prev) * 100
-  if (smaller >= 12 && smaller <= 18) pass('M4 sphere is ' + smaller.toFixed(1) + '% smaller')
+  const prev = (2 * 100 / (2 * Math.tan(fov / 2) * Math.hypot(0, 106, 380))) * 100
+  const smaller = ((pct - prev) / prev) * 100
+  if (smaller >= 10 && smaller <= 15) pass('M4 sphere is ' + smaller.toFixed(1) + '% bigger')
   else fail('M4', 'reduction=' + smaller.toFixed(1) + '%')
 }
 // M5: phone layout measured in a real browser

@@ -315,18 +315,26 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     </div>
     <div class="card"><h2>Bitwarden 文件夹</h2><div class="hint">只同步指定文件夹；留空表示全部。文件夹列表来自 NodeWarden folders。</div><div class="row" style="margin-top:8px"><select id="vault-folder" style="flex:1"><option value="">全部文件夹</option></select><button id="vault-folder-save" class="primary">保存文件夹</button></div><div class="hint" id="vault-folder-status" style="margin-top:8px"></div></div>
     <div class="card"><h2>Bitwarden 账户</h2><div class="hint">选择读取哪个 NodeWarden 用户；切换后会清除当前解锁会话，需要用该用户主密码重新解锁。</div><div class="row" style="margin-top:8px"><select id="vault-email" style="flex:1"></select><button id="vault-switch" class="primary">切换账户</button></div><div class="hint" id="vault-email-status" style="margin-top:8px"></div></div>
-    <div class="card"><h2>OIDC 登录</h2><div class="hint">这里填的配置会保存到 Durable Object，不需要重新部署；留空的 secret 表示保留原值。</div>
-      <label class="field">Issuer</label><input id="oidc-issuer" placeholder="https://auth.example.com">
-      <label class="field">Client ID</label><input id="oidc-client-id" placeholder="client_xxx">
-      <label class="field">Client Secret（public client 可留空）</label><input id="oidc-client-secret" type="password" placeholder="留空保留原值">
-      <label class="field">Redirect URI</label><input id="oidc-redirect" placeholder="https://your-worker/oidc/callback">
-      <label class="field">Scope</label><input id="oidc-scope" placeholder="openid profile email">
-      <label class="field">Authorization Endpoint（高级，留空自动发现）</label><input id="oidc-authorization" placeholder="https://auth.example.com/authorize">
-      <label class="field">Token Endpoint</label><input id="oidc-token" placeholder="https://auth.example.com/token">
-      <label class="field">Userinfo Endpoint</label><input id="oidc-userinfo" placeholder="https://auth.example.com/userinfo">
-      <label class="field">JWKS URI</label><input id="oidc-jwks" placeholder="https://auth.example.com/jwks">
-      <div style="margin-top:10px"><button id="oidc-discover">从 Issuer 自动发现并填充</button><button class="primary" id="oidc-save" style="margin-left:8px">保存 OIDC 设置</button></div>
-      <div class="hint" id="oidc-config-status" style="margin-top:8px"></div>
+    <div class="card"><h2>OIDC 登录</h2><div class="hint">可以添加多个身份服务商。配置保存在 Durable Object，不需要重新部署；已保存的 client secret 不会回显，留空表示保留原值。</div>
+      <div id="oidc-provider-list" style="margin-top:10px"></div>
+      <div style="margin-top:12px"><button id="oidc-new">添加服务商</button></div>
+      <div id="oidc-provider-form" class="hidden" style="margin-top:12px">
+        <label class="field">ID（唯一，用于绑定和解绑）</label><input id="op-id" placeholder="corp">
+        <label class="field">显示名称</label><input id="op-label" placeholder="公司账号">
+        <label class="field">Issuer</label><input id="op-issuer" placeholder="https://auth.example.com">
+        <label class="field">Client ID</label><input id="op-client-id" placeholder="client_xxx">
+        <label class="field">Client Secret（public client 可留空）</label><input id="op-client-secret" type="password" placeholder="留空保留原值">
+        <label class="field">Redirect URI</label><input id="op-redirect" placeholder="https://your-worker/oidc/callback">
+        <label class="field">Scope</label><input id="op-scope" placeholder="openid profile email">
+        <label class="field">Authorization Endpoint（高级，留空自动发现）</label><input id="op-authorization" placeholder="https://auth.example.com/authorize">
+        <label class="field">Token Endpoint</label><input id="op-token" placeholder="https://auth.example.com/token">
+        <label class="field">Userinfo Endpoint</label><input id="op-userinfo" placeholder="https://auth.example.com/userinfo">
+        <label class="field">JWKS URI</label><input id="op-jwks" placeholder="https://auth.example.com/jwks">
+        <label class="chk" style="display:block;margin-top:8px"><input type="checkbox" id="op-enabled" checked> 启用这个服务商</label>
+        <div style="margin-top:10px"><button id="op-discover">从 Issuer 自动发现并填充</button><button class="primary" id="op-save" style="margin-left:8px">保存</button><button id="op-cancel" style="margin-left:8px">取消</button></div>
+        <div class="hint" id="op-status" style="margin-top:8px"></div>
+      </div>
+    </div>
     </div>
     <div class="card"><h2>浏览器通知</h2><div class="hint" id="browser-notify-status"></div><div style="margin-top:10px"><button id="enable-browser-notify">启用浏览器通知</button><button id="test-browser-notify">发送测试通知</button></div></div>
     <div class="card"><h2>MCP 接入</h2><div class="hint">HTTP MCP 地址（用 Agent Bearer token）：</div><div class="secret" id="mcp-url"></div><div class="hint" style="margin-top:8px">工具：list_secrets / request_access / get_secret。Codex、Hermes 可直接配置 HTTP MCP。</div></div>
@@ -384,7 +392,20 @@ async function refreshCurrent() {
     toast('已刷新')
   } catch (error) { toast(error.message, true) }
 }
-async function loadOidcLogin() { try { const data = await api('/api/oidc/status'); if (data.enabled) $('login-oidc').innerHTML = '<a href="/oidc/login"><button class="primary">使用 OIDC 登录</button></a><span class="hint" style="margin-left:8px">' + esc(data.issuer) + '</span>'; else $('login-oidc').innerHTML = '<span class="hint">未配置 OIDC</span>' } catch {} }
+async function loadOidcLogin() {
+  try {
+    const data = await api('/api/oidc/status')
+    if (!data.enabled) { $('login-oidc').innerHTML = '<span class="hint">未配置 OIDC</span>'; return }
+    // One button per provider, so the operator picks the identity to use.
+    const providers = data.providers || []
+    const buttons = []
+    for (const provider of providers) {
+      const label = provider.label || provider.id
+      buttons.push('<a href="/oidc/login?provider=' + encodeURIComponent(provider.id) + '" style="margin-right:8px"><button class="primary">使用 ' + esc(label) + ' 登录</button></a>')
+    }
+    $('login-oidc').innerHTML = buttons.join('')
+  } catch {}
+}
 $('login').onclick = async () => { try { status('login-status', '登录中…'); await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('admin-password').value, code: $('totp-code').value }) }); $('admin-password').value = ''; $('totp-code').value = ''; show('totp-row', false); await boot() } catch (error) { if (error.status === 401 && error.data?.totpRequired) { show('totp-row', true); status('login-status', error.data.error || '请输入两步验证码', 'error') } else status('login-status', error.message, 'error') } }
 $('avatar').onclick = (event) => { event.stopPropagation(); show('account-menu', $('account-menu').classList.contains('hidden')) }
 document.addEventListener('click', (event) => { if (!$('account-menu').classList.contains('hidden') && !event.target.closest('#account-menu') && !event.target.closest('#avatar')) show('account-menu', false) })
@@ -422,7 +443,7 @@ async function lock() {
 $('lock').onclick = lock; $('lock2').onclick = lock
 document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings(); if (view === 'profile') loadProfile() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-discover').onclick = discoverOidc; $('oidc-save').onclick = saveSettings; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
 const copyTokenBtn = $('copy-token'); if (copyTokenBtn) copyTokenBtn.onclick = async () => { try { await navigator.clipboard.writeText(app.token); toast('已复制 token') } catch { toast('复制失败', true) } }
 $('modal-close').onclick = () => show('modal', false)
@@ -585,6 +606,116 @@ let globeBooted = false
 async function loadState() { try { app.data = await api('/api/state'); renderNoticeBar(); if (!globeBooted) { globeBooted = true; try { initGlobe() } catch {} } renderAgents(); renderPending(); renderGrants(); renderFillPolicies(); renderLegacyUnbound(); renderOauthClients(); renderTransfers(); renderRecent(); renderLogs() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
 async function loadItems() { status('item-status', '加载中…'); try { const result = await api('/api/items'); app.items = result.items || []; renderItems(); status('item-status', '共 ' + app.items.length + ' 个条目'); if (result.completedTransfers?.length) { toast('已自动复制：' + result.completedTransfers.join('、')); await loadState() } } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } else status('item-status', error.message, 'error') } }
 async function loadStats() { try { app.stats = await api('/api/stats?range=' + app.range); renderStats() } catch {} }
+// The OIDC providers. Each one is edited on its own; the client secret is
+// never sent back, so the field starts empty and an empty value keeps the
+// stored one.
+// A blank form for a new provider. The id is free here, so it can be typed.
+function showOidcProviderForm() {
+  $('op-id').value = ''
+  $('op-id').disabled = false
+  $('op-label').value = ''
+  $('op-issuer').value = ''
+  $('op-client-id').value = ''
+  $('op-client-secret').value = ''
+  $('op-redirect').value = ''
+  $('op-scope').value = 'openid profile email'
+  $('op-authorization').value = ''
+  $('op-token').value = ''
+  $('op-userinfo').value = ''
+  $('op-jwks').value = ''
+  $('op-enabled').checked = true
+  status('op-status', '')
+  $('oidc-provider-form').classList.remove('hidden')
+}
+
+async function loadOidcProviders() {
+  const list = $('oidc-provider-list')
+  if (!list) return
+  let data = { providers: [] }
+  try { data = await api('/api/oidc/providers') } catch (error) { list.innerHTML = '<div class="hint">读取失败：' + esc(error.message) + '</div>'; return }
+  const providers = data.providers || []
+  if (!providers.length) {
+    list.innerHTML = '<div class="hint">还没有配置身份服务商。点下面的「添加服务商」新建一个。</div>'
+    return
+  }
+  const rows = []
+  for (const provider of providers) {
+    const name = provider.label || provider.id
+    rows.push('<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)">')
+    rows.push('<div><b>' + esc(name) + '</b> <span class="hint">' + esc(provider.id) + '</span><br><span class="hint">' + esc(provider.issuer || '') + (provider.clientId ? ' · ' + esc(provider.clientId) : '') + '</span>')
+    if (provider.secretConfigured) rows.push(' <span class="hint">secret 已保存</span>')
+    if (provider.enabled === false) rows.push(' <span class="hint">已停用</span>')
+    rows.push('</div><div><button data-op-edit="' + esc(provider.id) + '">编辑</button><button data-op-del="' + esc(provider.id) + '" class="danger">删除</button></div>')
+    rows.push('</div>')
+  }
+  list.innerHTML = rows.join('')
+  for (const button of list.querySelectorAll('[data-op-edit]')) button.onclick = () => openOidcProvider(button.getAttribute('data-op-edit'), providers)
+  for (const button of list.querySelectorAll('[data-op-del]')) button.onclick = () => deleteOidcProvider(button.getAttribute('data-op-del'))
+}
+function openOidcProvider(id, providers) {
+  const provider = providers.find((entry) => entry.id === id) || { id: '', label: '' }
+  $('op-id').value = provider.id || ''
+  $('op-id').disabled = Boolean(provider.id)
+  $('op-label').value = provider.label || ''
+  $('op-issuer').value = provider.issuer || ''
+  $('op-client-id').value = provider.clientId || ''
+  $('op-client-secret').value = ''
+  $('op-redirect').value = provider.redirectUri || ''
+  $('op-scope').value = provider.scope || ''
+  $('op-authorization').value = provider.authorizationEndpoint || ''
+  $('op-token').value = provider.tokenEndpoint || ''
+  $('op-userinfo').value = provider.userinfoEndpoint || ''
+  $('op-jwks').value = provider.jwksUri || ''
+  $('op-enabled').checked = provider.enabled !== false
+  $('op-status').textContent = provider.secretConfigured ? '这个服务商已保存 client secret，留空表示保留原值。' : ''
+  $('oidc-provider-form').classList.remove('hidden')
+}
+async function saveOidcProvider() {
+  const id = $('op-id').value.trim()
+  if (!id) { status('op-status', 'ID 必填', 'error'); return }
+  const body = {
+    id, label: $('op-label').value.trim(),
+    issuer: $('op-issuer').value.trim(),
+    clientId: $('op-client-id').value.trim(),
+    clientSecret: $('op-client-secret').value,
+    redirectUri: $('op-redirect').value.trim(),
+    scope: $('op-scope').value.trim(),
+    authorizationEndpoint: $('op-authorization').value.trim(),
+    tokenEndpoint: $('op-token').value.trim(),
+    userinfoEndpoint: $('op-userinfo').value.trim(),
+    jwksUri: $('op-jwks').value.trim(),
+    enabled: $('op-enabled').checked,
+  }
+  try {
+    await api('/api/oidc/providers', { method: 'POST', body: JSON.stringify(body) })
+    $('op-client-secret').value = ''
+    $('oidc-provider-form').classList.add('hidden')
+    await loadOidcProviders()
+    status('op-status', '已保存', 'ok')
+  } catch (error) { status('op-status', error.message, 'error') }
+}
+async function deleteOidcProvider(id) {
+  if (!confirm('删除这个身份服务商？已绑定的账号也会一并解绑。')) return
+  try {
+    await api('/api/oidc/providers', { method: 'DELETE', body: JSON.stringify({ id }) })
+    await loadOidcProviders()
+    toast('已删除')
+  } catch (error) { toast(error.message, true) }
+}
+async function discoverOidcProvider() {
+  const issuer = $('op-issuer').value.trim()
+  if (!issuer) { status('op-status', '请先填 Issuer', 'error'); return }
+  try {
+    const data = await api('/api/oidc/discover?issuer=' + encodeURIComponent(issuer))
+    if (data.authorizationEndpoint) $('op-authorization').value = data.authorizationEndpoint
+    if (data.tokenEndpoint) $('op-token').value = data.tokenEndpoint
+    if (data.userinfoEndpoint) $('op-userinfo').value = data.userinfoEndpoint
+    if (data.jwksUri) $('op-jwks').value = data.jwksUri
+    if (data.scope) $('op-scope').value = data.scope
+    status('op-status', '已自动填充，保存后生效', 'ok')
+  } catch (error) { status('op-status', error.message, 'error') }
+}
+
 async function loadSettings() {
   try {
     const data = await api('/api/settings'); const n = data.notifications || {}
@@ -600,10 +731,7 @@ async function loadSettings() {
     $('tpl-ap-title').value = tplAp.title || ''; $('tpl-ap-body').value = tplAp.body || ''
     $('tpl-lb-once').value = tplLb.once || ''; $('tpl-lb-24h').value = tplLb['24h'] || ''; $('tpl-lb-deny').value = tplLb.deny || ''; $('tpl-lb-always').value = tplLb.always || ''
     $('tpl-rm-title').value = tplRm.title || ''; $('tpl-rm-body').value = tplRm.body || ''
-    const oidc = data.oidc || {}
-    $('oidc-issuer').value = oidc.issuer || ''; $('oidc-client-id').value = oidc.clientId || ''; $('oidc-redirect').value = oidc.redirectUri || ''; $('oidc-scope').value = oidc.scope || ''
-    $('oidc-authorization').value = oidc.authorizationEndpoint || ''; $('oidc-token').value = oidc.tokenEndpoint || ''; $('oidc-userinfo').value = oidc.userinfoEndpoint || ''; $('oidc-jwks').value = oidc.jwksUri || ''
-    $('oidc-config-status').textContent = oidc.configured ? '已配置' + (oidc.secretConfigured ? '（client secret 已保存）' : '') : '未配置'
+    await loadOidcProviders()
     $('mcp-url').textContent = location.origin + '/mcp'
     $('vault-folder').value = data.vaultFolder || ''
     $('site-name').value = data.siteName || 'Secrets Broker'
@@ -622,14 +750,8 @@ async function saveSettings() {
         approval: { title: $('tpl-ap-title').value, body: $('tpl-ap-body').value, labels: { once: $('tpl-lb-once').value, '24h': $('tpl-lb-24h').value, deny: $('tpl-lb-deny').value, always: $('tpl-lb-always').value } },
         reminder: { title: $('tpl-rm-title').value, body: $('tpl-rm-body').value },
       },
-    }, oidc: {
-      issuer: $('oidc-issuer').value, clientId: $('oidc-client-id').value, clientSecret: $('oidc-client-secret').value,
-      redirectUri: $('oidc-redirect').value, scope: $('oidc-scope').value,
-      authorizationEndpoint: $('oidc-authorization').value, tokenEndpoint: $('oidc-token').value,
-      userinfoEndpoint: $('oidc-userinfo').value, jwksUri: $('oidc-jwks').value,
-    }, vaultFolder: $('vault-folder').value, vaultEmail: $('vault-email').value, siteName: $('site-name').value }) })
+  }, vaultFolder: $('vault-folder').value, siteName: $('site-name').value, vaultEmail: $('vault-email').value }) })
     $('site-title').textContent = $('site-name').value.trim() || 'Secrets Broker'
-    $('tg-token').value = ''; $('gotify-token').value = ''; $('wxpush-token').value = ''; $('oidc-client-secret').value = ''
     status('settings-status', '已保存', 'ok'); await loadSettings()
   } catch (error) { status('settings-status', error.message, 'error') }
 }
@@ -640,18 +762,6 @@ async function testNotifications(simulate = false) {
     status('settings-status', simulate ? '已发送模拟授权，检查 Telegram/ntfy 里的按钮' : '测试结果：' + JSON.stringify(result.results), 'ok')
     if (simulate) await loadState()
   } catch (error) { status('settings-status', error.message, 'error') }
-}
-async function discoverOidc() {
-  const issuer = $('oidc-issuer').value.trim(); if (!issuer) return status('oidc-config-status', '请先填 Issuer', 'error')
-  try {
-    status('oidc-config-status', '正在发现…')
-    const data = await api('/api/oidc/discover?issuer=' + encodeURIComponent(issuer))
-    $('oidc-authorization').value = data.authorizationEndpoint || $('oidc-authorization').value
-    $('oidc-token').value = data.tokenEndpoint || $('oidc-token').value
-    $('oidc-userinfo').value = data.userinfoEndpoint || $('oidc-userinfo').value
-    $('oidc-jwks').value = data.jwksUri || $('oidc-jwks').value
-    status('oidc-config-status', '已自动填充，保存后生效', 'ok')
-  } catch (error) { status('oidc-config-status', error.message, 'error') }
 }
 function openKpiModal(kind) {
   const audit = app.data.audit || []
@@ -724,6 +834,7 @@ function renderItems() {
       '<td class="hint">' + esc(when) + '</td>' +
       '<td class="hint">' + esc(who) + '</td>' +
       '<td class="nowrap"><button class="small ' + (item.noApproval ? 'primary' : '') + '" data-policy="' + esc(item.name) + '">' + (item.noApproval ? '免审批' : '需审批') + '</button></td>' +
+ + expiryBadge(item) +
       '<td class="actions"><button class="small" data-read="' + esc(item.name) + '">读取</button><button class="small" data-item-menu="' + esc(item.name) + '" title="更多">⋮</button></td></tr>'
   }).join('') + '</table>' : '<div class="hint">没有条目</div>'
   const all = $('select-all-items')
@@ -745,7 +856,7 @@ function expiryLabel(expiresAt) {
 // ── Agent Live Globe (P3/P4) ────────────────────────────────────────────────
 // Loaded lazily and entirely optional: any failure hides the globe and leaves
 // the rest of the console untouched.
-const globe = { instance: null, loading: false, failed: false, range: '24h', cursor: 0, events: [], timer: null, paused: false, hidden: false, reduceMotion: false, operator: null, showArcs: true, showOperator: true }
+const globe = { instance: null, loading: false, failed: false, range: '24h', cursor: 0, events: [], timer: null, paused: false, hidden: false, reduceMotion: false, operator: null, broker: null, showArcs: true, showOperator: true }
 function globeVisible() {
   return !globe.hidden && !document.hidden && !globe.paused
 }
@@ -757,6 +868,7 @@ async function fetchGlobeEvents(reset) {
   const response = await api('/api/geo/events?range=' + encodeURIComponent(globe.range) + '&sinceSeq=' + since + '&limit=300')
   if (!response.enabled) return { disabled: true, events: [] }
   globe.operator = response.operator || null
+  globe.broker = response.broker || null
   if (reset) globe.events = []
   // De-duplicate by id so a retried poll cannot double-plot.
   const seen = new Set(globe.events.map((e) => e.id))
@@ -821,7 +933,7 @@ async function refreshGlobe(reset) {
     // placeholder forever on a quiet broker.
     const instance = await ensureGlobe()
     if (!instance) return
-    instance.setPoints(events, globe.operator, { showArcs: globe.showArcs, showOperator: globe.showOperator })
+    instance.setPoints(events, globe.operator, { showArcs: globe.showArcs, showOperator: globe.showOperator, broker: globe.broker })
   } catch { /* polling is best-effort */ }
 }
 function syncGlobePolling() {
@@ -1029,7 +1141,7 @@ function noticeItems() {
   if (pending.length) {
     return pending.map((entry) => ({ level: 'pending', text: '待审批：' + (entry.agent || 'Agent') + ' 请求读取「' + entry.name + '」', kind: 'pending', entry }))
   }
-  return (data.reminders || []).map((item) => ({ level: item.severity, text: (item.agent || '') + '：' + (item.message || ''), kind: item.kind, entry: item }))
+  return (data.reminders || []).map((item) => ({ level: item.severity, text: (item.kind && item.kind.indexOf('secret-') === 0 ? '密钥 ' : '') + (item.agent || '') + '：' + (item.message || ''), kind: item.kind, entry: item }))
 }
 function renderNoticeBar() {
   const bar = $('notice-bar')
@@ -1457,12 +1569,27 @@ function itemInfoHtml(item) {
   const usageRows = usage.length ? '<table><tr><th>时间</th><th>Agent</th><th>动作</th><th>方式</th></tr>' + usage.map((entry) => '<tr><td>' + esc(entry.time ? new Date(entry.time).toLocaleString('zh-CN', { hour12: false }) : '') + '</td><td>' + esc(agentLabel(entry.agent)) + '</td><td>' + esc(describeEvent(entry)) + '</td><td>' + esc(entry.mode || entry.source || '') + '</td></tr>').join('') + '</table>' : '<div class="hint">暂无使用记录</div>'
   return '<div class="hint" style="margin-bottom:8px">创建：' + esc(item.createdAt ? new Date(item.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-') + ' · 创建人：' + esc(item.creator || '-') + '</div><div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center"><b>分享情况</b><button class="small" id="mi-share-sync">分享 / 同步</button></div>' + rows + '<div style="margin-top:10px"><b>最近使用</b></div>' + usageRows + '</div>'
 }
+// The expiry field of the edit dialog. A secret without an expiry shows an
+// empty date, and an empty date on save means no expiry.
+// The expiry badge of an item. It only appears when a secret has one.
+function expiryBadge(item) {
+  if (!item || !item.expiresAt) return ''
+  const days = Math.ceil((item.expiresAt - Date.now()) / 86400e3)
+  const text = days <= 0 ? '已过期' : (days <= 1 ? '今天到期' : days + ' 天后到期')
+  return '<td class="nowrap"><span class="hint" style="color:var(--danger)">' + esc(text) + '</span></td>'
+}
+
+function expiresField(item) {
+  const stamp = item && item.expiresAt ? new Date(item.expiresAt).toISOString().slice(0, 10) : ''
+  return '<label class="field">有效期（留空表示不过期）</label><input id="mi-expires" type="date" value="' + esc(stamp) + '">'
+}
+
 function openItemMenu(name) {
   const item = app.items.find((entry) => entry.name === name); if (!item) return
   const agents = app.data.agents || []
-  openModal('条目「' + name + '」', itemInfoHtml(item) + '<label class="field">名称</label><input id="mi-name" value="' + esc(item.name) + '"><label class="field">用户名（留空不改）</label><input id="mi-username" value="' + esc(item.username || '') + '"><label class="field">TOTP Secret（留空不改）</label><input id="mi-totp" value="' + esc(item.totp || '') + '"><label class="field">分组</label><input id="mi-group" value="' + esc(item.group || '') + '" placeholder="例如 blog/prod"><label class="field">网址</label><input id="mi-url" value="' + esc(item.url || '') + '"><label class="field">备注（留空不改）</label><input id="mi-notes" placeholder="新的备注"><label class="field">新密钥值（留空不改）</label><input id="mi-value" type="password" placeholder="留空保留原值"><label class="chk" style="margin-top:8px"><input type="checkbox" id="mi-noapproval" ' + (item.noApproval ? 'checked' : '') + '> 免审批（自动读取，仍记录）</label><div class="row" style="margin-top:14px"><button class="primary" id="mi-save">保存修改</button><button id="mi-share">分享</button><button class="danger" id="mi-delete">删除</button></div><div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div class="hint">分享给 Agent（同账户直接授权；跨账户会先复制到目标账户文件夹，切回目标账户解锁后自动完成）</div><label class="field">Agent</label><select id="mi-share-agent" multiple size="3">' + agents.map((agent) => '<option value="' + esc(agent.name) + '">' + esc(agent.alias || agent.name) + '</option>').join('') + '</select><label class="field">跨账户目标文件夹（同账户可留空）</label><input id="mi-share-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="mi-share-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mi-share-reads" type="number" min="1"></div>')
+  openModal('条目「' + name + '」', itemInfoHtml(item) + '<label class="field">名称</label><input id="mi-name" value="' + esc(item.name) + '"><label class="field">用户名（留空不改）</label><input id="mi-username" value="' + esc(item.username || '') + '"><label class="field">TOTP Secret（留空不改）</label><input id="mi-totp" value="' + esc(item.totp || '') + '"><label class="field">分组</label><input id="mi-group" value="' + esc(item.group || '') + '" placeholder="例如 blog/prod"><label class="field">网址</label><input id="mi-url" value="' + esc(item.url || '') + '"><label class="field">备注（留空不改）</label><input id="mi-notes" placeholder="新的备注"><label class="field">新密钥值（留空不改）</label><input id="mi-value" type="password" placeholder="留空保留原值"><label class="chk" style="margin-top:8px"><input type="checkbox" id="mi-noapproval" ' + (item.noApproval ? 'checked' : '') + '> 免审批（自动读取，仍记录）</label><div class="row" style="margin-top:14px"><button class="primary" id="mi-save">保存修改</button><button id="mi-share">分享</button><button class="danger" id="mi-delete">删除</button></div><div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div class="hint">分享给 Agent（同账户直接授权；跨账户会先复制到目标账户文件夹，切回目标账户解锁后自动完成）</div><label class="field">Agent</label><select id="mi-share-agent" multiple size="3">' + agents.map((agent) => '<option value="' + esc(agent.name) + '">' + esc(agent.alias || agent.name) + '</option>').join('') + '</select><label class="field">跨账户目标文件夹（同账户可留空）</label><input id="mi-share-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="mi-share-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mi-share-reads" type="number" min="1"></div>' + expiresField(item) + '</div>')
   $('mi-share-sync').onclick = () => { show('modal', false); selectedItems.clear(); selectedItems.add(item.name); openBulkShare() }
-  $('mi-save').onclick = async () => { try { await api('/api/items/update', { method: 'POST', body: JSON.stringify({ name: item.name, newName: $('mi-name').value.trim(), username: $('mi-username').value, totp: $('mi-totp').value, group: $('mi-group').value.trim(), url: $('mi-url').value.trim(), notes: $('mi-notes').value.trim() ? $('mi-notes').value : undefined, value: $('mi-value').value, noApproval: $('mi-noapproval').checked }) }); show('modal', false); await Promise.all([loadItems(), loadState()]); toast('已保存') } catch (error) { toast(error.message, true) } }
+  $('mi-save').onclick = async () => { try { await api('/api/items/update', { method: 'POST', body: JSON.stringify({ name: item.name, newName: $('mi-name').value.trim(), username: $('mi-username').value, totp: $('mi-totp').value, group: $('mi-group').value.trim(), url: $('mi-url').value.trim(), notes: $('mi-notes').value.trim() ? $('mi-notes').value : undefined, value: $('mi-value').value, noApproval: $('mi-noapproval').checked, expiresAt: $('mi-expires').value }) }); show('modal', false); await Promise.all([loadItems(), loadState()]); toast('已保存') } catch (error) { toast(error.message, true) } }
   $('mi-delete').onclick = async () => { if (!confirm('删除条目「' + item.name + '」？')) return; try { await api('/api/items/delete', { method: 'POST', body: JSON.stringify({ name: item.name }) }); show('modal', false); await Promise.all([loadItems(), loadState()]); toast('已删除') } catch (error) { toast(error.message, true) } }
   $('mi-share').onclick = async () => { const agents = [...$('mi-share-agent').selectedOptions].map((option) => option.value); if (!agents.length) return toast('至少选择一个 Agent', true); try { const result = await api('/api/grants/share', { method: 'POST', body: JSON.stringify({ name: $('mi-name').value.trim() || item.name, agents, seconds: Number($('mi-share-seconds').value), maxReads: $('mi-share-reads').value || null, targetFolder: $('mi-share-folder').value.trim() }) }); show('modal', false); await loadState(); if (result.queued?.length) toast('已加入跨账户复制队列，切回目标账户并解锁后自动复制'); else toast('已分享') } catch (error) { toast(error.message, true) } }
 }
@@ -1515,15 +1642,33 @@ async function loadProfile() {
       const sessions = data.sessions || []
       $('sessions-box').innerHTML = sessions.length ? '<table><tr><th>客户端</th><th>IP</th><th>创建</th><th>最后活跃</th><th>操作</th></tr>' + sessions.map((session) => '<tr><td class="hint" title="' + esc(session.ua || '') + '">' + esc(uaLabel(session.ua)) + (session.current ? ' <b>(当前)</b>' : '') + '</td><td class="hint">' + esc(session.ip || '-') + '</td><td class="hint">' + esc(session.createdAt ? new Date(session.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-') + '</td><td class="hint">' + esc(session.lastSeen ? new Date(session.lastSeen).toLocaleString('zh-CN', { hour12: false }) : '-') + '</td><td>' + (session.current ? '' : '<button class="small danger" data-revoke-session="' + esc(session.id) + '">下线</button>') + '</td></tr>').join('') + '</table>' : '<div class="hint">没有可管理的会话（旧版登录或服务端未记录）</div>'
     } catch {} 
-    renderAvatar(profile.name || profile.email || profile.oidcEmail, profile.avatarUrl)
-    $('who').textContent = profile.email || profile.oidcEmail || $('who').textContent
-    const oidc = data.oidcEnabled ? '<div class="hint">OIDC issuer：<code>' + esc(data.oidcIssuer) + '</code>' + (profile.oidcSub ? '<br>已绑定：<code>' + esc(profile.oidcEmail || profile.oidcSub) + '</code>' : '<br>尚未绑定，点击登录即可绑定') + '<br>如果 OIDC 已有登录会话，授权可能直接完成；绑定链接已强制 prompt=login。</div><div style="margin-top:10px"><a class="link-button primary" href="/oidc/login?next=profile&prompt=login">使用 OIDC 登录 / 绑定</a>' + (profile.oidcSub ? '<button class="danger" id="oidc-unbind" style="margin-left:8px">解绑 OIDC</button>' : '') + '</div>' : '<div class="hint">未配置 OIDC。设置 OIDC_ISSUER / OIDC_CLIENT_ID / OIDC_CLIENT_SECRET 后重启即可。</div>'
+    renderAvatar(profile.name || profile.oidcName || profile.email || profile.oidcEmail, profile.avatarUrl)
+    $('who').textContent = profile.name || profile.oidcName || profile.email || profile.oidcEmail || $('who').textContent
+    // Every provider is listed on its own, with its own bind and unbind.
+    const providerRows = []
+    for (const provider of data.oidcProviders || []) {
+      const binding = data.oidcBindings ? data.oidcBindings[provider.id] : null
+      providerRows.push('<div class="row" style="justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)">')
+      providerRows.push('<div><b>' + esc(provider.label || provider.id) + '</b> <span class="hint">' + esc(provider.issuer || '') + '</span>')
+      if (binding) providerRows.push('<br><span class="hint">已绑定：<code>' + esc(binding.email || binding.sub) + '</code></span>')
+      providerRows.push('</div><div>')
+      if (!binding) providerRows.push('<a class="link-button primary" href="/oidc/login?provider=' + encodeURIComponent(provider.id) + '&next=profile&prompt=login">绑定</a>')
+      else providerRows.push('<button class="danger" data-oidc-unbind="' + esc(provider.id) + '">解绑</button>')
+      providerRows.push('</div></div>')
+    }
+    const oidc = data.oidcEnabled
+      ? '<div class="hint">可以绑定多个身份服务商，每个单独绑定、单独解绑。</div>' + (providerRows.join('') || '<div class="hint">还没有可用的身份服务商。</div>')
+      : '<div class="hint">未配置 OIDC。先在「设置」里添加身份服务商。</div>'
     $('oidc-box').innerHTML = oidc
-    if ($('oidc-unbind')) $('oidc-unbind').onclick = async () => { if (!confirm('解绑 OIDC？下次登录会重新绑定。')) return; try { await api('/api/profile/oidc/unbind', { method: 'POST' }); await loadProfile(); toast('已解绑') } catch (error) { status('oidc-status', error.message, 'error') } }
+    for (const button of $('oidc-box').querySelectorAll('[data-oidc-unbind]')) button.onclick = async () => {
+      const id = button.getAttribute('data-oidc-unbind')
+      if (!confirm('解绑这个身份服务商？下次登录会重新绑定。')) return
+      try { await api('/api/profile/oidc/bindings', { method: 'DELETE', body: JSON.stringify({ id }) }); await loadProfile(); toast('已解绑') } catch (error) { status('oidc-status', error.message, 'error') }
+    }
     await loadSecurity()
   } catch (error) { status('profile-status', error.message, 'error') }
 }
-async function saveProfile() { try { await api('/api/profile', { method: 'POST', body: JSON.stringify({ name: $('profile-name').value, email: $('profile-email').value, avatarUrl: $('profile-avatar').value }) }); status('profile-status', '已保存', 'ok'); $('who').textContent = $('profile-email').value; renderAvatar($('profile-name').value || $('profile-email').value, $('profile-avatar').value) } catch (error) { status('profile-status', error.message, 'error') } }
+async function saveProfile() { try { const name = $('profile-name').value.trim(); const email = $('profile-email').value.trim(); const avatarUrl = $('profile-avatar').value.trim(); await api('/api/profile', { method: 'POST', body: JSON.stringify({ name, email, avatarUrl }) }); status('profile-status', '已保存', 'ok'); $('who').textContent = name || email.split('@')[0] || $('who').textContent; renderAvatar(name || email, avatarUrl) } catch (error) { status('profile-status', error.message, 'error') } }
 async function switchAccount() { const email = $('vault-email').value; if (!email) return; if (!confirm('切换到 ' + email + '？当前解锁会话会被清除，需要用该账户主密码重新解锁。')) return; try { status('settings-status', '切换中…'); await api('/api/settings', { method: 'POST', body: JSON.stringify({ vaultEmail: email }) }); status('settings-status', '已切换，请重新解锁', 'ok'); await boot() } catch (error) { status('settings-status', error.message, 'error') } }
 async function saveFolder() { const folder = $('vault-folder').value; try { status('vault-folder-status', '保存中…'); await api('/api/settings', { method: 'POST', body: JSON.stringify({ vaultFolder: folder }) }); status('vault-folder-status', folder ? '已保存，只读取：' + folder : '已保存，读取全部文件夹', 'ok'); await Promise.all([loadItems(), loadSettings()]) } catch (error) { status('vault-folder-status', error.message, 'error') } }
 async function loadSecurity() {

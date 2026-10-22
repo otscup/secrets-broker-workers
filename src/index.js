@@ -632,15 +632,16 @@ export class BrokerState extends DurableObject {
       const returned = String(body.state ?? '')
       const decoded = (() => { try { return decodeURIComponent(cookieValue) } catch { return '' } })()
       const parts = decoded ? decoded.split('|') : []
-      if (parts.length < 6) return json({ ok: false, reason: 'invalid' })
+      if (parts.length < 7) return json({ ok: false, reason: 'invalid' })
       const signature = parts.pop()
       const expires = Number(parts.pop())
       const next = parts.pop()
       const nonce = parts.pop()
       const verifier = parts.pop()
-      const state = parts.join('|')
+      const state = parts.pop()
+      const provider = parts.pop()
       if (!state || state !== returned) return json({ ok: false, reason: 'mismatch' })
-      const payload = `${state}|${verifier}|${nonce}|${next}|${expires}`
+      const payload = provider + '|' + state + '|' + verifier + '|' + nonce + '|' + next + '|' + expires
       const expected = await hmacToken(await cookieKey(this.env), payload)
       if (!constantTimeEqual(encoder.encode(expected), encoder.encode(signature ?? ''))) return json({ ok: false, reason: 'invalid' })
       if (!Number.isFinite(expires) || expires < Date.now()) return json({ ok: false, reason: 'expired' })
@@ -659,7 +660,7 @@ export class BrokerState extends DurableObject {
         return true
       })
       if (!marked) return json({ ok: false, reason: 'replay' })
-      return json({ ok: true, state, verifier, nonce, next, expires })
+      return json({ ok: true, state, verifier, nonce, next, expires, provider })
     }
     if (url.pathname === '/session') {
       if (request.method === 'GET') {
@@ -904,14 +905,36 @@ async function addAudit(env, entry) {
   })
 }
 
-async function oidcConfig(env, request, state) {
-  const stored = state?.settings?.oidc ?? {}
+// The OIDC providers. The old single configuration is exposed as the
+// default provider, so an existing installation keeps working.
+function oidcProviders(state) {
+  const list = Object.values(state?.settings?.oidcProviders ?? {})
+  const legacy = state?.settings?.oidc ?? {}
+  const hasLegacy = Boolean(legacy.issuer && legacy.clientId)
+  return hasLegacy ? [{ id: 'default', label: '默认', legacy: true, ...legacy }, ...list] : list
+}
+
+// The provider a request refers to. Without a name the enabled one is used.
+function pickOidcProvider(state, wanted) {
+  const providers = oidcProviders(state)
+  if (!providers.length) return null
+  if (wanted) {
+    const found = providers.find((entry) => entry.id === String(wanted))
+    if (found) return found
+  }
+  return providers.find((entry) => entry.enabled !== false) ?? providers[0]
+}
+
+async function oidcConfig(env, request, state, provider) {
+  const stored = provider ?? state?.settings?.oidc ?? {}
   const issuer = String(stored.issuer || env.OIDC_ISSUER || '').replace(/\/$/, '')
   const clientId = String(stored.clientId || env.OIDC_CLIENT_ID || '')
   const clientSecret = String(stored.clientSecret || env.OIDC_CLIENT_SECRET || '')
-  const redirectUri = String(stored.redirectUri || env.OIDC_REDIRECT_URI || `${new URL(request.url).origin}/oidc/callback`)
+  const redirectUri = String(stored.redirectUri || env.OIDC_REDIRECT_URI || (new URL(request.url).origin) + '/oidc/callback')
   if (!issuer || !clientId) return null
   return {
+    id: String(stored.id ?? 'default'),
+    label: String(stored.label ?? ''),
     issuer, clientId, clientSecret, redirectUri, scope: stored.scope || env.OIDC_SCOPE || 'openid profile email',
     authorizationEndpoint: String(stored.authorizationEndpoint || env.OIDC_AUTHORIZATION_ENDPOINT || ''),
     tokenEndpoint: String(stored.tokenEndpoint || env.OIDC_TOKEN_ENDPOINT || ''),
@@ -939,11 +962,11 @@ async function oidcDiscovery(issuer) {
   return document
 }
 
-async function oidcStateCookie(env, state, verifier, next = '', nonce = '') {
+async function oidcStateCookie(env, state, verifier, next = '', nonce = '', provider = '') {
   const expires = Date.now() + 10 * 60 * 1000
-  const payload = `${state}|${verifier}|${nonce}|${next}|${expires}`
+  const payload = provider + '|' + state + '|' + verifier + '|' + nonce + '|' + next + '|' + expires
   const signature = await hmacToken(await cookieKey(env), payload)
-  return encodeURIComponent(`${payload}|${signature}`)
+  return encodeURIComponent(payload + '|' + signature)
 }
 
 // NOTE: OIDC state verification moved into the Durable Object endpoint
@@ -1181,6 +1204,7 @@ async function listCiphers(env, db, session) {
         createdAt: row.created_at ?? '', creator: session.email,
         username: extractUsername(decrypted), totp: extractTotp(decrypted),
         group: state.itemGroups?.[name] ?? '',
+ expiresAt: state.secretExpiry?.[name]?.expiresAt ?? 0,
         noApproval: state.policies[name]?.noApproval === true,
       })
     } catch {}
@@ -1715,6 +1739,21 @@ function buildReminders(state, now = Date.now()) {
     if (current === undefined || (typeof token.expiresAt === 'number' && token.expiresAt < current)) oauthExpiry.set(token.agent, typeof token.expiresAt === 'number' ? token.expiresAt : null)
   }
   for (const [agent, exp] of oauthExpiry.entries()) consider(agent, true, exp)
+  // A secret with an expiry of its own. It uses the same severity bands, so
+  // the home page and the notification channels show it without any new
+  // plumbing.
+  for (const [name, entry] of Object.entries(state.secretExpiry ?? {})) {
+    if (!entry || typeof entry.expiresAt !== 'number') continue
+    const msLeft = entry.expiresAt - now
+    if (msLeft <= 0) {
+      reminders.push({ kind: 'secret-expired', agent: name, oauth: false, severity: 'critical', daysLeft: 0, expiresAt: entry.expiresAt, message: '密钥已过期' })
+      continue
+    }
+    const daysLeft = Math.ceil(msLeft / 86400e3)
+    if (daysLeft <= 5) {
+      reminders.push({ kind: 'secret-expiring', agent: name, oauth: false, severity: reminderSeverity(daysLeft), daysLeft, expiresAt: entry.expiresAt, message: daysLeft <= 1 ? '密钥今天到期' : '密钥即将到期' })
+    }
+  }
   const order = { critical: 0, warning: 1, notice: 2 }
   reminders.sort((a, b) => (order[a.severity] - order[b.severity]) || String(a.agent).localeCompare(String(b.agent)))
   return reminders
@@ -1726,8 +1765,10 @@ function buildReminders(state, now = Date.now()) {
 function reminderMessage(reminders, origin, notifications) {
   const tpl = notificationTemplates(notifications).reminder
   const lines = reminders.map((r) => {
-    const kind = r.oauth ? 'OAuth' : 'Token'
-    if (r.kind === 'expired') return '- ' + r.agent + ' (' + kind + ')：授权已过期'
+    const kind = r.oauth ? 'OAuth' : (r.kind.startsWith('secret-') ? '密钥' : 'Token')
+    if (r.kind === 'expired' || r.kind === 'secret-expired') return '- ' + r.agent + ' (' + kind + ')：' + r.message
+    if (r.kind === 'expiring' || r.kind === 'secret-expiring') return '- ' + r.agent + ' (' + kind + ')：' + r.message + '，剩余 ' + r.daysLeft + ' 天'
+    return '- ' + r.agent + ' (' + kind + ')：' + r.message
     if (r.kind === 'expiring') return '- ' + r.agent + ' (' + kind + ')：' + r.message + '，剩余 ' + r.daysLeft + ' 天'
     return '- ' + r.agent + ' (' + kind + ')：' + r.message
   })
@@ -1742,7 +1783,7 @@ async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now()) 
   const sentMap = state.reminderSent ?? {}
   const TTL = 20 * 3600e3
   const fresh = reminders.filter((r) => {
-    const key = r.agent + '\u0000' + r.kind + '\u0000' + (r.kind === 'expiring' ? r.daysLeft : 'idle')
+    const key = r.agent + ' ' + r.kind + ' ' + (r.kind === 'expiring' || r.kind === 'secret-expiring' ? r.daysLeft : 'idle')
     const last = sentMap[key]
     return !(typeof last === 'number' && now - last < TTL)
   })
@@ -2850,7 +2891,7 @@ export default {
       if (request.method === 'GET') {
         const state = await loadState(env)
         const oidc = await oidcConfig(env, request, state)
-        return json({ profile: state.profile ?? {}, oidcEnabled: Boolean(oidc), oidcIssuer: oidc?.issuer ?? '', oidcLoginUrl: oidc ? '/oidc/login' : '' })
+        return json({ profile: state.profile ?? {}, oidcEnabled: Boolean(oidc), oidcIssuer: oidc?.issuer ?? '', oidcLoginUrl: oidc ? '/oidc/login' : '', oidcProviders: oidcProviders(state).map((entry) => ({ id: entry.id, label: entry.label ?? '', issuer: entry.issuer ?? '', enabled: entry.enabled !== false })), oidcBindings: state.profile?.oidcBindings ?? {} })
       }
       if (request.method === 'POST') {
         const body = await request.json().catch(() => ({}))
@@ -2923,14 +2964,96 @@ export default {
         return json({ authorizationEndpoint: discovery.authorization_endpoint ?? '', tokenEndpoint: discovery.token_endpoint ?? '', userinfoEndpoint: discovery.userinfo_endpoint ?? '', jwksUri: discovery.jwks_uri ?? '', scope: discovery.scopes_supported?.join(' ') ?? '' })
       } catch (error) { return fail(String(error.message ?? error), 502) }
     }
+    if (url.pathname === '/api/oidc/providers') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      if (request.method === 'GET') {
+        const providers = oidcProviders(state)
+        const listed = []
+        for (const entry of providers) {
+          listed.push({
+            id: entry.id, label: entry.label ?? '', issuer: entry.issuer ?? '',
+            clientId: entry.clientId ?? '', redirectUri: entry.redirectUri ?? '',
+            scope: entry.scope ?? '', authorizationEndpoint: entry.authorizationEndpoint ?? '',
+            tokenEndpoint: entry.tokenEndpoint ?? '', userinfoEndpoint: entry.userinfoEndpoint ?? '',
+            jwksUri: entry.jwksUri ?? '', enabled: entry.enabled !== false,
+            // The secret itself never leaves the broker; the UI only learns
+            // that one is stored, and leaves the field empty to keep it.
+            secretConfigured: Boolean(entry.clientSecret),
+          })
+        }
+        const bindings = state.profile?.oidcBindings ?? {}
+        return json({ providers: listed, bindings })
+      }
+      if (request.method === 'POST') {
+        const body = await request.json().catch(() => ({}))
+        const id = String(body.id ?? '').trim()
+        if (!/^[A-Za-z0-9._-]{1,48}$/.test(id)) return fail('a provider id is required', 400)
+        const issuer = String(body.issuer ?? '').trim()
+        const clientId = String(body.clientId ?? '').trim()
+        if (!issuer || !clientId) return fail('issuer and clientId are required', 400)
+        await updateState(env, (next) => {
+          next.settings ??= {}
+          next.settings.oidcProviders ??= {}
+          const current = next.settings.oidcProviders[id] ?? {}
+          const entry = { ...current, id, label: String(body.label ?? current.label ?? '').trim(), issuer, clientId, enabled: body.enabled !== false }
+          for (const key of ['redirectUri', 'scope', 'authorizationEndpoint', 'tokenEndpoint', 'userinfoEndpoint', 'jwksUri']) {
+            if (typeof body[key] === 'string') entry[key] = body[key].trim()
+          }
+          // An empty secret keeps the stored one, so the UI can save the rest
+          // of the form without knowing the secret.
+          if (typeof body.clientSecret === 'string' && body.clientSecret.length > 0) entry.clientSecret = body.clientSecret
+          if (body.clearSecret === true) delete entry.clientSecret
+          next.settings.oidcProviders[id] = entry
+          return next
+        })
+        await addAudit(env, { event: 'oidc.provider.update', provider: id })
+        return json({ ok: true, id })
+      }
+      if (request.method === 'DELETE') {
+        const body = await request.json().catch(() => ({}))
+        const id = String(body.id ?? '').trim()
+        if (!id) return fail('id required', 400)
+        await updateState(env, (next) => {
+          if (next.settings?.oidcProviders) delete next.settings.oidcProviders[id]
+          // A binding of a deleted provider is dropped with it.
+          if (next.profile?.oidcBindings) delete next.profile.oidcBindings[id]
+          return next
+        })
+        await addAudit(env, { event: 'oidc.provider.delete', provider: id })
+        return json({ ok: true, id })
+      }
+    }
+    // Bind or unbind one provider. Each provider is bound on its own, so a
+    // second identity provider can be added or removed without touching the
+    // others.
+    if (url.pathname === '/api/profile/oidc/bindings') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const id = String(body.id ?? '').trim()
+      if (!id) return fail('id required', 400)
+      if (request.method === 'DELETE') {
+        await updateState(env, (next) => {
+          if (next.profile?.oidcBindings) delete next.profile.oidcBindings[id]
+          return next
+        })
+        await addAudit(env, { event: 'profile.oidc-unbind', provider: id })
+        return json({ ok: true, id })
+      }
+      const state = await loadState(env)
+      return json({ bindings: state.profile?.oidcBindings ?? {} })
+    }
+
     if (url.pathname === '/api/oidc/status') {
       const state = await loadState(env)
       const oidc = await oidcConfig(env, request, state)
-      return json({ enabled: Boolean(oidc), issuer: oidc?.issuer ?? '' })
+      const list = []
+      for (const entry of oidcProviders(state)) { if (entry.enabled === false) continue; list.push({ id: entry.id, label: entry.label ?? '', issuer: entry.issuer ?? '' }) }
+      return json({ enabled: Boolean(oidc), providers: list, issuer: oidc?.issuer ?? '' })
     }
     if (url.pathname === '/oidc/login') {
       const state = await loadState(env)
-      const oidc = await oidcConfig(env, request, state)
+      const oidc = await oidcConfig(env, request, state, pickOidcProvider(state, url.searchParams.get('provider')))
       if (!oidc) return fail('OIDC is not configured (OIDC_ISSUER / OIDC_CLIENT_ID)', 503)
       try {
         const endpoints = await oidcEndpoints(oidc)
@@ -2940,7 +3063,7 @@ export default {
         const challenge = base64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(verifier))))
         const nonce = randomToken()
         const next = url.searchParams.get('next') === 'profile' ? 'profile' : ''
-        const cookie = await oidcStateCookie(env, state, verifier, next, nonce)
+        const cookie = await oidcStateCookie(env, state, verifier, next, nonce, oidc.id)
         const target = new URL(endpoints.authorization)
         target.searchParams.set('client_id', oidc.clientId)
         target.searchParams.set('redirect_uri', oidc.redirectUri)
@@ -2958,8 +3081,6 @@ export default {
     if (url.pathname === '/oidc/callback') {
       const clearOidcCookie = 'oidc_state=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0'
       const failOidc = (message, status = 400) => json({ error: message }, status, { 'set-cookie': clearOidcCookie })
-      const oidc = await oidcConfig(env, request, await loadState(env))
-      if (!oidc) return fail('OIDC is not configured', 503)
       const returned = url.searchParams.get('state') ?? ''
       const consumed = await consumeOidcState(env, readCookie(request, 'oidc_state'), returned)
       if (!consumed?.ok) {
@@ -2968,6 +3089,10 @@ export default {
         if (reason === 'expired') return failOidc('OIDC state expired', 400)
         return new Response('<meta charset="utf-8"><h2>OIDC 状态校验失败</h2><p>这个链接是回调地址，不能直接打开；请从「个人资料 → 使用 OIDC 登录 / 绑定」重新发起。</p><p><a href="/?view=profile">回到个人资料</a></p>', { status: 400, headers: { 'content-type': 'text/html; charset=utf-8', 'set-cookie': clearOidcCookie } })
       }
+      // The provider comes from the signed state cookie, so the callback
+      // uses the configuration the sign-in actually started with.
+      const oidc = await oidcConfig(env, request, cbState, pickOidcProvider(cbState, consumed.provider))
+      if (!oidc) return failOidc('OIDC is not configured', 503)
       const stateData = { state: consumed.state, verifier: consumed.verifier, nonce: consumed.nonce, next: consumed.next }
       const state = await loadState(env)
       const code = url.searchParams.get('code') ?? ''
@@ -3009,6 +3134,14 @@ export default {
         await updateState(env, (next) => {
           next.profile ??= {}
           next.profile.oidcIssuer = oidc.issuer
+          // Each provider is bound on its own, so a second identity provider
+          // can be added without replacing the first one.
+          next.profile.oidcBindings ??= {}
+          next.profile.oidcBindings[oidc.id] = {
+            providerId: oidc.id, issuer: oidc.issuer, sub: claims.sub,
+            email: String(user.email ?? ''), name: givenName,
+            avatarUrl: String(user.picture ?? ''), boundAt: new Date().toISOString(),
+          }
           next.profile.oidcSub = claims.sub
           next.profile.oidcEmail = String(user.email ?? next.profile.email ?? '')
           next.profile.name = String(user.name ?? user.preferred_username ?? next.profile.name ?? '')
@@ -3073,6 +3206,19 @@ export default {
             state.policies ??= {}
             if (body.noApproval) state.policies[nextName] = { noApproval: true }
             else delete state.policies[nextName]
+            return state
+          })
+        }
+        // The expiry is stored per item, the same way the approval
+        // policy is.
+        if (body.expiresAt !== undefined) {
+          const raw = body.expiresAt
+          const stamp = raw === null || raw === 0 || raw === '' ? 0 : Date.parse(String(raw))
+          if (!Number.isFinite(stamp)) return fail('invalid expiresAt', 400)
+          await updateState(env, (state) => {
+            state.secretExpiry ??= {}
+            if (stamp > 0) state.secretExpiry[nextName] = { itemId: nextName, expiresAt: stamp }
+            else delete state.secretExpiry[nextName]
             return state
           })
         }

@@ -33,8 +33,8 @@ function req(path, body) {
   return new Request('https://state' + path, { method: 'POST', body: JSON.stringify(body) })
 }
 // oidcStateCookie equivalent (HMAC-SHA256 via webcrypto like cookieKey+hmacToken)
-async function signCookie(state, verifier, nonce, next, expires) {
-  const payload = state + '|' + verifier + '|' + nonce + '|' + next + '|' + expires
+async function signCookie(state, verifier, nonce, next, expires, provider = 'default') {
+  const payload = provider + '|' + state + '|' + verifier + '|' + nonce + '|' + next + '|' + expires
   const kb = await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode('cookie:' + FAKE_KEK_B64))
   const key = await webcrypto.subtle.importKey('raw', kb, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
   const sig = await webcrypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload))

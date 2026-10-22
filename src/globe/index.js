@@ -11,8 +11,18 @@ import ThreeGlobe from 'three-globe'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import countries from './countries.json'
 
-const CHINA_NODE = { lat: 31.23, lon: 121.47, code: 'CN' }
-
+// The broker's own position. The arc has to end at a real place, so this is
+// resolved per render: an explicitly configured position, else the last
+// position the broker itself was seen at. There is no hardcoded fallback.
+function resolveBrokerNode(configured, operator) {
+  if (configured && typeof configured.lat === 'number' && typeof configured.lon === 'number') {
+    return { lat: configured.lat, lon: configured.lon, code: String(configured.code ?? '').toUpperCase() }
+  }
+  if (operator && operator.known && typeof operator.lat === 'number' && typeof operator.lon === 'number') {
+    return { lat: operator.lat, lon: operator.lon, code: String(operator.country ?? '').toUpperCase() }
+  }
+  return null
+}
 function currentTheme() {
   const attr = document.documentElement.getAttribute('data-theme')
   if (attr === 'dark' || attr === 'light') return attr
@@ -27,8 +37,9 @@ function createGlobe(container, options) {
 
   const scene = new THREE.Scene()
   const camera = new THREE.PerspectiveCamera(42, width() / height(), 0.1, 4000)
-  // Pull the camera back so the rendered globe is about 15% smaller.
-  camera.position.set(0, 106, 380)
+  // The globe fills the card: the sphere is about 12% bigger than before, so
+  // it matches the size of the agent ring below it.
+  camera.position.set(0, 90, 340)
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
@@ -92,11 +103,86 @@ function createGlobe(container, options) {
   controls.addEventListener('start', () => { interacting = true; controls.autoRotate = false })
   controls.addEventListener('end', () => { interacting = false })
 
+  // Direction markers: a light that travels along every arc. The dashes alone
+  // do not read as a direction, so each arc gets a moving dot.
+  const GLOBE_RADIUS = 100
+  const markers = []
+  const markerGroup = new THREE.Group()
+  scene.add(markerGroup)
+  // A points layer, not a second sphere: a coincident sphere z-fights with
+  // the earth and makes it flicker.
+  const markerGeometry = new THREE.BufferGeometry()
+  const markerPoints = new THREE.Points(markerGeometry, markerMaterial)
+  const markerMaterial = new THREE.PointsMaterial({ color: 0xffffff, size: 3.2, sizeAttenuation: false, transparent: true, opacity: 0.95, depthWrite: false })
+  // The arcs are great circles, so a point on one is found by slerping the two
+  // ends. The height follows the same curve the arc uses.
+  function pointOnArc(arc, t) {
+    const start = new THREE.Vector3()
+      .set(Math.cos(arc.startLng * Math.PI / 180) * Math.cos(arc.startLat * Math.PI / 180),
+        Math.sin(arc.startLat * Math.PI / 180),
+        -Math.sin(arc.startLng * Math.PI / 180) * Math.cos(arc.startLat * Math.PI / 180))
+    const end = new THREE.Vector3()
+      .set(Math.cos(arc.endLng * Math.PI / 180) * Math.cos(arc.endLat * Math.PI / 180),
+        Math.sin(arc.endLat * Math.PI / 180),
+        -Math.sin(arc.endLng * Math.PI / 180) * Math.cos(arc.endLat * Math.PI / 180))
+    const angle = start.angleTo(end)
+    if (angle === 0) return start.multiplyScalar(GLOBE_RADIUS * (1 + (arc.altitude ?? 0.2)))
+    const sinAngle = Math.sin(angle)
+    const a = Math.sin((1 - t) * angle) / sinAngle
+    const b = Math.sin(t * angle) / sinAngle
+    const point = start.multiplyScalar(a).add(end.multiplyScalar(b)).normalize()
+    return point.multiplyScalar(GLOBE_RADIUS * (1 + (arc.altitude ?? 0.2) * Math.sin(Math.PI * t)))
+  }
+  function setDirectionMarkers(arcList) {
+    for (const marker of markers) markerGroup.remove(marker)
+    markers.length = 0
+    if (!arcList.length) {
+      markerGroup.remove(markerPoints)
+      return
+    }
+    // One points object holds every marker, so the layer stays a single
+    // draw call and the earth keeps exactly one sphere.
+    const positions = new Float32Array(arcList.length * 3)
+    const colors = new Float32Array(arcList.length * 3)
+    const color = new THREE.Color()
+    for (let i = 0; i < arcList.length; i += 1) {
+      const arc = arcList[i]
+      const point = pointOnArc(arc, 0)
+      positions[i * 3] = point.x
+      positions[i * 3 + 1] = point.y
+      positions[i * 3 + 2] = point.z
+      color.set(Array.isArray(arc.color) ? arc.color[0] : '#ffffff')
+      colors[i * 3] = color.r
+      colors[i * 3 + 1] = color.g
+      colors[i * 3 + 2] = color.b
+      markers.push({ arc, phase: arc.phase ?? 0 })
+    }
+    markerGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+    markerGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+    markerPoints.geometry = markerGeometry
+    markerPoints.material = markerMaterial
+    markerGroup.add(markerPoints)
+  }
   let frame = 0
   let paused = reduceMotion
+  let markerClock = 0
   function tick() {
     frame = requestAnimationFrame(tick)
-    if (!paused) controls.update()
+    if (!paused) {
+      controls.update()
+      // The markers travel from the start to the end of their arc.
+      markerClock += 1 / 60
+      const attribute = markerPoints.geometry.getAttribute('position')
+      if (attribute) {
+        for (let i = 0; i < markers.length; i += 1) {
+          const marker = markers[i]
+          const t = (markerClock * 0.22 + marker.phase) % 1
+          const point = pointOnArc(marker.arc, t)
+          attribute.setXYZ(i, point.x, point.y, point.z)
+        }
+        attribute.needsUpdate = true
+      }
+    }
     renderer.render(scene, camera)
   }
   tick()
@@ -160,45 +246,56 @@ function createGlobe(container, options) {
       }
       globe.pointsData(points)
 
+      // The broker node: where the traffic really ends. Without a real
+      // position there is nothing to draw an arc to, so none is drawn.
+      const broker = resolveBrokerNode(o.broker, operator)
       // Requests from the same place overlap into a single line, so each one
-      // gets a small deterministic offset. The result fans out like departing
-      // flights instead of collapsing onto one stroke.
+      // gets a deterministic offset. The offsets spread over a wide area and
+      // the heights cover the whole range, so the trails read as scattered
+      // departures instead of one dense bundle.
       const perSpot = new Map()
       const arcs = []
       for (const { ev, g, color } of located) {
         const spot = g.lat + ',' + g.lon
         const index = perSpot.get(spot) || 0
         perSpot.set(spot, index + 1)
-        // Deterministic jitter keeps the layout stable between refreshes, while
-        // the angle, the radius and the arc height all vary so the trails look
-        // like scattered departures rather than a tight bundle.
+        // Deterministic jitter keeps the layout stable between refreshes.
         const seed = Math.abs(Math.round((g.lat * 1000) + (g.lon * 977) + index * 7919))
-        const spread = index === 0 ? 0 : 1.2 + ((seed % 23) / 23) * 6.5
+        // A wide ring around the location, so the trails do not pile up.
+        const spread = index === 0 ? 0 : 3 + ((seed % 37) / 37) * 14
         const bearing = (seed % 360) * (Math.PI / 180)
         const dLat = Math.cos(bearing) * spread
         const dLon = Math.sin(bearing) * spread
         const startLat = g.lat + dLat
         const startLon = g.lon + dLon
-        // Each trail gets its own altitude, so they arc apart in the air.
-        const altitude = 0.12 + ((seed % 13) / 13) * 0.9
-        // The request itself: the agent location -> the broker node in China.
-        arcs.push({
-          startLat, startLng: startLon, endLat: CHINA_NODE.lat, endLng: CHINA_NODE.lon,
-          color: [color, '#7fc7ff'],
-          // Every trail flies at its own height and width, so the paths read
-          // as scattered departures instead of one dense bundle.
-          altitude,
-          stroke: 0.1 + ((seed % 7) / 7) * 0.26,
-        })
-        // The operator leg, when the operator sits somewhere else.
-        if (opLat !== null && opLon !== null && (Math.abs(g.lat - opLat) > 0.01 || Math.abs(g.lon - opLon) > 0.01)) {
+        // The height covers the whole range in even steps, so the trails are
+        // spread from low to high instead of forming two clumps.
+        const altitude = 0.08 + ((seed % 29) / 29) * 0.55 + (index % 5) * 0.06
+        if (broker) {
+          // The request itself: the agent location -> the broker.
           arcs.push({
-            startLat: opLat, startLng: opLon, endLat: startLat, endLng: startLon,
-            color: ['#ffd166', color],
+            startLat, startLng: startLon, endLat: broker.lat, endLng: broker.lon,
+            color: [color, '#7fc7ff'],
+            altitude,
+            stroke: 0.1 + ((seed % 7) / 7) * 0.26,
+            // The marker starts at a different point on every arc, so the
+            // direction reads as many separate flights.
+            phase: (seed % 100) / 100,
           })
+          // The operator leg, when the operator sits somewhere else.
+          if (opLat !== null && opLon !== null && (Math.abs(g.lat - opLat) > 0.01 || Math.abs(g.lon - opLon) > 0.01)) {
+            arcs.push({
+              startLat: opLat, startLng: opLon, endLat: startLat, endLng: startLon,
+              color: ['#ffd166', color],
+              altitude: altitude * 0.6 + 0.04,
+              stroke: 0.1 + ((seed % 5) / 5) * 0.16,
+              phase: ((seed % 100) / 100 + 0.5) % 1,
+            })
+          }
         }
       }
       globe.arcsData(showArcs ? arcs : [])
+      setDirectionMarkers(showArcs ? arcs : [])
 
       // Country codes sit on the globe, one per visited country.
       const labels = []
