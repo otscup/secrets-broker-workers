@@ -357,7 +357,9 @@ function createGlobe(container, options) {
         for (const leg of legs) {
           arcs.push({
             startLat: leg.fromLat, startLng: leg.fromLng, endLat: leg.toLat, endLng: leg.toLng,
-            color: [color, '#7fc7ff'],
+            // One colour for the whole trail: a shared end colour made every
+            // agent look the same where the arcs converge on the broker.
+            color: color,
             altitude: leg.altitude,
             stroke: 0.1 + ((seed % 7) / 7) * 0.2,
           })
