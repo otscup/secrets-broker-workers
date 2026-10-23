@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Secrets Broker Fill",
+  "version": "0.1.0",
+  "description": "Fill logins that a Secrets Broker Agent requested, inside the browser you are already using.",
+  "permissions": ["storage", "alarms", "notifications", "tabs", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "icons": { "128": "icon128.png" },
+  "action": { "default_title": "Secrets Broker Fill", "default_popup": "popup.html", "default_icon": { "128": "icon128.png" } },
+  "browser_specific_settings": { "gecko": { "id": "fill@secrets-broker.local", "strict_min_version": "115.0" } }
+}

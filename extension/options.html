@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>Secrets Broker Fill 设置</title>
+<style>
+  body { font: 14px/1.6 system-ui; background: #f3f6fb; margin: 0; padding: 32px; color: #152033 }
+  .card { max-width: 560px; margin: 0 auto; background: #fff; border: 1px solid #e3e9f2; border-radius: 16px; padding: 24px }
+  h1 { font-size: 17px; margin: 0 0 4px }
+  .muted { color: #6b7890; font-size: 12px }
+  label { display: block; margin-top: 14px; font-size: 12px; color: #6b7890 }
+  input { width: 100%; box-sizing: border-box; border: 1px solid #d8e0ec; border-radius: 8px; padding: 8px; font: inherit; margin-top: 4px }
+  button { border: 0; border-radius: 9px; padding: 9px 16px; font: inherit; cursor: pointer; background: #0f9d8a; color: #fff; margin-top: 16px }
+  button.secondary { background: #eef1f6; color: #152033 }
+  .status { min-height: 20px; font-size: 12px; margin-top: 10px }
+  .ok { color: #0b7d6d } .err { color: #c0392b }
+  code { background: #eef1f6; padding: 2px 5px; border-radius: 5px; font-size: 12px }
+  ol { padding-left: 20px; font-size: 12px; color: #6b7890 } li { margin: 4px 0 }
+</style></head>
+<body>
+<div class="card">
+  <h1>Secrets Broker Fill</h1>
+  <div class="muted">在你自己正在用的浏览器里填充登录信息。不需要 Docker，也不需要另开一个进程。</div>
+
+  <label>Broker 地址</label>
+  <input id="brokerUrl" placeholder="https://sb.example.com" autocomplete="off">
+
+  <label>执行器 ID</label>
+  <input id="executorId" placeholder="browser" autocomplete="off">
+
+  <label>执行器密钥</label>
+  <input id="executorSecret" type="password" placeholder="注册时只显示一次" autocomplete="off">
+
+  <label>轮询间隔（秒）</label>
+  <input id="pollSeconds" type="number" min="3" max="60" value="5">
+
+  <label style="display:flex;gap:8px;align-items:center;margin-top:14px">
+    <input id="enabled" type="checkbox" style="width:auto"> 启用自动填充
+  </label>
+
+  <div class="row" style="display:flex;gap:8px;flex-wrap:wrap">
+    <button id="save">保存</button>
+    <button id="test" class="secondary">测试连接</button>
+  </div>
+  <div class="status" id="status"></div>
+
+  <div class="muted" style="margin-top:20px"><b>怎么拿到密钥</b></div>
+  <ol>
+    <li>打开 Secrets Broker 控制台，登录并解锁 vault</li>
+    <li>用 <code>curl</code> 或控制台的「执行器」区块注册一个，ID 随便填（如 <code>browser</code>）</li>
+    <li>把返回的 secret 粘到上面，保存</li>
+    <li>在「密钥」页把条目分类为 <b>web</b>，填上要填充的站点</li>
+  </ol>
+  <div class="muted" style="margin-top:8px">这个扩展只在你启用时取任务。它拿到的一次性凭据只能用一次，用完即弃，不会存在任何地方。</div>
+</div>
+<script src="options.js"></script>
+</body></html>

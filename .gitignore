@@ -85,3 +85,4 @@ attach-route.mjs
 !test-mf-oauth-consent-grant.mjs
 !test-mf-denied-visibility.mjs
 !test-mf-share-scope.mjs
+!test-mf-extension-cors.mjs

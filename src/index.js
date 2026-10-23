@@ -10,7 +10,8 @@ import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 const SESSION_COOKIE = 'broker_admin'
-const json = (data, status = 200, headers = {}) => Response.json(data, { status, headers })
+const jsonBase = (data, status = 200, headers = {}) => Response.json(data, { status, headers })
+const json = jsonBase
 const securityHeaders = {
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
@@ -19,6 +20,7 @@ const securityHeaders = {
 }
 const htmlResponse = (body, status = 200) => new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...securityHeaders } })
 const fail = (message, status = 400) => json({ error: message }, status)
+const failBase = fail
 const nowIso = () => new Date().toISOString()
 
 const emptyState = () => ({ agents: {}, policies: {}, grants: {}, pending: {}, audit: [], settings: { notifications: {} } })
@@ -3025,6 +3027,32 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
 
+    // A browser extension is an executor that runs inside the operator's own
+    // browser instead of a container: no Docker, no second process. It calls the
+    // executor endpoints cross-origin with its own executor secret, and a browser
+    // needs the CORS headers on the real response too, not only the preflight.
+    // Only these paths carry them; every admin route stays same-origin.
+    const executorPath = url.pathname.startsWith('/api/fill/task')
+    if (request.method === 'OPTIONS' && executorPath) {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'access-control-allow-origin': '*',
+          'access-control-allow-methods': 'GET, POST, OPTIONS',
+          'access-control-allow-headers': 'content-type, x-fill-executor-id, x-fill-executor-secret',
+          'access-control-max-age': '600',
+        },
+      })
+    }
+    // Shadow the two response helpers so every executor reply carries the header
+    // without touching twenty return sites. For any other path these are the
+    // original functions unchanged.
+    const json = executorPath
+      ? (data, status = 200, headers = {}) => jsonBase(data, status, { ...headers, 'access-control-allow-origin': '*' })
+      : jsonBase
+    const fail = executorPath
+      ? (message, status = 400) => jsonBase({ error: message }, status, { 'access-control-allow-origin': '*' })
+      : failBase
 
     if (url.pathname === '/login' && request.method === 'GET') {
       const nextTarget = String(url.searchParams.get('next') ?? '/')
