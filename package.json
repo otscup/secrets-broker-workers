@@ -81,6 +81,9 @@
     "three": "^0.186.1",
     "three-globe": "^2.45.6"
   },
+  "optionalDependencies": {
+    "playwright": "^1.49.1"
+  },
   "allowScripts": {
     "workerd": true
   }

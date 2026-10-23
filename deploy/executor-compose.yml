@@ -1,0 +1,33 @@
+# Fill executor for Secrets Broker.
+#
+# Run this beside your vault, on a network that can reach both the broker and the
+# sites you fill into. Register the executor first to get EXECUTOR_SECRET:
+#
+#   curl -X POST https://sb.example.com/api/fill/executors/register \
+#     -b cookies.txt -H 'content-type: application/json' \
+#     -d '{"executorId":"home"}'
+#
+# Then:  docker compose -f deploy/executor-compose.yml up -d
+services:
+  fill-executor:
+    build:
+      context: ..
+      dockerfile: deploy/executor.Dockerfile
+    container_name: secrets-fill-executor
+    restart: unless-stopped
+    environment:
+      - BROKER_URL=${BROKER_URL}
+      - EXECUTOR_ID=${EXECUTOR_ID}
+      - EXECUTOR_SECRET=${EXECUTOR_SECRET}
+      - HEADLESS=${HEADLESS:-1}
+      - POLL_MS=${POLL_MS:-3000}
+    # The browser needs shared memory; the default 64MB is not enough for a page.
+    shm_size: '1gb'
+    # It must be able to reach the broker and the target sites. Put it on the LAN
+    # interface that holds them, and nowhere else.
+    # network_mode: host
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
