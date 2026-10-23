@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { uiHtml } from './ui.js'
-import { aiSnapshot, askAi, aiInsights } from './ai.js'
+import { aiSnapshot, askAi, aiInsights, aiModelCatalog } from './ai.js'
 import { LOGO_PNG_B64, FAVICON_ICO_B64 } from './logo.js'
 import {
   b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, decryptStr, encryptStr, extractSecret, extractUsername, extractTotp,
@@ -5184,6 +5184,16 @@ export default {
         try { let response; if (notifications.wxpush.format === 'json') response = await fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${notifications.wxpush.token}` }, body: JSON.stringify({ title: 'Secrets Broker test', text, content: text }) }); else { const body = new URLSearchParams({ title: 'Secrets Broker test', content: text, token: notifications.wxpush.token }); response = await fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }) } results.wxpush = response.status } catch (error) { results.wxpush = String(error.message ?? error) }
       } else results.wxpush = 'not configured'
       return json({ ok: true, results })
+    }
+    // The model pickers. Workers AI comes from a bundled catalogue (a binding can
+    // run a model but cannot list them); a custom endpoint is asked for its own
+    // list, which is what turns "type the model name" into a dropdown.
+    if (url.pathname === '/api/ai/models' && request.method === 'GET') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const fetchCustom = url.searchParams.get('fetch') === '1'
+      const catalog = await aiModelCatalog(env, state.settings, { fetchCustom })
+      return json({ ok: true, ...catalog })
     }
     // The assistant, and the facts it is given. Read-only: it can explain and
     // suggest, and it cannot change a thing. The snapshot is built here, on the

@@ -333,9 +333,20 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
         <div class="hint">填到 <code>/v1</code> 即可，会自动加 <code>/chat/completions</code>；也可以直接填完整路径。</div>
         <label class="field">API Key</label><input id="ai-apikey" type="password" placeholder="留空保留原值；填 null 清空">
         <div class="hint" id="ai-key-status"></div>
-        <label class="field">模型</label><input id="ai-model" placeholder="例如 gpt-4o-mini / deepseek-chat">
+        <label class="field">模型</label>
+        <div class="row" style="gap:6px;margin-top:4px">
+          <input id="ai-model" list="ai-model-list" placeholder="点「拉取模型」自动列出" style="flex:1;min-width:0">
+          <button class="small" id="ai-model-fetch" style="flex:0 0 auto">拉取模型</button>
+        </div>
+        <datalist id="ai-model-list"></datalist>
+        <div class="hint" id="ai-model-status">先填好地址和 key，点「拉取模型」会向该接口请求 GET /models。</div>
       </div>
-      <label class="field">Workers AI 模型</label><input id="ai-workers-model" placeholder="@cf/meta/llama-3.1-8b-instruct">
+      <label class="field">Workers AI 模型</label>
+      <div class="row" style="gap:6px;margin-top:4px">
+        <select id="ai-workers-model" style="flex:1;min-width:0"></select>
+      </div>
+      <div class="hint" id="ai-workers-status">上面的列表来自内置目录；也可以用下面的输入框填任意模型 ID。</div>
+      <input id="ai-workers-model-custom" placeholder="也可以直接写模型 ID，例如 @cf/meta/llama-3.1-8b-instruct-fp8">
       <label class="field">超时（毫秒）</label><input id="ai-timeout" type="number" min="5000" max="60000" value="25000">
       <div class="row" style="margin-top:12px"><button class="primary" id="ai-save">保存 AI 设置</button><button id="ai-test">测试</button></div>
       <div class="status" id="ai-status"></div>
@@ -578,7 +589,7 @@ $('global-search-results').addEventListener('click', (event) => {
   if (view === 'items') { const filter = $('item-filter'); if (filter) { filter.value = row.dataset.name || ''; renderItems() } }
   if (view === 'agents') openAgentDetail(row.dataset.name)
 })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('require-classification-save').onclick = saveRequireClassification; $('ai-save').onclick = saveAiSettings; $('ai-help').onclick = () => openAiHelp(); $('ai-provider').onchange = () => $('ai-custom-box').classList.toggle('hidden', $('ai-provider').value !== 'custom'); $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + (d.provider === 'workers-ai' ? 'Workers AI' : '自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('require-classification-save').onclick = saveRequireClassification; $('ai-save').onclick = saveAiSettings; $('ai-model-fetch').onclick = fetchCustomModels; $('ai-help').onclick = () => openAiHelp(); $('ai-provider').onchange = () => $('ai-custom-box').classList.toggle('hidden', $('ai-provider').value !== 'custom'); $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + (d.provider === 'workers-ai' ? 'Workers AI' : '自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
 // Collapsible settings cards. One delegated handler covers every card, so a
 // new collapsible card needs no extra wiring.
@@ -1002,7 +1013,9 @@ async function saveAiSettings() {
       provider: $('ai-provider').value,
       endpoint: $('ai-endpoint').value.trim(),
       model: $('ai-model').value.trim(),
-      workersModel: $('ai-workers-model').value.trim(),
+      // The dropdown wins unless the free-text box has content, so a model that
+      // is not in the catalogue can still be used.
+      workersModel: ($('ai-workers-model-custom').value.trim() || $('ai-workers-model').value || '').trim(),
       timeoutMs: Number($('ai-timeout').value) || 25000,
       // A blank field keeps the stored key; only a typed value replaces it.
       ...(key ? { apiKey: key } : {}),
@@ -1018,13 +1031,52 @@ function renderAiSettings(ai) {
   $('ai-provider').value = ai.provider || 'custom'
   $('ai-endpoint').value = ai.endpoint || ''
   $('ai-model').value = ai.model || ''
-  $('ai-workers-model').value = ai.workersModel || '@cf/meta/llama-3.1-8b-instruct'
   $('ai-timeout').value = ai.timeoutMs || 25000
   $('ai-key-status').textContent = ai.hasApiKey ? '已保存一个 key（留空则沿用）' : '还没有 key'
   $('ai-workers-note').textContent = ai.workersAiAvailable
     ? '这个 Worker 已绑定 Workers AI，可以不填 key 直接用它。'
     : '这个 Worker 没有绑定 Workers AI；要用它需要在 wrangler 里加 AI binding。'
   $('ai-custom-box').classList.toggle('hidden', (ai.provider || 'custom') !== 'custom')
+  loadWorkerModels(ai.workersModel)
+}
+// Workers AI models come from the server's bundled catalogue, so the list is a
+// real dropdown. A model not in the list can still be typed below it.
+async function loadWorkerModels(current) {
+  try {
+    const data = await api('/api/ai/models')
+    const select = $('ai-workers-model')
+    const chosen = current || data.workersModel || '@cf/deepseek-ai/deepseek-v4.1-flash-1017'
+    select.innerHTML = (data.workersModels || []).map((model) =>
+      '<option value="' + esc(model.id) + '"' + (model.id === chosen ? ' selected' : '') + '>' + esc(model.label) + '</option>'
+    ).join('')
+    if (!(data.workersModels || []).some((model) => model.id === chosen)) {
+      select.insertAdjacentHTML('afterbegin', '<option value="' + esc(chosen) + '" selected>' + esc(chosen) + '（自定义）</option>')
+    }
+    $('ai-workers-status').textContent = data.workersAiAvailable
+      ? '这个 Worker 已绑定 Workers AI，可以直接用。'
+      : '这个 Worker 还没有绑定 Workers AI，选哪个都调不通；需要在 wrangler 里加 AI binding 并重新部署。'
+  } catch (error) { $('ai-workers-status').textContent = error.message }
+}
+// Fetch the custom endpoint's own model list into the datalist, so the field
+// suggests real ids instead of making the operator spell them.
+async function fetchCustomModels() {
+  try {
+    status('ai-model-status', '拉取中…')
+    // Send whatever is typed so it works before saving.
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ ai: {
+      endpoint: $('ai-endpoint').value.trim(),
+      ...($('ai-apikey').value.trim() ? { apiKey: $('ai-apikey').value.trim() } : {}),
+    } }) }).catch(() => {})
+    const data = await api('/api/ai/models?fetch=1')
+    const list = $('ai-model-list')
+    list.innerHTML = (data.custom.models || []).map((id) => '<option value="' + esc(id) + '"></option>').join('')
+    if (data.custom.ok) {
+      status('ai-model-status', '拉到 ' + data.custom.models.length + ' 个模型，点输入框可以看到列表', 'ok')
+      if (!$('ai-model').value && data.custom.models.length) $('ai-model').value = data.custom.models[0]
+    } else {
+      status('ai-model-status', '拉取失败：' + (data.custom.reason || '未知原因'), 'error')
+    }
+  } catch (error) { status('ai-model-status', error.message, 'error') }
 }
 // The one place the console talks to the model. Read-only by construction: the
 // broker only exposes /api/ai/ask, which answers questions and changes nothing.

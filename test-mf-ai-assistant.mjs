@@ -125,6 +125,21 @@ const state = {
   else fail('A5', JSON.stringify({ opinionated, questionLast }))
 }
 
+// A6: the model catalog. Workers AI comes from the bundled list (a binding can
+// run a model but cannot enumerate them); the custom list is only fetched when
+// asked, and a missing endpoint/key says which one is missing.
+{
+  const { aiModelCatalog, WORKERS_AI_MODELS } = await import('./src/ai.js')
+  const catalog = await aiModelCatalog({ /* no AI binding */ }, { ai: { endpoint: '', apiKey: '' } }, { fetchCustom: false })
+  const listed = Array.isArray(catalog.workersModels) && catalog.workersModels.length > 10
+  const hasDeepseek = catalog.workersModels.some((m) => m.id.includes('deepseek'))
+  const noBinding = catalog.workersAiAvailable === false
+  const notFetched = catalog.custom.models.length === 0
+  const needEndpoint = (await aiModelCatalog({}, { ai: {} }, { fetchCustom: true })).custom.reason.includes('接口地址')
+  if (listed && hasDeepseek && noBinding && notFetched && needEndpoint) pass('A6 the catalog lists Workers AI models and says what a custom fetch still needs')
+  else fail('A6', JSON.stringify({ listed, hasDeepseek, noBinding, notFetched, needEndpoint, count: WORKERS_AI_MODELS.length }))
+}
+
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== ai assistant ' + passed + '/' + results.length + ' passed ====')
 if (passed !== results.length) process.exit(1)

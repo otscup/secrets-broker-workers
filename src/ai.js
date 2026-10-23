@@ -166,6 +166,72 @@ export async function askAi(env, settings, { question, snapshot, history = [] })
   return { ok: false, reason: failures.join('；') || '没有可用的 AI 提供方' }
 }
 
+// Workers AI text-generation models, as of the catalogue in 2026. Kept here
+// rather than fetched at boot because the Worker has no way to ask Cloudflare for
+// its catalogue without a separate API token — the AI binding can run a model but
+// cannot list them. A stale entry is harmless: picking one that has been retired
+// produces a clear provider error, and the field is still editable.
+export const WORKERS_AI_MODELS = [
+  { id: '@cf/deepseek-ai/deepseek-v4.1-flash-1017', label: 'DeepSeek V4.1 Flash（推荐，中文好）' },
+  { id: '@cf/deepseek-ai/deepseek-v4-flash-0731', label: 'DeepSeek V4 Flash' },
+  { id: '@cf/deepseek-ai/deepseek-v4-pro-0813', label: 'DeepSeek V4 Pro（更强，更慢）' },
+  { id: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', label: 'DeepSeek R1 Distill 32B' },
+  { id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: 'Llama 3.3 70B' },
+  { id: '@cf/meta/llama-3.1-8b-instruct-fp8', label: 'Llama 3.1 8B（快）' },
+  { id: '@cf/meta/llama-3.2-3b-instruct', label: 'Llama 3.2 3B（最快）' },
+  { id: '@cf/meta/llama-4-scout-17b-16e-instruct', label: 'Llama 4 Scout 17B' },
+  { id: '@cf/qwen/qwen3-30b-a3b-fp8', label: 'Qwen3 30B' },
+  { id: '@cf/qwen/qwen3.8-27b', label: 'Qwen 3.8 27B' },
+  { id: '@cf/zai-org/glm-4.7-flash', label: 'GLM-4.7 Flash' },
+  { id: '@cf/zai-org/glm-5.3-flash', label: 'GLM-5.3 Flash' },
+  { id: '@cf/openai/gpt-oss-120b', label: 'GPT-OSS 120B' },
+  { id: '@cf/openai/gpt-oss-20b', label: 'GPT-OSS 20B' },
+  { id: '@cf/mistralai/mistral-small-3.1-24b-instruct', label: 'Mistral Small 3.1 24B' },
+  { id: '@cf/google/gemma-4-26b-a4b-it', label: 'Gemma 4 26B' },
+]
+
+// Ask an OpenAI-compatible endpoint what it serves. GET /models is the one part
+// of that API every provider implements, and it is what makes the model a picker
+// rather than a field you must spell from memory.
+export async function listCustomModels({ endpoint, apiKey, timeoutMs = 15000 }) {
+  const base = String(endpoint || '').replace(/\/$/, '')
+  if (!base) return { ok: false, reason: '还没有填接口地址' }
+  const url = /\/chat\/completions$/.test(base) ? base.replace(/\/chat\/completions$/, '/models') : base + '/models'
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(url, { headers: { authorization: 'Bearer ' + apiKey } , signal: controller.signal })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) return { ok: false, reason: '接口返回 ' + response.status + '：' + String(payload?.error?.message ?? payload?.error ?? '').slice(0, 140) }
+    // Two shapes exist in the wild: {data:[{id}]} and a bare array of ids.
+    const rows = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload) ? payload : []
+    const models = rows.map((row) => (typeof row === 'string' ? row : row?.id)).filter(Boolean).map(String)
+    if (!models.length) return { ok: false, reason: '接口没有返回任何模型' }
+    return { ok: true, models: models.sort((a, b) => a.localeCompare(b)).slice(0, 300) }
+  } catch (error) {
+    return { ok: false, reason: String(error.message ?? error).slice(0, 160) }
+  } finally { clearTimeout(timer) }
+}
+
+// What the settings page offers. Workers AI is always listed (the binding may be
+// absent, in which case asking is refused with that reason); the custom list is
+// only fetched when asked, because it costs a request to someone else's API.
+export async function aiModelCatalog(env, settings, { fetchCustom = false } = {}) {
+  const ai = settings?.ai ?? {}
+  const out = {
+    workersAiAvailable: Boolean(env.AI),
+    workersModels: WORKERS_AI_MODELS,
+    custom: { ok: false, models: [], reason: '' },
+  }
+  if (fetchCustom) {
+    const key = ai.apiKey || env.AI_API_KEY
+    if (!ai.endpoint) out.custom.reason = '先填接口地址'
+    else if (!key) out.custom.reason = '先填 API Key'
+    else out.custom = await listCustomModels({ endpoint: ai.endpoint, apiKey: key })
+  }
+  return out
+}
+
 // A short "what needs attention" list, computed here rather than asked of the
 // model: these are facts, and a deterministic answer is cheaper and never wrong.
 // Ordered by severity, not by category, so a truncated list still shows the
