@@ -11,6 +11,17 @@ async function render() {
   $('toggle').className = values.enabled === false ? 'primary' : ''
 }
 
+$('check').onclick = async () => {
+  const out = $('result')
+  out.textContent = '检查中…'
+  try {
+    // chrome.runtime.sendMessage resolves only if the worker answers; a rejected
+    // promise means the service worker is asleep and will be woken by the call.
+    const reply = await chrome.runtime.sendMessage({ type: 'poll-now' })
+    out.textContent = reply?.text || '没有回应'
+  } catch (error) { out.textContent = '出错：' + error.message }
+}
+
 $('toggle').onclick = async () => {
   const current = { ...DEFAULTS, ...(await chrome.storage.local.get(DEFAULTS)) }
   await chrome.storage.local.set({ enabled: current.enabled === false })

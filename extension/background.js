@@ -160,23 +160,52 @@ function waitForComplete(tabId) {
 }
 
 // Poll loop. chrome.alarms is the only timer an MV3 worker is guaranteed; a
-// plain setInterval is killed when the worker sleeps.
-chrome.alarms.create('poll', { periodInMinutes: 0.1 })
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name !== 'poll') return
+// plain setInterval is killed when the worker sleeps. Chrome clamps a period
+// below 30 seconds up to 30, so asking for 0.1 gets one tick per half minute —
+// state it plainly rather than pretending it is faster. The popup's 立即检查
+// button exists for the case where you do not want to wait.
+const POLL_MINUTES = 0.5
+chrome.alarms.create('poll', { periodInMinutes: POLL_MINUTES })
+
+// One poll step, shared by the alarm and the popup's manual check. Returns a
+// short human line so the popup can say what happened.
+async function pollOnce() {
   const { enabled } = await settings()
-  if (!enabled) return
-  if (await rateLimited('poll', 30)) return
+  if (!enabled) return '已暂停'
   let claimed
-  try { claimed = await broker('/api/fill/tasks/claim', {}) } catch { return }
-  if (!claimed?.ok || !claimed.body?.taskId) return
+  try { claimed = await broker('/api/fill/tasks/claim', {}) } catch (e) { return '连不上：' + e.message }
+  if (claimed.status === 401) return '执行器凭据被拒绝'
+  if (!claimed.ok) return 'Broker 返回 ' + claimed.status
+  if (!claimed.body?.taskId) return '没有待填任务'
   const task = claimed.body
   notify('Secrets Broker', '正在为 ' + originOf(task.origin) + ' 填充登录信息')
   let report
   try { report = await fillTask(task) } catch (error) { report = { state: 'failed', errorCode: 'executor-error:' + String(error.message ?? error).slice(0, 60) } }
   await broker('/api/fill/tasks/report', { taskId: task.taskId, ...report }).catch(() => {})
-  if (report.state === 'completed') notify('Secrets Broker', '已填充 ' + originOf(task.origin))
-  else notify('Secrets Broker', '填充失败：' + (report.errorCode || report.state))
+  if (report.state === 'completed') { notify('Secrets Broker', '已填充 ' + originOf(task.origin)); return '已填充 ' + originOf(task.origin) }
+  notify('Secrets Broker', '填充失败：' + (report.errorCode || report.state))
+  return '填充失败：' + (report.errorCode || report.state)
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== 'poll-now') return false
+  if (awaitRateLimited()) { sendResponse({ text: '太频繁，稍等一下' }); return true }
+  pollOnce().then((text) => sendResponse({ text })).catch((error) => sendResponse({ text: '出错：' + error.message }))
+  return true
+})
+
+// A manual click must not let a stuck script hammer the broker.
+let lastManual = 0
+function awaitRateLimited() {
+  const now = Date.now()
+  if (now - lastManual < 5000) return true
+  lastManual = now
+  return false
+}
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== 'poll') return
+  if (await rateLimited('poll', 30)) return
+  await pollOnce()
 })
 
 // Opening the popup is the only way to reach the options page from the icon.
