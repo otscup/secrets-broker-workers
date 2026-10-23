@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers'
 import { uiHtml } from './ui.js'
 import { aiSnapshot, askAi, aiInsights, aiModelCatalog } from './ai.js'
+import { parseCommand, TELEGRAM_HELP, formatPendingList, formatGrants, formatStatus, resolvePending, autoRuleActive, describeAutoRule } from './telegram.js'
 import { LOGO_PNG_B64, FAVICON_ICO_B64 } from './logo.js'
 import {
   b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, decryptStr, encryptStr, extractSecret, extractUsername, extractTotp,
@@ -1710,6 +1711,124 @@ function renderTemplate(text, vars) {
 
 // A refusal notification: one line of text and a link to the console page that
 // fixes it. No approve/deny buttons, because there is nothing to approve.
+// Reply on the bot the notifications already use.
+async function telegramSay(telegram, chatId, text) {
+  const token = String(telegram?.botToken ?? '')
+  if (!token || !chatId) return
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text: String(text).slice(0, 3800), disable_web_page_preview: true }),
+  }).catch(() => {})
+}
+
+// Handle one text message. Commands mutate; anything else goes to the assistant,
+// which is read-only, so an ambiguous message can never change a permission.
+async function handleTelegramMessage(env, message, telegram) {
+  const chatId = message.chat?.id
+  const text = String(message.text ?? '')
+  const parsed = parseCommand(text)
+  const state = await loadState(env)
+  const reply = (body) => telegramSay(telegram, chatId, body)
+
+  if (!parsed) return reply(TELEGRAM_HELP)
+  const { verb, args } = parsed
+
+  if (verb === 'help' || verb === 'start') return reply(TELEGRAM_HELP)
+
+  if (verb === 'pending') return reply(formatPendingList(state))
+
+  if (verb === 'status') return reply(formatStatus(state) + '\n' + describeAutoRule(state))
+
+  if (verb === 'grants') return reply(formatGrants(state))
+
+  if (verb === 'asksettings') return reply(describeAutoRule(state) + '\n\n用 /auto <agent|*> <时长> <分钟> 设置；/auto off 关闭。')
+
+  if (verb === 'auto') {
+    if (args[0] === 'off' || args[0] === 'cancel') {
+      await updateState(env, (next) => { delete next.settings.telegramAuto; return next })
+      await addAudit(env, { event: 'telegram.auto-off', source: 'telegram' })
+      return reply('自动审批已关闭。')
+    }
+    const agent = String(args[0] ?? '').trim()
+    const minutes = Number(args[1] ?? 0)
+    if (!agent || !Number.isFinite(minutes) || minutes <= 0 || minutes > 1440) {
+      return reply('用法：/auto <agent|*> <分钟>，例如 /auto Muse 60。最多 1440 分钟（24 小时）。')
+    }
+    const until = Date.now() + Math.floor(minutes) * 60000
+    await updateState(env, (next) => {
+      next.settings.telegramAuto = { agent, until, createdAt: nowIso() }
+      return next
+    })
+    await addAudit(env, { event: 'telegram.auto-on', agent, minutes: Math.floor(minutes), source: 'telegram' })
+    // Say plainly what was just enabled: an auto-approval rule is a standing
+    // permission and the operator must not be surprised by it later.
+    return reply('已开启：' + (agent === '*' ? '所有 Agent' : agent) + ' 的请求将在未来 ' + Math.floor(minutes) + ' 分钟内自动批准。\n\n这段时间内这些请求不会征求你的意见，审批仍会记入日志。用 /auto off 立即关闭。')
+  }
+
+  if (verb === 'approve' || verb === 'deny') {
+    const entry = resolvePending(state, args[0])
+    if (!entry) return reply('找不到这个请求。先发 /pending 看看有哪些。')
+    const decision = verb === 'deny' ? 'deny' : (String(args[1] ?? 'once').toLowerCase())
+    if (verb === 'approve' && !['once', '1h', '24h', '7d', 'always'].includes(decision)) {
+      return reply('时长只能是 once / 1h / 24h / 7d / always。')
+    }
+    const outcome = await decidePending(env, entry.id, decision, 'telegram')
+    if (!outcome) return reply('这个请求已经处理过了。')
+    if (outcome.denied) return reply('已拒绝：' + outcome.agent + ' → ' + outcome.name)
+    if (outcome.error) return reply('没能批准：' + outcome.error)
+    await recordGeoEvent(env, { headers: new Headers() }, {}, { agent: outcome.agent, kind: 'token', action: 'secret.approve', ok: true }).catch(() => {})
+    return reply('已批准：' + outcome.agent + ' → ' + outcome.name + '（' + (outcome.mode || decision) + '）')
+  }
+
+  if (verb === 'extend') {
+    const [agent, item, span] = args
+    if (!agent || !item || !span) return reply('用法：/extend <agent> <条目> <天数|permanent>')
+    const days = span === 'permanent' ? 'permanent' : Number(span)
+    if (days !== 'permanent' && (!Number.isFinite(days) || days <= 0 || days > 3650)) {
+      return reply('天数只能是 1-3650，或 permanent。')
+    }
+    const state2 = await loadState(env)
+    const itemId = state2.itemIds?.[item]
+    if (!itemId) return reply('找不到条目「' + item + '」。')
+    const key = capabilityKey(agent, itemId, 'secret.read')
+    const cap = state2.capabilities?.[key]
+    if (!cap) return reply('「' + agent + '」没有对「' + item + '」的读取授权；用 /approve 或网页授权。')
+    const until = days === 'permanent' ? null : Date.now() + days * 86400e3
+    await updateState(env, (next) => {
+      const c = next.capabilities[key]
+      if (c) { c.expiresAt = until; c.revokedAt = null; c.revokedBy = null }
+      return next
+    })
+    await addAudit(env, { event: 'grant.extend', agent, name: item, days: String(span), source: 'telegram' })
+    return reply('已延长：' + agent + ' → ' + item + ' 到 ' + (until ? new Date(until).toLocaleString('zh-CN', { hour12: false }) : '永久'))
+  }
+
+  if (verb === 'revoke') {
+    const [agent, item, action = 'secret.read'] = args
+    if (!agent || !item) return reply('用法：/revoke <agent> <条目> [secret.read|secret.use|secret.fill]')
+    const state2 = await loadState(env)
+    const itemId = state2.itemIds?.[item]
+    if (!itemId) return reply('找不到条目「' + item + '」。')
+    const key = capabilityKey(agent, itemId, action)
+    const cap = state2.capabilities?.[key]
+    if (!cap) return reply('没有这条授权。')
+    await updateState(env, (next) => {
+      const c = next.capabilities[key]
+      if (c) { c.revokedAt = nowIso(); c.revokedBy = 'telegram' }
+      return next
+    })
+    await addAudit(env, { event: 'grant.revoke', agent, name: item, action, source: 'telegram' })
+    return reply('已撤销：' + agent + ' → ' + item + '（' + action + '）')
+  }
+
+  // Not a command: answer as the assistant, which cannot change anything.
+  const session = await getSession(env)
+  const snapshot = aiSnapshot(state, { vaultUnlocked: Boolean(session) })
+  const answer = await askAi(env, state.settings, { question: parsed.text, snapshot, history: [] })
+  if (!answer.ok) return reply('回答不了：' + answer.reason + '\n\n发 /help 看命令。')
+  return reply(answer.text)
+}
+
 async function notifyDenied(env, origin, entry, notifications) {
   const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持调用（http_request）', 'secret.fill': '网页填充' }[entry.action] || entry.action || ''
   const text = `${entry.agent} 尝试${actionLabel}「${entry.name}」但被拦下：${entry.reason}\n在控制台的「被拦下的请求」里可以一键授权：${origin}/#items`
@@ -2763,7 +2882,11 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     // this". A revoked/expired capability was already returned as decisive.
     const noApprovalInScope = action === 'secret.read' && state.policies?.[name]?.noApproval === true
       && agentInScope(agent, state.itemGroups, name)
-    if (!decision.grantEligible && !decision.legacy && !noApprovalInScope) {
+    // An active auto-approval rule is a deliberate "yes" from the operator for
+    // this agent, time-boxed. It makes the request eligible, which is exactly
+    // what pressing 批准 would do — the only difference is who answered.
+    const autoRuleLive = autoRuleActive(state, agentName)
+    if (!decision.grantEligible && !decision.legacy && !noApprovalInScope && !autoRuleLive) {
       const why = !itemId ? '条目 id 无法解析'
         : !agentInScope(agent, state.itemGroups, name) ? '该条目不在 Agent 的可读范围内'
         : '在可读范围内，但缺少这条授权'
@@ -2808,7 +2931,36 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
       const entry = { id: pendingId, agent: agentName, name, account: session.email, action, createdAt: nowIso(), targetOrigin: action === 'secret.fill' ? String(target?.origin ?? '') : '' }
       await updateState(env, (next) => { next.pending[pendingId] = entry; if (itemId) { next.itemIds ??= {}; next.itemIds[name] = itemId } return next })
       await addAudit(env, { event: 'request.create', agent: agentName, name })
-      await notifyPending(env, origin, entry, ctx)
+      // An active auto-approval rule answers it now instead of asking. It is
+      // time-boxed and audited with source 'auto-rule', so a grant made while
+      // the operator was away is never indistinguishable from their own click.
+      if (autoRuleActive(state, agentName)) {
+        const auto = await decidePending(env, pendingId, 'once', 'auto-rule')
+        await addAudit(env, { event: 'request.auto-approve', agent: agentName, name, action, source: 'auto-rule' })
+        if (auto && !auto.denied && !auto.error) {
+          await notifyPending(env, origin, { ...entry, autoApproved: true }, ctx).catch(() => {})
+          // Fall through to the normal checks by re-reading the capability we
+          // just minted: one call, one decision, no second approval prompt.
+          const fresh = await loadState(env)
+          const cap = fresh.capabilities?.[capabilityKey(agentName, itemId, action)]
+          if (cap && !cap.revokedAt) {
+            const consumed = await consumeCapability(env, capabilityKey(agentName, itemId, action), session.email, action)
+            if (consumed?.ok) {
+              if (action === 'secret.use') return { status: 'use-ok', itemId, url: (await readSecretFromRows(env, env.NODEWARDEN_DB, session, name))?.url ?? '' }
+              const guard = plaintextReadAllowed(fresh, itemId, { noApproval: fresh.policies?.[name]?.noApproval === true })
+              if (guard.ok) {
+                const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
+                if (result) {
+                  await addAudit(env, { event: 'secret.read', agent: agentName, name, itemId, via: 'agent', source: 'auto-rule' })
+                  return { status: 'allowed', itemId: result.id || itemId, value: result.value, url: result.url }
+                }
+              }
+            }
+          }
+        }
+      } else {
+        await notifyPending(env, origin, entry, ctx)
+      }
     }
     return { status: 'pending', requestId: pendingId, approvalUrl: `${origin}/#/grants`, itemId, targetOrigin: String(target?.origin ?? '') }
   }
@@ -5378,6 +5530,19 @@ export default {
       const secret = String(telegram.webhookSecret ?? '')
       if (!secret || request.headers.get('x-telegram-bot-api-secret-token') !== secret) return fail('invalid webhook secret', 401)
       const update = await request.json().catch(() => ({}))
+      // A text message is a command. Only the configured chat may use it, so a
+      // leaked bot token alone cannot drive the broker.
+      const message = update.message
+      if (message) {
+        const fromChat = String(message.chat?.id ?? '')
+        const allowed = String(telegram.chatId ?? '')
+        if (!allowed || fromChat !== allowed) {
+          await addAudit(env, { event: 'telegram.reject', source: 'telegram', reason: 'chat-not-allowed', chat: fromChat.slice(0, 40) })
+          return json({ ok: true })
+        }
+        await handleTelegramMessage(env, message, telegram)
+        return json({ ok: true })
+      }
       const callback = update.callback_query
       if (!callback) return json({ ok: true })
       const data = String(callback.data ?? '')

@@ -92,3 +92,5 @@ extension.pem
 extension.crx
 !test-mf-global-search.mjs
 !test-mf-ai-assistant.mjs
+!test-mf-telegram-control.mjs
+!test-mf-auto-approval.mjs
