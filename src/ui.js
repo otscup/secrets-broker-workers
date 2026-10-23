@@ -506,6 +506,31 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
   .ios-row+.ios-row::before{left:calc(var(--sp-2) + var(--ios-lead) + 36px + var(--sp-2))}
   .ios-title{font-size:var(--text-body)}
 }
+/* Overview: a headline, then widgets, then the work that needs a decision. */
+.ov-head{display:flex;align-items:flex-end;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap;margin-bottom:var(--sp-3)}
+.ov-title{margin:0;font-size:34px;line-height:41px;letter-spacing:.37px}
+.ov-sub{margin-top:2px;font-size:var(--text-sub);color:var(--label-2)}
+#updated{margin-top:2px;font-size:var(--text-caption);color:var(--label-3)}
+.ov-controls{display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-2);flex:1 1 260px;margin-bottom:var(--sp-3)}
+.ov-search{margin:0;flex:1 1 180px;max-width:320px;min-width:0}
+.ov-actions{margin-bottom:var(--sp-3)}
+.ov-actions:empty{display:none}
+.ov-action{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3)}
+.ov-pair{margin-bottom:var(--sp-3)}
+.kpi{background:var(--card);border-radius:var(--r-lg);padding:var(--sp-3) var(--sp-4);min-height:104px;display:flex;flex-direction:column;justify-content:space-between}
+.kpi .value{font-size:34px;line-height:41px;font-weight:700;letter-spacing:-.41px}
+.kpi .label{font-size:var(--text-sub);color:var(--label-2)}
+.kpi .sub{font-size:var(--text-caption);color:var(--label-3)}
+.kpi-spark{display:flex;align-items:flex-end;gap:2px;height:22px;margin:6px 0}
+.kpi-spark i{flex:1 1 0;background:color-mix(in srgb,var(--blue) 55%,transparent);border-radius:2px;min-width:2px}
+.rank{display:flex;flex-direction:column;gap:var(--sp-3)}
+.rank__head{display:flex;justify-content:space-between;gap:var(--sp-3);font-size:var(--text-body)}
+.rank__name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rank__count{color:var(--label-2);font-variant-numeric:tabular-nums;flex:0 0 auto}
+.rank__track{height:6px;border-radius:3px;background:var(--fill);margin-top:6px;overflow:hidden}
+.rank__fill{height:100%;border-radius:3px;background:var(--blue)}
+@media(max-width:720px){#globe-card .globe-box{height:160px;min-height:0}}
+@media(max-width:720px){.ov-controls{flex:1 1 100%;flex-wrap:wrap;justify-content:flex-start}.ov-controls .seg{flex:1 1 100%}.ov-search{flex:1 1 100%;max-width:none}}
 </style></head><body><div class="wrap">
 <header><img id="site-logo" src="/logo.png" alt="" style="width:30px;height:30px;border-radius:8px;object-fit:cover;cursor:pointer"><h1 id="site-title" style="cursor:pointer">Secrets Broker</h1><span class="badge">Cloudflare Workers</span>
 <div class="hdr-actions">
@@ -535,12 +560,16 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 
 <section id="dashboard" class="hidden">
   <section id="view-overview" class="view">
-    <div class="toolbar"><div class="seg" id="range-row"><button data-range="24h" class="on">24 小时</button><button data-range="7d">7 天</button><button data-range="30d">30 天</button></div><span class="spacer"></span><span class="hint" id="updated"></span><input id="global-search" class="gs-input" placeholder="搜索 Agent、密钥、授权、日志…" autocomplete="off" aria-label="全局搜索"></div>
+    <div class="ov-head"><div class="ov-titles"><h2 class="ov-title">概览</h2><div class="ov-sub" id="ov-sub"></div><span class="hint" id="updated"></span></div><div class="ov-controls"><div class="seg" id="range-row"><button data-range="24h" class="on">24 小时</button><button data-range="7d">7 天</button><button data-range="30d">30 天</button></div><input id="global-search" class="gs-input ov-search" placeholder="搜索 Agent、密钥、授权、日志…" autocomplete="off" aria-label="全局搜索"></div></div>
     <div id="global-search-results" class="gs-box hidden"></div>
     <div id="notice-bar" class="notice-bar hidden" role="button" tabindex="0" title="点击查看全部通知"></div>
     <div id="kpis" class="kpis"></div>
-    <div class="grid3">
-      <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
+    <div id="ov-actions" class="ov-actions"></div>
+    <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
+    <div class="grid2 ov-pair">
+      <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="rank-box"></div></div>
+      <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
+    </div>
       <div class="card" id="globe-card">
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
           <h2 style="margin:0">Agent Live Globe</h2>
@@ -555,8 +584,6 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
         </div>
         <div class="hint" id="globe-status" style="margin-top:4px"></div>
       </div>
-      <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="table-wrap rank-box"></div></div>
-      <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>    </div>
     <div id="chart-tip" class="chart-tip"></div>
     <div class="card"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>
   </section>
@@ -1537,13 +1564,37 @@ function openKpiModal(kind) {
 }
 let legendPage = 0
 const LEGEND_PER_PAGE = 8
+/* The first screen answers one question: does anything need me right now? */
+function renderOverviewActions() {
+  const box = $('ov-actions'); if (!box) return
+  const sub = $('ov-sub')
+  if (sub) {
+    const me = app.me || {}
+    const bits = [me.email || '', me.unlocked ? '已解锁' : '未解锁', (app.items || []).length + ' 条密钥', ((app.data && app.data.agents) || []).length + ' 个 Agent']
+    sub.textContent = bits.filter(Boolean).join(' · ')
+  }
+  const data = app.data || {}
+  const now = Date.now()
+  const pending = (data.pending || []).length
+  const denied = (data.deniedAttempts || []).length
+  const expiring = (data.grants || []).filter((g) => { const at = Date.parse(g.expiresAt || ''); return at > now && at - now < 86400000 && !g.revokedAt }).length
+  const rows = []
+  if (pending) rows.push(['有 ' + pending + ' 条请求等你批准', 'Agent 正等着读密钥，超时就自动失效', '去处理', 'grants', 'warn'])
+  if (expiring) rows.push([expiring + ' 条授权 24 小时内到期', '到期后 Agent 要重新申请', '去续期', 'grants', ''])
+  if (denied) rows.push([denied + ' 个 Agent 被拦下过', '点开能看原因，确认后再放行', '查看', 'items', 'bad'])
+  if (!rows.length) { box.innerHTML = ''; return }
+  box.innerHTML = '<div class="card"><h2>需要你处理</h2>' + rows.map((row) => '<div class="ios-field ov-action"><div><b>' + row[0] + '</b><div class="ios-sub">' + row[1] + '</div></div><button class="ios-chip ' + row[4] + '" data-goto="' + row[3] + '">' + row[2] + '</button></div>').join('') + '</div>'
+  box.querySelectorAll('[data-goto]').forEach((button) => { button.onclick = () => { const nav = document.querySelector('#nav button[data-view="' + button.dataset.goto + '"]'); if (nav) nav.click() } })
+}
 function renderStats() {
   const stats = app.stats || { totalReads: 0, activeAgents: 0, pending: 0, activeGrants: 0, buckets: [], topItems: [], topAgents: [] }
   const cards = [{ l: '读取次数', v: stats.totalReads, sub: '当前区间 · 点开查看', view: 'reads' }, { l: '活跃 Agent', v: stats.activeAgents, sub: '有读取记录', view: 'agents' }, { l: '待审批 / 通知', v: stats.pending, sub: '点开处理', warn: stats.pending > 0, view: 'pending' }, { l: '有效授权', v: stats.activeGrants, sub: '含免审批', view: 'grants' }]
-  $('kpis').innerHTML = cards.map((card) => '<div class="kpi' + (card.warn ? ' warn' : '') + '" data-kpi="' + card.view + '"' + (card.event ? ' data-kpi-event="' + card.event + '"' : '') + '><div class="label">' + card.l + '</div><div class="value">' + card.v + '</div><div class="sub">' + card.sub + '</div></div>').join('')
+  const spark = (() => { const b = (stats.buckets || []).slice(-12); const mx = Math.max(1, ...b.map((x) => x.count)); return b.length ? '<div class="kpi-spark">' + b.map((x) => '<i style="height:' + Math.max(2, Math.round(x.count / mx * 20)) + 'px"></i>').join('') + '</div>' : '' })()
+  $('kpis').innerHTML = cards.map((card) => '<div class="kpi' + (card.warn ? ' warn' : '') + '" data-kpi="' + card.view + '"' + (card.event ? ' data-kpi-event="' + card.event + '"' : '') + '><div class="label">' + card.l + '</div><div class="value">' + card.v + '</div>' + (card.view === 'reads' ? spark : '') + '<div class="sub">' + card.sub + '</div></div>').join('')
+  renderOverviewActions()
   const buckets = stats.buckets || []; const max = Math.max(1, ...buckets.map((b) => b.count)); const W = 600, H = 180, px = 38, py = 18, iw = W - 2 * px, ih = H - 2 * py; const slot = buckets.length ? iw / buckets.length : 0; const barW = Math.max(2, Math.min(26, slot * 0.58))
-  let grid = ''; for (let g = 0; g <= 4; g++) { const y = py + ih * g / 4; grid += '<line x1="' + px + '" y1="' + y + '" x2="' + (W - px) + '" y2="' + y + '" stroke="currentColor" stroke-opacity=".1"/><text x="4" y="' + (y + 3) + '" fill="currentColor" font-size="9" opacity=".5">' + Math.round(max * (4 - g) / 4) + '</text>' }
-  const bars = buckets.map((bucket, index) => { const h = bucket.count / max * ih; const x = px + index * slot + (slot - barW) / 2; const y = H - py - h; return '<rect data-chart data-label="' + esc(bucket.label) + '" data-count="' + bucket.count + '" x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + Math.max(h, 0.6).toFixed(1) + '" rx="2" fill="#0f9d8a" opacity="' + (bucket.count ? 0.95 : 0.22) + '" style="cursor:pointer"/>' }).join('')
+  let grid = ''; for (let g = 0; g <= 4; g++) { const y = py + ih * g / 4; grid += '<line x1="' + px + '" y1="' + y + '" x2="' + (W - px) + '" y2="' + y + '" stroke="currentColor" stroke-opacity=".06"/><text x="4" y="' + (y + 3) + '" fill="currentColor" font-size="9" opacity=".5">' + Math.round(max * (4 - g) / 4) + '</text>' }
+  const bars = buckets.map((bucket, index) => { const h = bucket.count / max * ih; const x = px + index * slot + (slot - barW) / 2; const y = H - py - h; return '<rect data-chart data-label="' + esc(bucket.label) + '" data-count="' + bucket.count + '" x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + Math.max(h, 0.6).toFixed(1) + '" rx="3" fill="var(--blue)" opacity="' + (bucket.count ? 0.95 : 0.22) + '" style="cursor:pointer"/>' }).join('')
   const labels = buckets.map((bucket, index) => index % Math.max(1, Math.ceil(buckets.length / 6)) === 0 ? '<text x="' + (px + index * slot + slot / 2).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle" fill="currentColor" font-size="9" opacity=".55">' + esc(bucket.label) + '</text>' : '').join('')
   $('chart-box').innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '">' + grid + bars + labels + '</svg>'
   const tip = $('chart-tip')
@@ -1574,7 +1625,7 @@ function renderStats() {
   if (nextBtn) nextBtn.onclick = () => { legendPage = legendPage + 1; renderStats() }
   $('donut-box').querySelectorAll('[data-donut],[data-legend]').forEach((el) => { el.addEventListener('click', () => selectDonut(el)); el.addEventListener('mouseenter', (event) => { if (el.dataset.count) showTip(event, el.dataset.agent, el.dataset.count) }); el.addEventListener('mouseleave', hideTip) })
   const top = stats.topItems || []; const totalTop = top.reduce((sum, item) => sum + item.count, 0) || 1; const maxTop = Math.max(1, ...top.map((item) => item.count))
-  $('top-box').innerHTML = top.length ? '<table><tr><th>#</th><th>条目</th><th>读取</th><th>占比</th><th>趋势</th></tr>' + top.map((item, index) => '<tr><td>' + (index + 1) + '</td><td><b>' + esc(item.name) + '</b></td><td>' + item.count + '</td><td>' + Math.round(item.count / totalTop * 100) + '%</td><td><span style="display:inline-block;height:6px;width:90px;background:#eef1f6;border-radius:99px;overflow:hidden"><i style="display:block;height:100%;width:' + Math.round(item.count / maxTop * 100) + '%;background:#0f9d8a"></i></span></td></tr>').join('') + '</table>' : '<div class="hint">该区间暂无读取记录</div>'
+  $('top-box').innerHTML = top.length ? '<div class="rank">' + top.map((item, index) => { const pct = Math.max(4, Math.round(item.count / maxTop * 100)); return '<div class="rank__row"><div class="rank__head"><span class="rank__name">' + (index + 1) + '. ' + esc(item.name) + '</span><span class="rank__count">' + item.count + ' 次</span></div><div class="rank__track"><div class="rank__fill" style="width:' + pct + '%"></div></div></div>' }).join('') + '</div>' : '<div class="hint">这个区间还没有读取记录。</div>'
   $('updated').textContent = '最后更新 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false })
 }
 function renderItems() {

@@ -36,12 +36,13 @@ const ui = fs.readFileSync('src/ui.js', 'utf8')
   if (btn && logic && darkCss) pass('X3 light/dark/system switch intact')
   else fail('X3', JSON.stringify({ btn, logic, darkCss }))
 }
-// X4: trend takes two thirds, globe one third
+// X4: the trend spans the row, ranking and share sit side by side
 {
-  const grid = /\.grid3\{display:grid;grid-template-columns:minmax\(0,2fr\) minmax\(0,1fr\)/.test(ui)
-  const layout = /<div class="grid3">[\s\S]{0,500}?读取趋势[\s\S]{0,900}?globe-card/.test(html)
-  if (grid && layout) pass('X4 trend is 2/3 wide, globe 1/3')
-  else fail('X4', JSON.stringify({ grid, layout }))
+  const widgets = /\.kpis\{display:grid;grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/.test(ui)
+  const pair = /<div class="grid2 ov-pair">[\s\S]{0,900}?id="donut-box"/.test(html)
+  const full = /<div class="card"><h2>读取趋势<\/h2>[\s\S]{0,200}?id="chart-box"/.test(html)
+  if (widgets && pair && full) pass('X4 trend full width, ranking and share paired')
+  else fail('X4', JSON.stringify({ widgets, pair, full }))
 }
 // X5: agent stat cards stay horizontal and match the overview KPI look
 {

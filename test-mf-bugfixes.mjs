@@ -29,11 +29,14 @@ const isrc = fs.readFileSync('src/index.js', 'utf8')
   if (cols && !earlyCollapse) pass('F2 agent stats stay in 3 columns')
   else fail('F2', JSON.stringify({ cols, earlyCollapse }))
 }
-// F3: globe sits in the shared overview grid with the other cards
+// F3: the globe keeps a compact card of its own below the ranking pair
 {
-  const inGrid = /<div class="grid3">[\s\S]{0,1200}?id="globe-card"/.test(html)
-  if (inGrid) pass('F3 globe card lives in the overview grid')
-  else fail('F3', 'globe not in grid3')
+  const before = html.indexOf('id="globe-card"')
+  const after = html.indexOf('id="recent-box"')
+  const ranked = html.indexOf('id="top-box"')
+  const inFlow = before > ranked && before < after
+  if (inFlow) pass('F3 globe card sits under the ranking pair')
+  else fail('F3', JSON.stringify({ before, ranked, after }))
 }
 // F4: globe canvas is compact, matching the donut card
 {

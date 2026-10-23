@@ -8,14 +8,12 @@ const fail = (n, d) => { results.push({ n, ok: false, d }); console.log('FAIL  '
 const ui = fs.readFileSync('src/ui.js', 'utf8')
 const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
 
-// S1: four panels in the 2x2 reading order
+// S1: the overview reads headline, widgets, work, trend, ranking, share, globe, activity
 {
-  const start = ui.indexOf('<div class="grid3">')
-  const block = ui.slice(start, start + 2000)
-  const order = ['id="chart-box"', 'id="globe-card"', 'id="top-box"', 'id="donut-box"']
-  const idx = order.map((id) => block.indexOf(id))
+  const order = ['id="ov-sub"', 'id="kpis"', 'id="ov-actions"', 'id="chart-box"', 'id="top-box"', 'id="donut-box"', 'id="globe-card"', 'id="recent-box"']
+  const idx = order.map((id) => ui.indexOf(id))
   const inOrder = idx.every((v, i) => v >= 0 && (i === 0 || v > idx[i - 1]))
-  if (inOrder) pass('S1 panels ordered: trend, globe, ranking, share')
+  if (inOrder) pass('S1 overview ordered: headline, widgets, work, trend, ranking, share, globe, activity')
   else fail('S1', JSON.stringify(idx))
 }
 // S2: every panel is a fixed-height grid child
