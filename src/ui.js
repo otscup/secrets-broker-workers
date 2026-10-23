@@ -56,6 +56,9 @@ button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;
 .notice-bar .notice-count{flex:0 0 auto;font-size:12px;padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.06)}
 .notice-bar .notice-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%}
 .notice-bar[data-level="pending"]{background:#fff4e5;border-color:#f5d9ae;color:#8a5a00}
+html[data-theme="dark"] .notice-bar[data-level="pending"]{background:color-mix(in srgb,var(--orange) 18%,transparent);border-color:color-mix(in srgb,var(--orange) 32%,transparent);color:var(--orange)}
+html[data-theme="dark"] .notice-bar[data-level="critical"]{background:color-mix(in srgb,var(--red) 18%,transparent);border-color:color-mix(in srgb,var(--red) 32%,transparent);color:#FF8A80}
+html[data-theme="dark"] .notice-bar .notice-count{background:rgba(255,255,255,.12)}
 .notice-bar[data-level="pending"] .notice-dot{background:#c2760b}
 .notice-bar[data-level="critical"]{background:#fdecec;border-color:#f5c2c2;color:#a12b2b}
 .notice-bar[data-level="critical"] .notice-dot{background:var(--danger)}
@@ -259,7 +262,7 @@ html[data-theme="dark"] body{background:var(--bg-grouped);color:var(--label)}
 html[data-theme="dark"] .card,html[data-theme="dark"] .kpi,html[data-theme="dark"] .ios-card,html[data-theme="dark"] .account-menu,html[data-theme="dark"] .donut-center,html[data-theme="dark"] #global-search-results{background:var(--card);box-shadow:none}
 html[data-theme="dark"] input,html[data-theme="dark"] select,html[data-theme="dark"] textarea{background:var(--fill-2);color:var(--label)}
 html[data-theme="dark"] tbody tr:hover td{background:transparent}
-html[data-theme="dark"] .seg,html[data-theme="dark"] nav{background:var(--fill)}
+html[data-theme="dark"] .seg{background:var(--fill)}
 input[type=checkbox]{appearance:none;-webkit-appearance:none;width:22px;height:22px;border:1.5px solid var(--separator);border-radius:50%;background:transparent;min-height:0;padding:0;flex:0 0 auto;display:inline-grid;place-items:center;transition:background var(--dur-fade) var(--ease),border-color var(--dur-fade) var(--ease)}
 input[type=checkbox]:checked{background:var(--blue);border-color:var(--blue)}
 input[type=checkbox]:checked::after{content:"";width:6px;height:11px;border:2px solid #fff;border-top:0;border-left:0;transform:translateY(-1.5px) rotate(40deg)}
@@ -389,10 +392,24 @@ ul.items .type{font-size:var(--text-caption);color:var(--label-2)}
 .ios-pill.on{background:color-mix(in srgb,var(--green) var(--mix-badge),transparent);color:var(--green)}
 .ios-pill.web{background:color-mix(in srgb,var(--purple) var(--mix-badge),transparent);color:var(--purple)}
 .ios-pill.none{background:color-mix(in srgb,var(--orange) var(--mix-badge),transparent);color:var(--orange)}
+.ios-pill.ok,.ios-pill.warn{background:color-mix(in srgb,var(--green) var(--mix-badge),transparent);color:var(--green)}
+.ios-pill.warn{background:color-mix(in srgb,var(--orange) var(--mix-badge),transparent);color:var(--orange)}
 .ios-pill.bad{background:color-mix(in srgb,var(--red) var(--mix-badge),transparent);color:var(--red)}
+button.ios-pill{border:0;cursor:pointer;min-width:0}
+.ios-pill.plain{color:var(--blue)}
+.ios-title .ios-name{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ios-flag{font-size:var(--text-caption);padding:2px 8px;border-radius:999px}
 .ios-flag.bad{background:color-mix(in srgb,var(--red) var(--mix-badge),transparent);color:var(--red)}
 .ios-flag.warn{background:color-mix(in srgb,var(--orange) var(--mix-badge),transparent);color:var(--orange)}
+.ios-row--stack{align-items:flex-start}
+.ios-row--log{align-items:flex-start;min-height:0;padding-top:var(--sp-2);padding-bottom:var(--sp-2)}
+.ios-log-time{font-size:var(--text-caption);color:var(--label-3);font-variant-numeric:tabular-nums}
+.ios-log-text{font-size:var(--text-body);line-height:var(--lh-body);color:var(--label)}
+.ios-log-text.bad{color:var(--red)}
+.ios-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:var(--sp-2)}
+.ios-chip{font-size:var(--text-sub);padding:7px 12px;border-radius:var(--r-md);background:var(--fill);color:var(--blue);border:0;min-height:34px;font-weight:500}
+.ios-chip.danger{color:var(--red)}
+.ios-actions .ios-chip:first-child{background:var(--blue);color:#fff}
 .ios-more{width:44px;height:44px;display:grid;place-items:center;background:transparent;color:var(--label-3);font-size:18px;padding:0;border-radius:var(--r-md)}
 .ios-more:hover{background:var(--fill-2);color:var(--label-2)}
 .hdr-actions{margin-left:auto;display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;justify-content:flex-end}
@@ -412,6 +429,13 @@ ul.items .type{font-size:var(--text-caption);color:var(--label-2)}
 #view-items .row>#item-filter{flex:1 1 240px}
 @media(max-width:720px){.hdr-actions .who-name,.user .who-name{display:none}}
 @media(max-width:720px){
+  #view-agents .row>select,#view-logs .row>select{width:auto;flex:1 1 0;min-width:0}
+  #view-logs .row>input{flex:1 1 100%}
+  #view-logs .row>button{flex:1 1 100%}
+  /* Let the trend card hug its chart instead of leaving a 100px hole. */
+  .grid3>.card{height:auto}
+  .grid3 .trend-box{flex:0 0 auto}
+  .ios-pill.plain{display:none}
   #view-items .row{gap:6px}
   #view-items .row button{width:auto;flex:0 0 auto;padding:8px 11px;font-size:var(--text-body);min-height:38px}
   #view-items .row>*{min-width:0}
@@ -503,15 +527,15 @@ ul.items .type{font-size:var(--text-caption);color:var(--label-2)}
           <option value="name">按名称</option>
         </select>
       </div>
-      <div id="agents-box" class="table-wrap scroll-list" style="margin-top:10px"></div>
+      <div id="agents-box" class="scroll-list" style="margin-top:var(--sp-3)"></div>
       <div class="status" id="agent-status"></div>
     </div>
   </section>
 
   <section id="view-grants" class="view hidden">
     <div class="card" id="transfers-card"><h2>待复制到其他账户</h2><div class="hint">主账户分享后先进入队列；切回目标账户并解锁后自动复制到指定文件夹并生成授权。</div><div id="transfers-box" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
-    <div class="card"><h2>待批准请求</h2><div class="hint">点按钮即授权；同 Docker 版的 once/1h/24h/7d/永久。</div><div id="pending-box" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
-    <div class="card"><h2>有效授权</h2><div class="hint">过期的授权会显示「已过期」，点该行的时长即可延期。</div><div id="grants-box" class="table-wrap scroll-list"></div></div>
+    <div class="card"><h2>待批准请求</h2><div class="hint">点按钮即授权；同 Docker 版的 once/1h/24h/7d/永久。</div><div id="pending-box" class="scroll-list" style="margin-top:10px"></div></div>
+    <div class="card"><h2>有效授权</h2><div class="hint">过期的授权会显示「已过期」，点该行的时长即可延期。</div><div id="grants-box" class="scroll-list"></div></div>
     <div class="card"><h2>OAuth 客户端</h2><div class="hint">每个连接（Muse、Codex、ChatGPT 等）在首次授权时会注册一个客户端。重复或失效的注册可以逐个撤销，撤销会同时清除它的 token。</div><div id="oauth-clients-box" class="table-wrap" style="margin-top:10px"></div></div>
   </section>
 
@@ -524,7 +548,7 @@ ul.items .type{font-size:var(--text-caption);color:var(--label-2)}
       <button id="logs-reset" style="flex:0 0 auto">清空筛选</button>
     </div>
     <div class="hint" id="logs-count" style="margin-top:8px"></div>
-    <div id="logs-box" class="table-wrap scroll-list" style="margin-top:10px"></div>
+    <div id="logs-box" class="scroll-list" style="margin-top:var(--sp-3)"></div>
   </div></section>
 
   <section id="view-profile" class="view hidden">
@@ -1950,6 +1974,7 @@ function agentDisplayNote(agent) {
   if (agent.alias && agent.oauth && String(agent.name || '').startsWith('oauth:')) return agent.note || ''
   return agent.note || ''
 }
+const IOS_PERSON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.6"></circle><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6"></path></svg>'
 function renderAgents() {
   const all = (app.data && app.data.agents) || []
   renderAgentStats(all)
@@ -1984,33 +2009,41 @@ function renderAgents() {
     const health = agentHealth(agent, last)
     const kind = agent.oauth ? 'OAuth' : 'Token'
     const dotClass = health.level === 'ok' ? 'ok' : (health.level === 'warn' ? 'warn' : 'bad')
-    return '<tr class="agent-row" data-agent-open="' + esc(agent.name) + '">' +
-      '<td><b>' + esc(agentDisplayName(agent)) + '</b> <span class="pill">' + kind + '</span>' +
-      (agentDisplayNote(agent) ? '<br><span class="hint">' + esc(agentDisplayNote(agent)) + '</span>' : '') + '</td>' +
-      '<td class="hint">' + esc(health.detail) + (typeof agent.expiresAt === 'number' ? ' · 剩余 ' + Math.max(0, Math.ceil((agent.expiresAt - Date.now()) / 86400e3)) + ' 天' : ' · 长期') + '</td>' +
-      '<td class="nowrap"><span class="agent-health ' + dotClass + '">' + esc(health.label) + '</span></td>' +
-      '<td class="nowrap">' + '<button class="small" data-agent-extend="' + esc(agent.name) + '" title="延长授权">延长</button>' +
-      '<button class="small" data-agent-menu="' + esc(agent.name) + '" title="更多">⋮</button></td></tr>'
+    const days = typeof agent.expiresAt === 'number' ? Math.max(0, Math.ceil((agent.expiresAt - Date.now()) / 86400e3)) + ' 天后到期' : '长期有效'
+    return '<div class="ios-row" data-agent-open="' + esc(agent.name) + '">' +
+      '<span class="ios-ico" data-kind="' + (agent.oauth ? 'oauth' : 'api') + '">' + IOS_PERSON + '</span>' +
+      '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(agentDisplayName(agent)) + '</span>' +
+      '<span class="ios-tag">' + kind + '</span></div>' +
+      '<div class="ios-sub">' + (agentDisplayNote(agent) ? esc(agentDisplayNote(agent)) + ' · ' : '') + esc(health.detail) + '</div>' +
+      '<div class="ios-sub">' + days + '</div></div>' +
+      '<div class="ios-trail"><button class="ios-pill plain" data-agent-extend="' + esc(agent.name) + '" title="延长授权">延长</button>' +
+      '<span class="ios-pill ' + dotClass + '">' + esc(health.label) + '</span>' +
+      '<button class="ios-more" data-agent-menu="' + esc(agent.name) + '" title="更多">⋮</button></div></div>'
   }).join('')
-  box.innerHTML = '<table><tr><th>Agent</th><th>最近活动 / 到期</th><th>状态</th><th>操作</th></tr>' + rows + '</table>'
+  box.innerHTML = '<div class="ios-group"><div class="ios-group-head"><span>共 ' + agents.length + ' 个 Agent</span></div>' +
+    '<div class="ios-card">' + rows + '</div></div>'
 }
 function renderPending() {
   const pending = app.data.pending || []
-  const head = '<table><tr><th>Agent</th><th>条目</th><th>动作</th><th>目标 origin</th><th>时间</th><th>授权</th></tr>'
   const body = pending.map((request) => {
     const origin = pendingOriginLabel(request)
     const isFill = String(request.action || '') === 'secret.fill'
-    const originCell = isFill
-      ? (origin ? '<code>' + esc(origin) + '</code>' : '<b style="color:var(--danger)">' + esc(origin) + '</b>')
-      : '<span class="hint">-</span>'
-    return '<tr><td>' + esc(request.agent) + '</td><td><b>' + esc(request.name) + '</b></td><td>'
-      + esc(pendingActionLabel(request)) + '</td><td>' + originCell + '</td><td>'
-      + esc(new Date(request.createdAt).toLocaleTimeString('zh-CN', { hour12: false })) + '</td><td>'
-      + [['once', '仅本次'], ['1h', '1 小时'], ['24h', '24 小时'], ['7d', '7 天'], ['always', '永久']]
-        .map((mode) => '<button class="small primary" data-decide="' + mode[0] + '" data-id="' + esc(request.id) + '">' + mode[1] + '</button>').join('')
-      + '<button class="small danger" data-decide="deny" data-id="' + esc(request.id) + '">拒绝</button></td></tr>'
+    const originLine = isFill ? (origin ? '目标 ' + origin : '缺少目标 origin，填单会被拒绝') : ''
+    const chips = [['once', '仅本次'], ['1h', '1 小时'], ['24h', '24 小时'], ['7d', '7 天'], ['always', '永久']]
+      .map((mode) => '<button class="ios-chip" data-decide="' + mode[0] + '" data-id="' + esc(request.id) + '">' + mode[1] + '</button>').join('')
+      + '<button class="ios-chip danger" data-decide="deny" data-id="' + esc(request.id) + '">拒绝</button>'
+    return '<div class="ios-row ios-row--stack">' +
+      '<span class="ios-ico" data-kind="' + (isFill ? 'web' : 'api') + '">' + IOS_PERSON + '</span>' +
+      '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(request.agent) +
+      '</span><span class="ios-tag">' + esc(pendingActionLabel(request)) + '</span></div>' +
+      '<div class="ios-sub">条目 ' + esc(request.name) + '</div>' +
+      (originLine ? '<div class="ios-sub">' + esc(originLine) + '</div>' : '') +
+      '<div class="ios-sub">' + esc(new Date(request.createdAt).toLocaleTimeString('zh-CN', { hour12: false })) + '</div>' +
+      '<div class="ios-actions">' + chips + '</div></div></div>'
   }).join('')
-  $('pending-box').innerHTML = pending.length ? head + body + '</table>' : '<div class="hint">暂无待批准请求</div>'
+  $('pending-box').innerHTML = pending.length
+    ? '<div class="ios-group"><div class="ios-group-head"><span>等待你决定 · ' + pending.length + '</span></div><div class="ios-card">' + body + '</div></div>'
+    : '<div class="hint">暂无待批准请求</div>'
 }
 
 // -- Web fill policies --------------------------------------------------------
@@ -2149,26 +2182,27 @@ function renderDenied() {
   const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持调用（http_request）', 'secret.fill': '网页填充' }
   const kinds = (app.data && app.data.fillPolicies && app.data.fillPolicies.items) || []
   const kindOf = (name) => (kinds.find((k) => k.itemName === name) || {}).kind || ''
-  box.innerHTML = '<div class="hint" style="margin-bottom:6px">点「授权」只会放开这一条；点「全部放开 http_request」会给这个 Agent 在这条目上开代持调用（仍然拿不到明文值）。</div>' +
-    '<table><tr><th>Agent</th><th>条目</th><th>类型</th><th>想要</th><th>被拦原因</th><th>次数</th><th>最近</th><th class="nowrap">操作</th></tr>' +
-    rows.map((entry) => {
-      const at = entry.lastAt ? new Date(entry.lastAt).toLocaleString('zh-CN', { hour12: false }) : '-'
-      const kind = kindOf(entry.name)
-      const kindCell = kind === 'api' ? '<span class="kind-tag kind-api">api</span>'
-        : kind === 'web' ? '<span class="kind-tag kind-web">web</span>'
-        : '<span class="kind-tag kind-none">未分类</span>'
-      const useBtn = entry.action === 'secret.use'
-        ? ''
-        : '<button class="small" data-allow-use data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" title="只开代持调用，不给明文">http_request</button>'
-      return '<tr><td>' + esc(entry.agent || '') + '</td><td><b>' + esc(entry.name || '') + '</b></td>'
-        + '<td>' + kindCell + '</td>'
-        + '<td>' + esc(actionLabel[entry.action] || entry.action || '') + '</td>'
-        + '<td style="color:var(--danger)">' + esc(entry.reason || '') + '</td>'
-        + '<td>' + (entry.count ?? 1) + '</td><td class="hint nowrap">' + esc(at) + '</td>'
-        + '<td class="nowrap"><button class="small primary" data-allow-denied data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" data-action="' + esc(entry.action || '') + '">授权</button>'
-        + useBtn
-        + '<button class="small" data-dismiss-denied data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" data-action="' + esc(entry.action || '') + '">忽略</button></td></tr>'
-    }).join('') + '</table>'
+  const rowsHtml = rows.map((entry) => {
+    const at = entry.lastAt ? new Date(entry.lastAt).toLocaleString('zh-CN', { hour12: false }) : '-'
+    const kind = kindOf(entry.name)
+    const kindTag = kind === 'api' ? '<span class="ios-tag">api</span>'
+      : kind === 'web' ? '<span class="ios-tag">web</span>'
+      : '<span class="ios-tag">未分类</span>'
+    const useBtn = entry.action === 'secret.use'
+      ? ''
+      : '<button class="ios-chip" data-allow-use data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" title="只开代持调用，不给明文">http_request</button>'
+    return '<div class="ios-row ios-row--stack">' +
+      '<span class="ios-ico" data-kind="' + (kind === 'web' ? 'web' : kind === 'api' ? 'api' : 'none') + '">' + IOS_PERSON + '</span>' +
+      '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(entry.agent || '') + '</span>' + kindTag +
+      '<span class="ios-pill bad">' + esc(actionLabel[entry.action] || entry.action || '') + '</span></div>' +
+      '<div class="ios-sub">条目 ' + esc(entry.name || '') + '</div>' +
+      '<div class="ios-sub">被拦原因 ' + esc(entry.reason || '') + ' · ' + (entry.count ?? 1) + ' 次 · ' + esc(at) + '</div>' +
+      '<div class="ios-actions"><button class="ios-chip" data-allow-denied data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" data-action="' + esc(entry.action || '') + '">授权</button>' +
+      useBtn +
+      '<button class="ios-chip danger" data-dismiss-denied data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" data-action="' + esc(entry.action || '') + '">忽略</button></div></div></div>'
+  }).join('')
+  box.innerHTML = '<div class="hint" style="margin-bottom:var(--sp-3)">点「授权」只放开这一条；「http_request」给这个 Agent 开代持调用，仍然拿不到明文。</div>' +
+    '<div class="ios-group"><div class="ios-card">' + rowsHtml + '</div></div>'
 }
 // Grant what was refused. secret.use needs a target policy before http_request
 // can reach anything, so that dialog asks for it; secret.read asks for a window.
@@ -2284,26 +2318,32 @@ function renderGrants() {
   const rows = grants.map((grant) => {
     const state = grant.revokedAt ? '已撤销' : (grant.expiresAt && grant.expiresAt <= Date.now() ? '已过期' : (grant.maxReads && (grant.reads ?? 0) >= grant.maxReads ? '次数用尽' : '生效中'))
     const bad = state !== '生效中'
-    return '<tr><td>' + esc(agentLabel(grant.agent)) + '</td><td><b>' + esc(grant.name) + '</b></td>'
-      + '<td' + (bad ? ' style="color:var(--danger)"' : '') + '>' + esc(state) + '</td>'
-      + '<td>' + esc(grant.mode) + '</td>'
-      + '<td class="nowrap"><button class="pill" data-item-grant data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="点击修改时长和读取次数">' + esc(remaining(grant)) + '</button></td>'
-      + '<td>' + (grant.reads ?? 0) + (grant.maxReads ? ' / ' + grant.maxReads : '') + '</td>'
-      + '<td><button class="small" data-grant-menu data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="更多">⋮</button></td></tr>'
+    const reads = (grant.reads ?? 0) + (grant.maxReads ? ' / ' + grant.maxReads : '')
+    return '<div class="ios-row">' +
+      '<span class="ios-ico" data-kind="api">' + IOS_PERSON + '</span>' +
+      '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(grant.name) + '</span>' +
+      '<span class="ios-tag">' + esc(grant.mode) + '</span></div>' +
+      '<div class="ios-sub">' + esc(agentLabel(grant.agent)) + ' · 已读 ' + reads + '</div></div>' +
+      '<div class="ios-trail"><button class="ios-pill ' + (bad ? 'bad' : 'ok') + '" data-item-grant data-agent="' + esc(grant.agent) +
+      '" data-name="' + esc(grant.name) + '" title="点击修改时长和读取次数">' + esc(remaining(grant)) + '</button>' +
+      '<button class="ios-more" data-grant-menu data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="更多">⋮</button></div></div>'
   }).join('')
   // An unbound legacy grant has no capability and no duration to show; its only
   // useful actions are re-grant (which binds it) and delete.
   const legacyRows = unbound.map((entry) =>
-    '<tr><td>' + esc(entry.agent || '') + '</td><td><b>' + esc(entry.name || '') + '</b></td>'
-    + '<td style="color:var(--danger)">需重新授权</td><td>' + esc(entry.mode || '') + '</td>'
-    + '<td class="nowrap"><span class="hint">无绑定</span></td><td>-</td>'
-    + '<td class="nowrap"><button class="small primary" data-legacy-regrant data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '">重新授权</button>'
-    + '<button class="small danger" data-legacy-delete data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" title="删除这条旧授权">删除</button></td></tr>'
+    '<div class="ios-row ios-row--stack">' +
+    '<span class="ios-ico" data-kind="none">' + IOS_PERSON + '</span>' +
+    '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(entry.name || '') + '</span>' +
+    '<span class="ios-pill bad">需重新授权</span></div>' +
+    '<div class="ios-sub">' + esc(entry.agent || '') + ' · ' + esc(entry.mode || '') + ' · 无身份绑定</div>' +
+    '<div class="ios-actions">' +
+    '<button class="ios-chip" data-legacy-regrant data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '">重新授权</button>' +
+    '<button class="ios-chip danger" data-legacy-delete data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '">删除</button>' +
+    '</div></div></div>'
   ).join('')
   const total = grants.length + unbound.length
   $('grants-box').innerHTML = total
-    ? '<div class="hint">点「到期」那一列的时长即可延期或改读取次数。标为「需重新授权」的是凭据身份绑定之前建立的旧授权：Broker 无法证明这个名字今天仍指向同一个凭据，所以不会自动迁移，请重新授权或删除。</div>'
-      + '<table><tr><th>Agent</th><th>条目</th><th>状态</th><th>模式</th><th>到期</th><th>读取</th><th>操作</th></tr>' + rows + legacyRows + '</table>'
+    ?       '<div class="ios-group"><div class="ios-card">' + rows + legacyRows + '</div></div>'
     : '<div class="hint">暂无授权</div>'
 }
 function renderOauthClients() {
@@ -2333,6 +2373,7 @@ function describe(entry) {
   const name = entry.name ? '「' + entry.name + '」' : ''; const agent = who(entry.agent); const mode = ({ once: '仅本次', '1h': '1 小时', '24h': '24 小时', '7d': '7 天', always: '永久', grant: '授权', 'no-approval': '免审批' })[entry.mode] || entry.mode || ''
   switch (entry.event) {
     case 'secret.read': return agent + ' 读取了 ' + name + (mode ? '（' + mode + '）' : '')
+    case 'secret.read-noapproval': return agent + ' 免审批读取了 ' + name
     case 'request.create': return agent + ' 申请读取 ' + name
     case 'request.approve': return agent + ' 的 ' + name + ' 申请已批准' + (mode ? '（' + mode + '）' : '') + '，渠道：' + (entry.source === 'telegram' ? 'Telegram' : entry.source === 'ntfy' ? 'ntfy' : '网页')
     case 'request.deny': return agent + ' 的 ' + name + ' 申请被拒绝'
@@ -2407,11 +2448,14 @@ function renderLogs() {
   // The table stays capped at 200 rows, so the count reports what is actually drawn.
   const shown = rows.slice(0, 200)
   const count = $('logs-count'); if (count) count.textContent = '显示 ' + shown.length + ' / 共 ' + all.length + ' 条'
-  $('logs-box').innerHTML = shown.length ? '<table><tr><th>时间</th><th>描述</th><th>Agent</th><th>条目</th></tr>' + shown.map((entry) => {
+  $('logs-box').innerHTML = shown.length ? '<div class="ios-group"><div class="ios-card">' + shown.map((entry) => {
     const red = RED_LOG_EVENTS.has(String(entry.event || '')) || entry.noApproval === true || entry.severity === 'warn'
-    const cell = red ? ' style="color:var(--danger)"' : ''
-    return '<tr><td' + cell + '>' + esc(new Date(entry.time).toLocaleString('zh-CN', { hour12: false })) + '</td><td' + cell + '>' + esc(describe(entry)) + '</td><td' + cell + '>' + esc(entry.agent || '') + '</td><td' + cell + '>' + esc(entry.name || '') + '</td></tr>'
-  }).join('') + '</table>' : '<div class="hint">' + (all.length ? '没有符合筛选条件的日志' : '暂无日志') + '</div>'
+    return '<div class="ios-row ios-row--log"><div class="ios-main">' +
+      '<div class="ios-log-time">' + esc(new Date(entry.time).toLocaleString('zh-CN', { hour12: false })) + '</div>' +
+      '<div class="ios-log-text' + (red ? ' bad' : '') + '">' + esc(describe(entry)) + '</div>' +
+      ([entry.agent, entry.name].filter(Boolean).length ? '<div class="ios-sub">' + esc([entry.agent, entry.name].filter(Boolean).join(' · ')) + '</div>' : '') +
+      '</div></div>'
+  }).join('') + '</div></div>' : '<div class="hint">' + (all.length ? '没有符合筛选条件的日志' : '暂无日志') + '</div>'
 }
 async function reveal(name) { try { const data = await api('/secret?name=' + encodeURIComponent(name)); $('modal-title').textContent = '读取 ' + name; $('modal-body').innerHTML = '<div class="hint">仅用于人工查看；Agent 应通过 /secret 或 MCP 获取。</div>' + (data.username ? '<label class="field">用户名</label><div class="secret">' + esc(data.username) + '</div>' : '') + '<label class="field">密钥</label><div class="secret">' + esc(data.value || '(空)') + '</div>' + (data.totp ? '<label class="field">TOTP Secret</label><div class="secret">' + esc(data.totp) + '</div>' : ''); show('modal', true) } catch (error) { toast(error.message, true) } }
 function createItemMenu() {
@@ -2657,9 +2701,10 @@ async function openAgentMenu(name) {
     $('ma-oauth-revoke').onclick = async () => { if (!confirm('撤销 ' + name + ' 的 OAuth token？')) return; try { await api('/api/oauth/revoke', { method: 'POST', body: JSON.stringify({ agent: name }) }); show('modal', false); await loadState(); toast('已撤销') } catch (error) { toast(error.message, true) } }
     return
   }
-  openModal('Agent「' + name + '」', '<div class="hint">绑定账户：<code>' + esc(agent.account || '未绑定（旧数据）') + '</code>。Agent 只能读取该账户；切换账户后旧 Agent 不会自动获得新账户权限。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
+  openModal('Agent「' + name + '」', '<div class="hint">绑定账户：<code>' + esc(agent.account || '未绑定（旧数据）') + '</code>。Agent 只能读取该账户；切换账户后旧 Agent 不会自动获得新账户权限。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button id="ma-extend">延长授权</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
   $('ma-save').onclick = () => saveAgentFromModal(name)
   wireAgentActions(name)
+  $('ma-extend').onclick = () => openExtendMenu(name)
   $('ma-copy').onclick = async () => { try { const data = await api('/api/agents/token', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); toast('token 已复制') } catch (error) { toast(error.message, true) } }
   $('ma-rotate').onclick = async () => { if (!confirm('轮换 ' + name + ' 的 token？旧 token 会立即失效。')) return; try { const data = await api('/api/agents/rotate', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); await loadState(); toast('已轮换并复制新 token') } catch (error) { toast(error.message, true) } }
   $('ma-delete').onclick = async () => { if (!confirm('删除 Agent ' + name + '？')) return; try { await api('/api/agents/delete', { method: 'POST', body: JSON.stringify({ name }) }); show('modal', false); await loadState(); toast('已删除') } catch (error) { toast(error.message, true) } }

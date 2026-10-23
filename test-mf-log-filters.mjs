@@ -72,13 +72,14 @@ const code = script[1]
   else if (!bad.length) pass('L5 every interpolated value in the filter markup is esc()d')
   else fail('L5', 'unescaped: ' + [...new Set(bad)].join(' | '))
 }
-// L6 - the table keeps its columns, the hidden-scrollbar container and the red rows.
+// L6 - the timeline keeps its scroll container, its three lines per row
+// (time, description, agent · item) and the red rows.
 {
-  const scroll = /<div id="logs-box" class="table-wrap scroll-list"/.test(uiHtml)
-  const cols = ['<th>时间</th>', '<th>描述</th>', '<th>Agent</th>', '<th>条目</th>']
-  const missing = cols.filter((col) => !code.includes(col))
+  const scroll = /<div id="logs-box" class="scroll-list"/.test(uiHtml)
+  const parts = ['ios-row--log', 'ios-log-time', 'ios-log-text']
+  const missing = parts.filter((part) => !code.includes(part))
   const red = /const red = RED_LOG_EVENTS\.has\(String\(entry\.event \|\| ''\)\)/.test(code)
-  if (scroll && !missing.length && red) pass('L6 scroll-list container, 4 columns and red rows preserved')
+  if (scroll && !missing.length && red) pass('L6 scroll container, timeline rows and red rows preserved')
   else fail('L6', JSON.stringify({ scroll, missing, red }))
 }
 // L7 - filters AND together and never refetch: the view only reads app.data.
