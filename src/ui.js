@@ -2376,20 +2376,31 @@ function renderOauthClients() {
   if (!clients.length) { box.innerHTML = '<div class="hint">还没有 OAuth 客户端注册</div>'; return }
   const rows = clients.map((client) => {
     const when = client.createdAt ? new Date(client.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-'
-    const tokenText = client.liveTokens > 0
-      ? (client.expiresAt ? '有效 · 至 ' + new Date(client.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '有效 · 永久')
+    const live = client.liveTokens > 0
+    const tokenText = live
+      ? (client.expiresAt ? '有效至 ' + new Date(client.expiresAt).toLocaleDateString('zh-CN') : '有效 · 永久')
       : (client.tokens > 0 ? '已过期' : '无 token')
-    return '<tr><td><b>' + esc(client.clientName || '未命名') + '</b></td>' +
-      '<td class="hint"><code>' + esc(String(client.clientId || '').slice(0, 16)) + '…</code></td>' +
-      '<td class="hint">' + esc(when) + '</td>' +
-      '<td>' + esc(tokenText) + '</td>' +
-      '<td class="nowrap"><button class="small danger" data-oauth-revoke="' + esc(client.clientId) + '">撤销</button></td></tr>'
+    return '<div class="ios-row ios-row--stack">' +
+      '<span class="ios-ico" data-kind="oauth">' + IOS_PERSON + '</span>' +
+      '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(client.clientName || '未命名') + '</span>' +
+      '<span class="ios-pill ' + (live ? 'ok' : 'bad') + '">' + esc(tokenText) + '</span></div>' +
+      '<div class="ios-sub"><code>' + esc(String(client.clientId || '').slice(0, 18)) + '…</code></div>' +
+      '<div class="ios-sub">注册于 ' + esc(when) + '</div>' +
+      '<div class="ios-actions"><button class="ios-chip danger" data-oauth-revoke="' + esc(client.clientId) + '">撤销并清除 token</button></div>' +
+      '</div></div>'
   }).join('')
-  box.innerHTML = '<table><tr><th>名称</th><th>客户端 ID</th><th>注册时间</th><th>Token</th><th>操作</th></tr>' + rows + '</table>'
+  box.innerHTML = '<div class="ios-group"><div class="ios-card">' + rows + '</div></div>'
 }
 function renderTransfers() {
   const transfers = app.data.transfers || []
-  $('transfers-box').innerHTML = transfers.length ? '<table><tr><th>条目</th><th>Agent</th><th>来源 → 目标</th><th>目标文件夹</th><th>状态</th></tr>' + transfers.map((entry) => '<tr><td><b>' + esc(entry.name) + '</b></td><td>' + esc(entry.agent) + '</td><td class="hint">' + esc(entry.sourceAccount) + ' → ' + esc(entry.targetAccount) + '</td><td>' + esc(entry.folder || '(根目录)') + '</td><td class="hint">' + esc(entry.error ? '失败：' + entry.error : '等待目标账户解锁') + '</td></tr>').join('') + '</table>' : '<div class="hint">没有待复制条目</div>'
+  $('transfers-box').innerHTML = transfers.length ? '<div class="ios-group"><div class="ios-card">' + transfers.map((entry) =>
+    '<div class="ios-row ios-row--stack">' +
+    '<span class="ios-ico" data-kind="web">' + IOS_PERSON + '</span>' +
+    '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(entry.name) + '</span>' +
+    '<span class="ios-pill ' + (entry.error ? 'bad' : 'warn') + '">' + esc(entry.error ? '复制失败' : '等待解锁') + '</span></div>' +
+    '<div class="ios-sub">' + esc(entry.agent || '') + ' · 目标文件夹 ' + esc(entry.folder || '默认') + '</div>' +
+    '<div class="ios-sub">' + esc(entry.sourceAccount || '主账户') + ' → ' + esc(entry.targetAccount || '目标账户') + '</div>' +
+    '</div></div>').join('') + '</div></div>' : '<div class="hint">没有待复制的条目</div>'
 }
 function who(label) { const agent = (app.data.agents || []).find((entry) => entry.name === label); return agent?.alias || label || '系统' }
 function describe(entry) {
@@ -2421,7 +2432,6 @@ function describe(entry) {
     default: return entry.event + (entry.agent ? ' · ' + agent : '') + (name ? ' ' + name : '')
   }
 }
-function renderRecent() { $('recent-box').innerHTML = (app.data.audit || []).slice(0, 8).map((entry) => '<div class="rowline"><span class="ev">' + esc(new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false })) + '</span><span>' + esc(describe(entry)) + '</span></div>').join('') || '<div class="hint">暂无活动</div>' }
 // Anything that cleared a guard rather than passing it is red: a no-approval
 // read skipped every check, and a denial shows what was refused. Everything
 // else stays neutral so the red still means something.
@@ -2439,12 +2449,21 @@ const LOG_EVENT_GROUPS = [
   { key: 'oauth', label: 'OAuth 与填充', match: ['oauth.*', 'fill.*'] },
   { key: 'risk', label: '仅风险事件', red: true, match: [] },
 ]
+
+function renderRecent() {
+  $('recent-box').innerHTML = (app.data.audit || []).slice(0, 8).map((entry) =>
+    '<div class="ios-row ios-row--log"><div class="ios-main">' +
+    '<div class="ios-log-time">' + esc(new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false })) + '</div>' +
+    '<div class="ios-log-text' + (RED_LOG_EVENTS.has(String(entry.event || '')) ? ' bad' : '') + '">' + esc(describe(entry)) + '</div>' +
+    '</div></div>').join('') || '<div class="hint">暂无活动</div>'
+}
+// Options are rebuilt from the audit rows on every render (the data can change
+// under a refresh); the current choice is carried over by value.
 function logEventInGroup(group, event) {
   if (group.red) return RED_LOG_EVENTS.has(event)
   return (group.match || []).some((kind) => (kind.endsWith('.*') ? event.startsWith(kind.slice(0, -1)) : event === kind))
 }
-// Options are rebuilt from the audit rows on every render (the data can change
-// under a refresh); the current choice is carried over by value.
+
 function fillLogSelect(id, options, allLabel) {
   const select = $(id); if (!select) return
   const current = select.value
