@@ -1500,6 +1500,29 @@ function publicState(state) {
         plaintextReadExpiresAt: state.plaintextReadPolicies?.[itemId]?.expiresAt ?? 0,
       })),
     },
+    // Refusals the operator was not present for. Each carries the reason, so the
+    // console can explain what an Agent wanted and offer a one-click grant
+    // instead of leaving a bare "access denied" that nobody ever sees.
+    deniedAttempts: Object.values(state.deniedAttempts ?? {})
+      .sort((a, b) => String(b.lastAt ?? '').localeCompare(String(a.lastAt ?? '')))
+      .slice(0, 50),
+    // Per-item target rules for secret.use (the http_request action), so the
+    // console can show what is reachable and let the operator change it.
+    usePolicies: Object.values(state.usePolicies ?? {}).map((policy) => ({
+      itemId: policy.itemId,
+      itemName: Object.keys(state.itemIds ?? {}).find((name) => state.itemIds[name] === policy.itemId) ?? '',
+      hosts: policy.hosts ?? [], methods: policy.methods ?? [],
+      ports: policy.ports ?? ['443'], pathPrefixes: policy.pathPrefixes ?? [],
+    })),
+    // Which actions each Agent holds, per item: read, use and fill are separate
+    // grants and the console shows them separately instead of one allowlist.
+    agentActions: Object.values(state.capabilities ?? {})
+      .filter((cap) => !cap.revokedAt)
+      .map((cap) => ({
+        agent: cap.subjectId ?? '', itemName: cap.itemName ?? '', itemId: cap.itemId ?? '',
+        action: cap.action ?? '', expiresAt: cap.expiresAt ?? null,
+        usesLeft: cap.maxUses == null ? null : Math.max(0, cap.maxUses - (cap.usedCount ?? 0)),
+      })),
     // OAuth client registrations + their live token counts, so the admin UI can
     // show and prune them. Full client IDs are safe here (admin-only view) but
     // tokens are never exposed, only counts.
@@ -1673,9 +1696,44 @@ function renderTemplate(text, vars) {
   return String(text).replace(/\{(agent|name|time|origin|lines)\}/g, (match, key) => (vars[key] ?? match))
 }
 
+// A refusal notification: one line of text and a link to the console page that
+// fixes it. No approve/deny buttons, because there is nothing to approve.
+async function notifyDenied(env, origin, entry, notifications) {
+  const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持调用（http_request）', 'secret.fill': '网页填充' }[entry.action] || entry.action || ''
+  const text = `${entry.agent} 尝试${actionLabel}「${entry.name}」但被拦下：${entry.reason}\n在控制台的「被拦下的请求」里可以一键授权：${origin}/#items`
+  const tasks = []
+  if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
+    tasks.push(fetch(`https://api.telegram.org/bot${notifications.telegram.botToken}/sendMessage`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: notifications.telegram.chatId, text, disable_web_page_preview: true }),
+    }))
+  }
+  if (notifications.ntfy?.url && notifications.ntfy?.topic) {
+    tasks.push(fetch(`${String(notifications.ntfy.url).replace(/\/$/, '')}/${encodeURIComponent(notifications.ntfy.topic)}`, {
+      method: 'POST', headers: { title: 'Secrets Broker · 被拦下的请求', tags: 'warning' }, body: text,
+    }))
+  }
+  if (notifications.gotify?.url && notifications.gotify?.token) {
+    tasks.push(fetch(`${String(notifications.gotify.url).replace(/\/$/, '')}/message`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-gotify-key': notifications.gotify.token },
+      body: JSON.stringify({ title: 'Secrets Broker · 被拦下的请求', message: text, priority: 5 }),
+    }))
+  }
+  if (notifications.wxpush?.url) {
+    tasks.push(fetch(String(notifications.wxpush.url), {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Secrets Broker · 被拦下的请求', content: text }),
+    }))
+  }
+  await Promise.allSettled(tasks)
+}
+
 async function notifyPending(env, origin, entry, ctx) {
   const state = await loadState(env)
   const notifications = state.settings?.notifications ?? {}
+  // A refusal is a report, not a question: there is no pending record to approve,
+  // so the allow/deny buttons would answer "already handled". Say where to fix it.
+  if (entry.denied === true) return notifyDenied(env, origin, entry, notifications)
   const tpl = notificationTemplates(notifications).approval
   const links = await signedApprovalLinks(env, entry.id, origin)
   const shortText = renderTemplate(tpl.body, { agent: entry.agent, name: entry.name, time: entry.createdAt, origin })
@@ -2488,7 +2546,9 @@ function targetAllowed(policy, target) {
   const method = String(target.method ?? 'GET').toUpperCase()
   const pathname = String(target.pathname ?? '/')
   const hosts = (policy.hosts ?? []).map((v) => String(v).toLowerCase().replace(/\.$/, ''))
-  if (!hosts.includes(host)) return false
+  // '*' is an explicit "no host restriction" chosen in the console. It is a
+  // literal entry, not a pattern: nothing widens by accident.
+  if (!hosts.includes('*') && !hosts.includes(host)) return false
   if (!(policy.methods ?? []).map((v) => String(v).toUpperCase()).includes(method)) return false
   if ((policy.ports ?? ['443']).map(String).includes(port) === false) return false
   const prefixes = policy.pathPrefixes ?? []
@@ -2695,19 +2755,26 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
       const why = !itemId ? '条目 id 无法解析'
         : !agentInScope(agent, state.itemGroups, name) ? '该条目不在 Agent 的可读范围内'
         : '在可读范围内，但缺少这条授权'
+      // Notify at most once per (agent, item, action) every 30 minutes. An Agent
+      // that retries in a loop must not turn into a stream of push messages; the
+      // console list still records every attempt with its count.
+      const prior = state.deniedAttempts?.['deny\u0000' + agentName + '\u0000' + name + '\u0000' + action]
+      const lastNotified = Number(prior?.notifiedAt ?? 0)
+      const shouldNotify = Date.now() - lastNotified > 30 * 60 * 1000
       await updateState(env, (next) => {
         const key = 'deny\u0000' + agentName + '\u0000' + name + '\u0000' + action
         next.deniedAttempts ??= {}
-        const prior = next.deniedAttempts[key]
+        const before = next.deniedAttempts[key]
         next.deniedAttempts[key] = {
           agent: agentName, name, itemId, account: session.email, action, reason: why,
           origin: action === 'secret.use' ? String(target?.host ?? '') : '',
-          count: (prior?.count ?? 0) + 1, firstAt: prior?.firstAt ?? nowIso(), lastAt: nowIso(),
+          count: (before?.count ?? 0) + 1, firstAt: before?.firstAt ?? nowIso(), lastAt: nowIso(),
+          notifiedAt: shouldNotify ? Date.now() : (before?.notifiedAt ?? 0),
         }
         return next
       })
       await addAudit(env, { event: 'access.denied', agent: agentName, name, itemId, action, reason: why, source: 'agent' })
-      await notifyPending(env, origin, { id: 'deny-' + itemId, agent: agentName, name, createdAt: nowIso(), action, denied: true, reason: why }, ctx).catch(() => {})
+      if (shouldNotify) await notifyPending(env, origin, { id: 'deny-' + itemId, agent: agentName, name, createdAt: nowIso(), action, denied: true, reason: why }, ctx).catch(() => {})
       return { status: 'forbidden', error: 'agent not allowed to read this item', reason: 'not-granted' }
     }
   }
@@ -3951,7 +4018,9 @@ export default {
       if (!itemName) return fail('item required', 400)
       const itemId = await resolveItemId(env, env.NODEWARDEN_DB, session, itemName)
       if (!itemId) return fail('item not found', 404)
-      const hosts = (Array.isArray(body.hosts) ? body.hosts : []).map((v) => String(v).toLowerCase().trim()).filter(Boolean)
+      const hosts = body.anyHost === true
+        ? ['*']
+        : (Array.isArray(body.hosts) ? body.hosts : []).map((v) => String(v).toLowerCase().trim()).filter(Boolean)
       const methods = (Array.isArray(body.methods) ? body.methods : []).map((v) => String(v).toUpperCase()).filter(Boolean)
       const ports = (Array.isArray(body.ports) ? body.ports : ['443']).map(String).filter(Boolean)
       const pathPrefixes = (Array.isArray(body.pathPrefixes) ? body.pathPrefixes : []).map(String).filter(Boolean)

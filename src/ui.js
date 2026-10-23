@@ -477,6 +477,8 @@ document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && 
 $('items-box').addEventListener('click', async (event) => {
   const allowDenied = event.target.closest('[data-allow-denied]')
   if (allowDenied) { openAllowDenied(allowDenied.dataset.agent, allowDenied.dataset.name, allowDenied.dataset.action); return }
+  const allowUse = event.target.closest('[data-allow-use]')
+  if (allowUse) { openAllowUse(allowUse.dataset.agent, allowUse.dataset.name); return }
   const dismissDenied = event.target.closest('[data-dismiss-denied]')
   if (dismissDenied) {
     try {
@@ -1571,20 +1573,32 @@ function renderDenied() {
   if (!box) return
   const rows = (app.data && app.data.deniedAttempts) || []
   if (!rows.length) { box.innerHTML = '<div class="hint">没有 Agent 被拦下的请求。</div>'; return }
-  const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持请求（http_request）', 'secret.fill': '网页填充' }
-  box.innerHTML = '<table><tr><th>Agent</th><th>条目</th><th>想要</th><th>被拦原因</th><th>次数</th><th>最近</th><th class="nowrap">操作</th></tr>' +
+  const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持调用（http_request）', 'secret.fill': '网页填充' }
+  const kinds = (app.data && app.data.fillPolicies && app.data.fillPolicies.items) || []
+  const kindOf = (name) => (kinds.find((k) => k.itemName === name) || {}).kind || ''
+  box.innerHTML = '<div class="hint" style="margin-bottom:6px">点「授权」只会放开这一条；点「全部放开 http_request」会给这个 Agent 在这条目上开代持调用（仍然拿不到明文值）。</div>' +
+    '<table><tr><th>Agent</th><th>条目</th><th>类型</th><th>想要</th><th>被拦原因</th><th>次数</th><th>最近</th><th class="nowrap">操作</th></tr>' +
     rows.map((entry) => {
       const at = entry.lastAt ? new Date(entry.lastAt).toLocaleString('zh-CN', { hour12: false }) : '-'
+      const kind = kindOf(entry.name)
+      const kindCell = kind === 'api' ? '<span class="kind-tag kind-api">api</span>'
+        : kind === 'web' ? '<span class="kind-tag kind-web">web</span>'
+        : '<span class="kind-tag kind-none">未分类</span>'
+      const useBtn = entry.action === 'secret.use'
+        ? ''
+        : '<button class="small" data-allow-use data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" title="只开代持调用，不给明文">http_request</button>'
       return '<tr><td>' + esc(entry.agent || '') + '</td><td><b>' + esc(entry.name || '') + '</b></td>'
+        + '<td>' + kindCell + '</td>'
         + '<td>' + esc(actionLabel[entry.action] || entry.action || '') + '</td>'
         + '<td style="color:var(--danger)">' + esc(entry.reason || '') + '</td>'
         + '<td>' + (entry.count ?? 1) + '</td><td class="hint nowrap">' + esc(at) + '</td>'
         + '<td class="nowrap"><button class="small primary" data-allow-denied data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" data-action="' + esc(entry.action || '') + '">授权</button>'
+        + useBtn
         + '<button class="small" data-dismiss-denied data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" data-action="' + esc(entry.action || '') + '">忽略</button></td></tr>'
     }).join('') + '</table>'
 }
-// Grant what was refused, then drop the entry. secret.use additionally needs a
-// target policy for http_request to work at all, so the dialog asks for it.
+// Grant what was refused. secret.use needs a target policy before http_request
+// can reach anything, so that dialog asks for it; secret.read asks for a window.
 function openAllowDenied(agent, name, action) {
   const target = action === 'secret.use'
   const body = target
@@ -1614,6 +1628,44 @@ function openAllowDenied(agent, name, action) {
       await api('/api/denied/dismiss', { method: 'POST', body: JSON.stringify({ agent, name, action }) })
       show('modal', false); await loadState(); toast('已授权：' + agent + ' → ' + name)
     } catch (error) { status('ad-status', error.message, 'error') }
+  }
+}
+
+// Opening http_request for one Agent+item: a default target policy (any https
+// host, GET/POST) and the use capability. The Agent still never sees the value;
+// this only lets the broker inject it server-side. Kept one click because the
+// alternative — a host list per credential — was the reason this stayed broken.
+function openAllowUse(agent, name) {
+  openModal('开 http_request「' + agent + ' → ' + name + '」',
+    '<div class="hint">让「' + esc(agent) + '」可以用这条凭据发起 http_request。密钥由 broker 在服务端注入到请求头，只回传上游响应，<b>Agent 拿不到明文值</b>。</div>' +
+    '<label class="field">允许的主机</label>' +
+    '<select id="au-scope"><option value="any">任意 https 主机（最省事）</option><option value="pick">只允许指定主机</option></select>' +
+    '<div id="au-hosts-box" class="hidden"><label class="field">主机（每行一个）</label><textarea id="au-hosts" rows="2" style="width:100%" placeholder="httpbin.org"></textarea></div>' +
+    '<label class="field">允许的方法</label><select id="au-methods"><option value="GET,POST">GET + POST</option><option value="GET">仅 GET</option><option value="GET,POST,PUT,PATCH,DELETE">全部</option></select>' +
+    '<div class="hint" style="margin-top:4px;color:var(--warn,#f2994a)">「任意主机」意味着这个 Agent 能把凭据发到任何 https 地址。只在完全信任该 Agent 时选它。</div>' +
+    '<div class="row" style="margin-top:12px"><button class="primary" id="au-go">开启</button></div><div class="status" id="au-status"></div>')
+  $('au-scope').onchange = () => $('au-hosts-box').classList.toggle('hidden', $('au-scope').value !== 'pick')
+  $('au-go').onclick = async () => {
+    try {
+      status('au-status', '开启中…')
+      const scope = $('au-scope').value
+      const methods = $('au-methods').value.split(',').map((v) => v.trim()).filter(Boolean)
+      let hosts
+      if (scope === 'any') {
+        // The target policy is a host allowlist, so "any" cannot be expressed as
+        // a pattern. http_request still checks the host list, so an unrestricted
+        // host set is written as the vault's own hosts plus nothing — instead we
+        // take the explicit route and record '*' meaning "no host restriction".
+        hosts = ['*']
+      } else {
+        hosts = $('au-hosts').value.split('\n').map((v) => v.trim()).filter(Boolean)
+        if (!hosts.length) return status('au-status', '至少填一个主机', 'error')
+      }
+      await api('/api/use-policy', { method: 'POST', body: JSON.stringify({ item: name, hosts, methods, ports: ['443'], anyHost: scope === 'any' }) })
+      await api('/api/action-grants', { method: 'POST', body: JSON.stringify({ agent, item: name, actions: ['secret.use'], terms: { 'secret.use': { duration: 'permanent' } } }) })
+      await api('/api/denied/dismiss', { method: 'POST', body: JSON.stringify({ agent, name, action: 'secret.use' }) })
+      show('modal', false); await loadState(); toast('已开启 http_request：' + agent + ' → ' + name)
+    } catch (error) { status('au-status', error.message, 'error') }
   }
 }
 

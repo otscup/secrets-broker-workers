@@ -83,3 +83,4 @@ attach-route.mjs
 !dsh-plugin/test-popup-actions.mjs
 !test-mf-classify-fix.mjs
 !test-mf-oauth-consent-grant.mjs
+!test-mf-denied-visibility.mjs
