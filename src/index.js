@@ -3147,31 +3147,83 @@ async function consentCatalog(env, db) {
 // connects in order to read one credential, so choosing it here saves a second
 // trip to the console. The choices become the Agent's scope and a plaintext
 // read policy, so the very next get_secret works.
+// The panel and the three pages that live outside it share one palette, one
+// type scale and one row rhythm. The CSS only existed in three copies before
+// this, each with its own teal accent, so the login page looked like a
+// different product from the console behind it.
+function consolePageCss() {
+  return String.raw`
+  :root{--bg-grouped:#F2F2F7;--card:#FFFFFF;--label:#000000;--label-2:rgba(60,60,67,.6);--label-3:rgba(60,60,67,.35);--separator:rgba(60,60,67,.29);--fill:rgba(118,118,128,.12);--blue:#007AFF;--green:#34C759;--red:#FF3B30;--purple:#AF52DE;--mix-tint:12%}
+  @media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg-grouped:#000000;--card:#1C1C1E;--label:#FFFFFF;--label-2:rgba(235,235,245,.6);--label-3:rgba(235,235,245,.35);--separator:rgba(84,84,88,.6);--fill:rgba(118,118,128,.24);--blue:#0A84FF;--green:#30D158;--red:#FF453A;--purple:#BF5AF2;--mix-tint:20%}}
+  :root[data-theme="dark"]{--bg-grouped:#000000;--card:#1C1C1E;--label:#FFFFFF;--label-2:rgba(235,235,245,.6);--label-3:rgba(235,235,245,.35);--separator:rgba(84,84,88,.6);--fill:rgba(118,118,128,.24);--blue:#0A84FF;--green:#30D158;--red:#FF453A;--purple:#BF5AF2;--mix-tint:20%}
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg-grouped);color:var(--label);font:400 17px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{width:100%;max-width:400px;margin:0 auto;padding:32px 16px 40px;min-height:100%;display:flex;flex-direction:column;justify-content:center}
+  .wrap--wide{max-width:560px}
+  .brand{display:flex;align-items:center;gap:12px;margin:0 4px 20px}
+  .brand img{width:44px;height:44px;border-radius:10px;object-fit:cover;display:block;background:var(--fill)}
+  .brand h1{font-size:24px;line-height:1.2;letter-spacing:-.5px;margin:0;font-weight:700}
+  .sub{color:var(--label-2);font-size:13px;margin:3px 0 0}
+  .group{background:var(--card);border-radius:12px;overflow:hidden;margin:0 0 16px}
+  .row{display:flex;align-items:center;gap:12px;min-height:46px;padding:0 16px;border-top:1px solid var(--separator);font-size:17px;color:var(--label)}
+  .row:first-child{border-top:0}
+  .row__label{flex:0 0 auto}
+  .row input,.row select{flex:1 1 auto;min-width:0;border:0;background:transparent;color:var(--label);font:inherit;padding:12px 0;outline:none;text-align:right}
+  .row input::placeholder{color:var(--label-3)}
+  .row--link{justify-content:space-between;text-decoration:none;color:var(--blue)}
+  .row__chev{color:var(--label-3);margin-left:auto}
+  .primary,.secondary{display:block;width:100%;min-height:50px;border:0;border-radius:12px;font-family:inherit;font-size:17px;font-weight:600;padding:0 16px;cursor:pointer}
+  .primary{background:var(--blue);color:#fff}
+  .primary:active{opacity:.86}
+  .secondary{background:var(--fill);color:var(--blue)}
+  .btn-row{display:flex;gap:10px;margin-top:16px}
+  .btn-row>*{flex:1 1 0}
+  .status{min-height:20px;margin:10px 2px 0;font-size:13px;color:var(--red)}
+  .hint{color:var(--label-2);font-size:13px;margin:12px 2px;line-height:1.5}
+  .sep{display:flex;align-items:center;gap:10px;margin:22px 0 12px;color:var(--label-2);font-size:12px}
+  .sep::before,.sep::after{content:"";flex:1;height:1px;background:var(--separator)}
+  .group-head{font-size:13px;color:var(--label-2);margin:18px 4px 8px;font-weight:400}
+  .pick{max-height:220px;overflow-y:auto}
+  .pick .row{align-items:flex-start;gap:10px;padding:10px 16px}
+  .pick .row span{font-size:15px;padding-top:2px;word-break:break-word}
+  input[type=checkbox]{appearance:none;-webkit-appearance:none;flex:0 0 auto;width:22px;height:22px;margin:0;border:1.5px solid var(--label-3);border-radius:50%;background:transparent;position:relative}
+  input[type=checkbox]:checked{background:var(--blue);border-color:var(--blue)}
+  input[type=checkbox]:checked::after{content:"";position:absolute;inset:0;background:no-repeat center/11px 9px url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 10' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.5 5.4l3 3 6-6.6'/%3E%3C/svg%3E")}
+  .agent{background:color-mix(in srgb,var(--blue) var(--mix-tint),transparent);border-radius:12px;padding:12px 14px;font-size:15px;margin:0 0 16px}
+  code{font:inherit;color:var(--label-2)}`
+}
+
+// The panel remembers its theme in localStorage; these pages are the same
+// origin, so they follow it instead of only the OS setting.
+function consoleThemeBoot() {
+  return '<script>try{var t=localStorage.getItem("theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t}catch(e){}</script>'
+}
+
 function oauthConsentPage(origin, params, client, catalog = { items: [], groups: [] }) {
   const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
   const field = (name) => '<input type="hidden" name="' + name + '" value="' + escape(params.get(name)) + '">'
   const boxes = (name, values) => values.length
-    ? '<div class="pick" style="max-height:190px;overflow:auto;border:1px solid #e3e9f2;border-radius:10px;padding:6px 10px;margin:6px 0 14px">' + values.map((value) =>
-        '<label class="row" style="display:flex;gap:8px;align-items:center;margin:3px 0"><input type="checkbox" name="' + name + '" value="' + escape(value) + '"> ' + escape(value) + '</label>'
+    ? '<div class="group pick">' + values.map((value) =>
+        '<label class="row"><input type="checkbox" name="' + name + '" value="' + escape(value) + '"><span>' + escape(value) + '</span></label>'
       ).join('') + '</div>'
-    : '<p class="muted" style="margin:4px 0 14px">还没有可选的内容，可以先在控制台创建密钥，或稍后到 Agents 页勾选。</p>'
-  return '<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCP 授权</title>' +
-    '<style>body{font:14px/1.6 system-ui;background:#f3f6fb;margin:0;padding:40px;color:#152033}.card{max-width:560px;margin:0 auto;background:#fff;border:1px solid #e3e9f2;border-radius:16px;padding:24px}button{border:0;border-radius:9px;padding:10px 16px;font:inherit;cursor:pointer;margin-right:8px}.primary{background:#0f9d8a;color:#fff}.muted{color:#6b7890;font-size:12px}code{background:#eef1f6;padding:2px 5px;border-radius:5px}h3{font-size:13px;margin:14px 0 2px}</style>' +
-    '<div class="card"><h2 style="margin-top:0">Secrets Broker · MCP 授权</h2>' +
-    '<p>客户端 <code>' + escape(client?.clientName ?? params.get('client_id')) + '</code> 请求访问你的密钥库。</p>' +
-    '<p class="muted">Scope: ' + escape(params.get('scope') ?? 'secrets.read') + '</p>' +
-    '<p class="muted">在下面勾选这个 Agent 可以读取的条目。勾选只给它申请和读取的资格，值本身还要看同类里的明文开关。不勾则暂时不给任何条目。</p>' +
+    : '<p class="hint">还没有可选的内容，可以先在控制台创建密钥，或稍后到 Agents 页勾选。</p>'
+  return '<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>MCP 授权 · Secrets Broker</title><style>' + consolePageCss() + '</style>' + consoleThemeBoot() + '</head><body><div class="wrap wrap--wide">' +
+    '<div class="brand"><img src="/logo.png" alt=""><div><h1>MCP 授权</h1><p class="sub">客户端 <code>' + escape(client?.clientName ?? params.get('client_id')) + '</code> 请求访问你的密钥库</p></div></div>' +
     '<form method="post" action="/oauth/authorize">' + field('client_id') + field('redirect_uri') + field('state') + field('code_challenge') + field('code_challenge_method') + field('scope') +
-    '<h3>可读条目</h3>' + boxes('grant_items', catalog.items) +
-    '<h3>可读分组</h3>' + boxes('grant_groups', catalog.groups) +
-    '<label class="row" style="display:flex;gap:8px;align-items:center;margin:10px 0"><input type="checkbox" name="grant_all" value="1"> 允许全部条目（含以后新增的）</label>' +
+    '<p class="hint">Scope: ' + escape(params.get('scope') ?? 'secrets.read') + ' · 勾选只给它申请和读取的资格，值本身还要看同类里的明文开关。不勾则暂时不给任何条目。</p>' +
+    '<div class="group-head">可读条目</div>' + boxes('grant_items', catalog.items) +
+    '<div class="group-head">可读分组</div>' + boxes('grant_groups', catalog.groups) +
+    '<div class="group">' +
+    '<label class="row"><input type="checkbox" name="grant_all" value="1"><span>允许全部条目（含以后新增的）</span></label>' +
     // Off by default, and short: granting scope must not silently open the
     // plaintext door for a month. The operator opts in and picks the window.
-    '<label class="row" style="display:flex;gap:8px;align-items:center;margin:10px 0"><input type="checkbox" name="grant_plaintext" value="1"> 同时允许读取明文值</label>' +
-    '<div class="muted" style="margin:-4px 0 12px 24px">不勾选时，Agent 只能看到条目名称并提交审批申请，读不到值。web 类型的网站登录无论是否勾选都不会给明文。</div>' +
-    '<label class="row" style="display:flex;gap:8px;align-items:center;margin:6px 0"><span class="muted">明文有效期</span>' +
+    '<label class="row"><input type="checkbox" name="grant_plaintext" value="1"><span>同时允许读取明文值</span></label>' +
+    '<label class="row"><span class="row__label">明文有效期</span>' +
     '<select name="grant_hours"><option value="1">1 小时</option><option value="24" selected>24 小时</option><option value="168">7 天</option><option value="720">30 天</option></select></label>' +
-    '<div style="margin-top:16px"><button class="primary" name="decision" value="allow">允许</button><button name="decision" value="deny">拒绝</button></div></form></div></html>'
+    '</div>' +
+    '<p class="hint">不勾选明文时，Agent 只能看到条目名称并提交审批申请，读不到值。web 类型的网站登录无论是否勾选都不会给明文。</p>' +
+    '<div class="btn-row"><button class="primary" name="decision" value="allow">允许</button><button class="secondary" name="decision" value="deny">拒绝</button></div></form></div></body></html>'
 }
 
 function standaloneLoginPage(next, providers = []) {
@@ -3179,51 +3231,32 @@ function standaloneLoginPage(next, providers = []) {
   // One button per enabled provider. Adding a provider in 设置 is enough for it
   // to appear here; nothing needs to change on this page.
   const buttons = providers.map((provider) =>
-    '<a class="oidc" href="/oidc/login?provider=' + encodeURIComponent(provider.id) + '&next=' + encodeURIComponent(target) + '">使用 ' + escapeHtml(provider.label || provider.id) + ' 登录</a>',
+    '<a class="row row--link" href="/oidc/login?provider=' + encodeURIComponent(provider.id) + '&next=' + encodeURIComponent(target) + '">使用 ' + escapeHtml(provider.label || provider.id) + ' 登录<span class="row__chev">›</span></a>'
   ).join('')
   const oidcBlock = buttons
-    ? '<div class="sep"><span>或</span></div>' + buttons
+    ? '<div class="sep"><span>或</span></div><div class="group">' + buttons + '</div>'
     : ''
-  return String.raw`<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>登录 · Secrets Broker</title><style>
-    :root{--bg:#f3f6fb;--card:#fff;--line:#e3e9f2;--text:#152033;--muted:#6b7890;--ok:#0f9d8a}
-    *{box-sizing:border-box}
-    body{font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px}
-    .card{width:100%;max-width:400px;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:28px;box-shadow:0 1px 2px rgba(20,40,80,.04),0 8px 24px rgba(20,40,80,.06)}
-    @media(prefers-color-scheme:dark){body{background:#0b1220;color:#e6edf7}.card{background:#111a2b;border-color:#24324a}input,select{background:#111a2b;border-color:#24324a;color:#e6edf7}}
-    .brand{display:flex;align-items:center;gap:10px;margin-bottom:6px}
-    .brand img{width:34px;height:34px;border-radius:9px;object-fit:cover;display:block}
-    h1{font-size:19px;margin:0;letter-spacing:-.2px}
-    .sub{color:var(--muted);font-size:12px;margin:0 0 20px}
-    label{display:block;font-size:12px;color:var(--muted);margin:14px 0 5px}
-    input,select{width:100%;border:1px solid #d8e0ec;border-radius:11px;padding:11px 12px;font:inherit;outline:none;background:var(--card);color:inherit}
-    input:focus,select:focus{border-color:var(--ok);box-shadow:0 0 0 3px rgba(15,157,138,.14)}
-    .hint{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.5}
-    button{width:100%;margin-top:20px;border:0;border-radius:11px;padding:11px;font:inherit;font-weight:600;background:var(--ok);color:#fff;cursor:pointer}
-    button:active{transform:translateY(1px)}
-    .status{font-size:12px;min-height:18px;margin-top:10px;color:#c0392b}
-    .sep{display:flex;align-items:center;gap:10px;margin:20px 0 12px;color:var(--muted);font-size:11px}
-    .sep::before,.sep::after{content:"";flex:1;height:1px;background:var(--line)}
-    .oidc{display:block;text-align:center;text-decoration:none;font-size:13px;color:var(--text);border:1px solid var(--line);border-radius:11px;padding:10px;margin-top:8px;background:var(--card)}
-    .oidc:hover{border-color:var(--ok);color:var(--ok)}
-  </style></head><body><div class="card">
-    <div class="brand"><img src="/logo.png" alt=""><h1>Secrets Broker</h1></div>
-    <p class="sub">管理登录。这不是 Bitwarden 主密码。</p>
-    <label for="password">管理密码</label><input id="password" type="password" autocomplete="current-password">
-    <div id="totp" style="display:none"><label for="code">两步验证码</label><input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位验证码"></div>
-    <button id="go">登录</button><div id="status" class="status" role="status"></div>
+  return String.raw`<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>登录 · Secrets Broker</title><style>${consolePageCss()}</style>${consoleThemeBoot()}</head><body><div class="wrap">
+    <div class="brand"><img src="/logo.png" alt=""><div><h1>Secrets Broker</h1><p class="sub">管理登录，这不是 Bitwarden 主密码</p></div></div>
+    <div class="group">
+      <div class="row"><span class="row__label">管理密码</span><input id="password" type="password" autocomplete="current-password" placeholder="••••••••"></div>
+      <div class="row" id="totp" style="display:none"><span class="row__label">验证码</span><input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位数字"></div>
+    </div>
+    <button class="primary" id="go">登录</button>
+    <div id="status" class="status" role="status"></div>
     ${oidcBlock}
   </div><script>
+    try{var t=localStorage.getItem('theme');if(t==='dark'||t==='light')document.documentElement.dataset.theme=t}catch(e){}
     const next=${JSON.stringify(target)}
     const go=document.getElementById('go')
     async function submit(){
       const status=document.getElementById('status')
       status.textContent=''
       try{
-        const accountEl=document.getElementById('account')
-        const response=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('password').value,code:document.getElementById('code').value,account:accountEl?accountEl.value:''})})
+        const response=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('password').value,code:document.getElementById('code').value})})
         const data=await response.json()
         if(!response.ok){
-          if(data.totpRequired){document.getElementById('totp').style.display='block';status.textContent=data.error||'请输入验证码'}
+          if(data.totpRequired){document.getElementById('totp').style.display='flex';status.textContent=data.error||'请输入验证码'}
           else status.textContent=data.error||'登录失败'
           return
         }
@@ -3238,7 +3271,34 @@ function standaloneLoginPage(next, providers = []) {
 
 function connectPage(request) {
   const item = request
-  return String.raw`<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>连接密钥 · Secrets Broker</title><style>body{font:14px/1.6 system-ui;background:#f3f6fb;color:#152033;margin:0;padding:40px 16px}.card{max-width:520px;margin:0 auto;background:#fff;border:1px solid #e3e9f2;border-radius:16px;padding:24px}h1{font-size:20px;margin:0 0 4px}.hint{color:#6b7890;font-size:12px;margin-bottom:14px}.agent{background:#eef6f4;border:1px solid #cfe8e2;border-radius:10px;padding:10px;font-size:12px;margin-bottom:12px}label{display:block;font-size:12px;color:#6b7890;margin:12px 0 4px}input{width:100%;box-sizing:border-box;border:1px solid #d8e0ec;border-radius:9px;padding:10px;font:inherit}button{width:100%;margin-top:16px;border:0;border-radius:9px;padding:10px;font:inherit;background:#0f9d8a;color:#fff;cursor:pointer}.status{font-size:12px;min-height:18px;margin-top:8px;color:#c0392b}</style></head><body><div class="card"><h1>连接密钥</h1><div class="hint">这个密钥会保存到当前解锁的 vault，并授权给请求的 Agent。</div><div class="agent"><b>${escapeHtml(item.agent || 'Agent')}</b> 需要：<code>${escapeHtml(item.name || '')}</code>${item.description ? '<br><span class="hint">' + escapeHtml(item.description) + '</span>' : ''}</div><label>名称</label><input id="name" value="${escapeHtml(item.name || '')}"><label>用户名（可选）</label><input id="username" placeholder="登录用户名"><label>密钥值</label><input id="value" type="password" autocomplete="off" placeholder="粘贴 API key / 密码"><label>分组（可选）</label><input id="group" placeholder="例如 api/prod"><button id="save">保存并授权</button><div id="status" class="status"></div></div><script>const id=${JSON.stringify(item.id)};document.getElementById('save').onclick=async()=>{const status=document.getElementById('status');const value=document.getElementById('value').value;if(!value){status.textContent='请填写密钥值';return}status.textContent='保存中…';try{const response=await fetch('/api/connect/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id,name:document.getElementById('name').value,username:document.getElementById('username').value,value,group:document.getElementById('group').value})});const data=await response.json();if(!response.ok)throw new Error(data.error||'保存失败');status.style.color='#0f9d8a';status.textContent='已保存并授权，可以关闭此页面';setTimeout(()=>location.href='/',1200)}catch(error){status.style.color='#c0392b';status.textContent=String(error.message||error)}}</script></body></html>`
+  return String.raw`<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>连接密钥 · Secrets Broker</title><style>${consolePageCss()}</style>${consoleThemeBoot()}</head><body><div class="wrap">
+    <div class="brand"><img src="/logo.png" alt=""><div><h1>连接密钥</h1><p class="sub">保存到当前解锁的 vault，并授权给请求的 Agent</p></div></div>
+    <div class="agent"><b>${escapeHtml(item.agent || 'Agent')}</b> 需要：<code>${escapeHtml(item.name || '')}</code>${item.description ? '<br><span class="sub">' + escapeHtml(item.description) + '</span>' : ''}</div>
+    <div class="group">
+      <div class="row"><span class="row__label">名称</span><input id="name" value="${escapeHtml(item.name || '')}"></div>
+      <div class="row"><span class="row__label">用户名</span><input id="username" placeholder="可选"></div>
+      <div class="row"><span class="row__label">密钥值</span><input id="value" type="password" autocomplete="off" placeholder="粘贴 API key / 密码"></div>
+      <div class="row"><span class="row__label">分组</span><input id="group" placeholder="例如 api/prod"></div>
+    </div>
+    <button class="primary" id="save">保存并授权</button>
+    <div id="status" class="status"></div>
+  </div><script>
+    const id=${JSON.stringify(item.id)}
+    document.getElementById('save').onclick=async()=>{
+      const status=document.getElementById('status')
+      const value=document.getElementById('value').value
+      if(!value){status.textContent='请填写密钥值';return}
+      status.style.color='';status.textContent='保存中…'
+      try{
+        const response=await fetch('/api/connect/save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id,name:document.getElementById('name').value,username:document.getElementById('username').value,value,group:document.getElementById('group').value})})
+        const data=await response.json()
+        if(!response.ok)throw new Error(data.error||'保存失败')
+        status.style.color='var(--green)'
+        status.textContent='已保存并授权，可以关闭此页面'
+        setTimeout(()=>location.href='/',1200)
+      }catch(error){status.style.color='';status.textContent=String(error.message||error)}
+    }
+  </script></body></html>`
 }
 
 function escapeHtml(value) {
