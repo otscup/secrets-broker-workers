@@ -3,7 +3,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const SRC = 'E:/DeepSeek workers/secrets-broker-workers'
+const SRC = process.cwd()
 // A unique directory per run avoids clashing with an earlier run that still
 // holds files open, which Windows refuses to delete.
 // One shared mirror per machine: the node_modules copy is expensive and does

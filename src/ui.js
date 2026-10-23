@@ -2178,7 +2178,7 @@ function renderLogs() {
   const shown = rows.slice(0, 200)
   const count = $('logs-count'); if (count) count.textContent = '显示 ' + shown.length + ' / 共 ' + all.length + ' 条'
   $('logs-box').innerHTML = shown.length ? '<table><tr><th>时间</th><th>描述</th><th>Agent</th><th>条目</th></tr>' + shown.map((entry) => {
-    const red = RED_LOG_EVENTS.has(String(entry.event || ''))
+    const red = RED_LOG_EVENTS.has(String(entry.event || '')) || entry.noApproval === true || entry.severity === 'warn'
     const cell = red ? ' style="color:var(--danger)"' : ''
     return '<tr><td' + cell + '>' + esc(new Date(entry.time).toLocaleString('zh-CN', { hour12: false })) + '</td><td' + cell + '>' + esc(describe(entry)) + '</td><td' + cell + '>' + esc(entry.agent || '') + '</td><td' + cell + '>' + esc(entry.name || '') + '</td></tr>'
   }).join('') + '</table>' : '<div class="hint">' + (all.length ? '没有符合筛选条件的日志' : '暂无日志') + '</div>'

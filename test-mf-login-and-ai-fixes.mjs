@@ -39,16 +39,19 @@ await stub.fetch('https://do/state', { method: 'PUT', body: JSON.stringify({
   settings: { notifications: {}, vaultEmail: 'second@example.invalid' },
 }) })
 
-// L1a: the login page offers every account, not only the pinned one.
+// L1a: the login page must NOT reveal which accounts exist. It is the only
+// unauthenticated page, so a picker here would publish the operator's vault
+// addresses to anyone who can reach the URL. (An earlier fix did add one; this
+// asserts it is gone.)
 {
   const res = await mf.dispatchFetch('https://broker.test/login')
   const html = await res.text()
-  const hasFirst = html.includes('first@example.invalid')
-  const hasSecond = html.includes('second@example.invalid')
-  const hasSelect = html.includes('id="account"') && html.includes('<select')
-  const pinnedSelected = /<option value="second@example\.invalid" selected>/.test(html)
-  if (res.status === 200 && hasFirst && hasSecond && hasSelect && pinnedSelected) pass('L1 the login page offers every vault account, with the current one preselected')
-  else fail('L1', JSON.stringify({ status: res.status, hasFirst, hasSecond, hasSelect, pinnedSelected }))
+  const leaksFirst = html.includes('first@example.invalid')
+  const leaksSecond = html.includes('second@example.invalid')
+  const hasSelect = html.includes('id="account"')
+  const hasPassword = html.includes('id="password"')
+  if (res.status === 200 && !leaksFirst && !leaksSecond && !hasSelect && hasPassword) pass('L1 the login page reveals no account addresses and keeps the password form')
+  else fail('L1', JSON.stringify({ status: res.status, leaksFirst, leaksSecond, hasSelect, hasPassword }))
 }
 
 // L1b: logging in as the other account moves the preference, and is accepted.

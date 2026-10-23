@@ -26,14 +26,21 @@ export function aiSnapshot(state, extras = {}) {
     status: cap.revokedAt ? 'revoked' : (cap.expiresAt && cap.expiresAt <= now ? 'expired' : 'valid'),
     usesLeft: cap.maxUses == null ? null : Math.max(0, cap.maxUses - (cap.usedCount ?? 0)),
   }))
-  const items = Object.entries(state.itemIds ?? {}).map(([name, id]) => ({
-    name,
-    kind: state.credentialKinds?.[id] ?? 'unclassified',
-    origins: state.fillPolicies?.[id]?.origins ?? [],
-    plaintextRead: Boolean(state.plaintextReadPolicies?.[id]),
-    noApproval: state.policies?.[name]?.noApproval === true,
-    group: state.itemGroups?.[name] ?? '',
-  }))
+  // Only the items of the account the snapshot is about. state.itemIds is an
+  // append-only cache that survives an account switch, so using it directly
+  // reported every item ever seen — including another vault's — which reads like
+  // a privilege leak. extras.scope limits it to what this account actually has.
+  const inScope = extras.scope instanceof Set ? extras.scope : null
+  const items = Object.entries(state.itemIds ?? {})
+    .filter(([name]) => !inScope || inScope.has(name))
+    .map(([name, id]) => ({
+      name,
+      kind: state.credentialKinds?.[id] ?? 'unclassified',
+      origins: state.fillPolicies?.[id]?.origins ?? [],
+      plaintextRead: Boolean(state.plaintextReadPolicies?.[id]),
+      noApproval: state.policies?.[name]?.noApproval === true,
+      group: state.itemGroups?.[name] ?? '',
+    }))
   return {
     now: new Date(now).toISOString(),
     vaultUnlocked: extras.vaultUnlocked === true,

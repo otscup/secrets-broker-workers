@@ -1233,6 +1233,29 @@ async function vaultUser(env, db, session) {
   return user
 }
 
+// The item names that actually exist in the currently unlocked vault. Used to
+// bound the AI snapshot: state.itemIds is an append-only cache that keeps names
+// from accounts you have since switched away from, so an unfiltered snapshot
+// reports another vault's items and looks like a privilege leak. An empty set
+// (vault locked) means "no item list", never "everything".
+async function vaultItemNames(env, db) {
+  const session = await getSession(env)
+  if (!session) return new Set()
+  try {
+    const items = await listCiphers(env, db, session)
+    return new Set(items.map((item) => item.name))
+  } catch { return new Set() }
+}
+
+// A return target may only be a same-site absolute path. `new URL(next, base)`
+// happily turns //evil.com or https://evil.com into an off-site redirect, which
+// turns a successful login into a phishing landing page.
+function safeNext(value, fallback = '/') {
+  const text = String(value ?? '')
+  if (!text.startsWith('/') || text.startsWith('//') || text.startsWith('/\\')) return fallback
+  return text
+}
+
 async function listCiphers(env, db, session) {
   const user = await vaultUser(env, db, session)
   const result = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key, created_at, updated_at FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL ORDER BY updated_at DESC').bind(user.id).all()
@@ -1823,7 +1846,7 @@ async function handleTelegramMessage(env, message, telegram) {
 
   // Not a command: answer as the assistant, which cannot change anything.
   const session = await getSession(env)
-  const snapshot = aiSnapshot(state, { vaultUnlocked: Boolean(session) })
+  const snapshot = aiSnapshot(state, { vaultUnlocked: Boolean(session), scope: await vaultItemNames(env, env.NODEWARDEN_DB) })
   const answer = await askAi(env, state.settings, { question: parsed.text, snapshot, history: [] })
   if (!answer.ok) return reply('回答不了：' + answer.reason + '\n\n发 /help 看命令。')
   return reply(answer.text)
@@ -3013,7 +3036,11 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     await addAudit(env, { event: 'secret.read-deny', agent: agentName, name, reason: readGuard.reason })
     return { status: 'forbidden', error: 'plaintext read is not allowed for this credential: ' + readGuard.reason, reason: readGuard.reason }
   }
-  await addAudit(env, { event: readGuard.noApproval ? 'secret.read-noapproval' : 'secret.read', agent: agentName, name, itemId: resolvedItemId, mode: readGuard.noApproval ? 'no-approval' : 'grant', via: 'agent', legacy: decision.legacy === true, ...(readGuard.noApproval ? { severity: 'warn', source: 'no-approval' } : {}) })
+  // One event name for every authorised read, with the risk carried in fields.
+  // A separate 'secret.read-noapproval' name made the statistics — totalReads,
+  // buckets, topItems, topAgents, activeAgents — silently skip exactly the reads
+  // that skipped every check, which is the opposite of what an audit is for.
+  await addAudit(env, { event: 'secret.read', agent: agentName, name, itemId: resolvedItemId, mode: readGuard.noApproval ? 'no-approval' : 'grant', via: 'agent', legacy: decision.legacy === true, ...(readGuard.noApproval ? { noApproval: true, severity: 'warn', source: 'no-approval' } : {}) })
   return { status: 'allowed', itemId: resolvedItemId, value: result.value, url: result.url, noApproval: readGuard.noApproval === true }
 }
 
@@ -3105,8 +3132,8 @@ function oauthConsentPage(origin, params, client, catalog = { items: [], groups:
     '<div style="margin-top:16px"><button class="primary" name="decision" value="allow">允许</button><button name="decision" value="deny">拒绝</button></div></form></div></html>'
 }
 
-function standaloneLoginPage(next, providers = [], { accounts = [], current = '' } = {}) {
-  const target = next.startsWith('/') ? next : '/'
+function standaloneLoginPage(next, providers = []) {
+  const target = safeNext(next)
   // One button per enabled provider. Adding a provider in 设置 is enough for it
   // to appear here; nothing needs to change on this page.
   const buttons = providers.map((provider) =>
@@ -3114,17 +3141,6 @@ function standaloneLoginPage(next, providers = [], { accounts = [], current = ''
   ).join('')
   const oidcBlock = buttons
     ? '<div class="sep"><span>或</span></div>' + buttons
-    : ''
-  // The account picker. Without it, login was pinned to whichever vault account
-  // was selected last, so switching accounts locked the operator out of the
-  // broker itself. Any known account can be chosen, and the address can still be
-  // typed, so an account added in NodeWarden works before the next deploy.
-  const accountOptions = accounts.map((email) =>
-    '<option value="' + escapeHtml(email) + '"' + (email === current ? ' selected' : '') + '>' + escapeHtml(email) + '</option>',
-  ).join('')
-  const accountBlock = accounts.length
-    ? '<label>账户</label><select id="account">' + accountOptions + '</select>'
-      + '<div class="hint">切换账户会改变之后解锁的 vault；随时可以在这里换回原来的账户。</div>'
     : ''
   return String.raw`<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>登录 · Secrets Broker</title><style>
     :root{--bg:#f3f6fb;--card:#fff;--line:#e3e9f2;--text:#152033;--muted:#6b7890;--ok:#0f9d8a}
@@ -3150,7 +3166,6 @@ function standaloneLoginPage(next, providers = [], { accounts = [], current = ''
   </style></head><body><div class="card">
     <div class="brand"><img src="/logo.png" alt=""><h1>Secrets Broker</h1></div>
     <p class="sub">管理登录。这不是 Bitwarden 主密码。</p>
-    ${accountBlock}
     <label for="password">管理密码</label><input id="password" type="password" autocomplete="current-password">
     <div id="totp" style="display:none"><label for="code">两步验证码</label><input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位验证码"></div>
     <button id="go">登录</button><div id="status" class="status" role="status"></div>
@@ -3236,19 +3251,11 @@ export default {
       if (await adminAuthorized(request, env)) return Response.redirect(new URL(nextTarget, url).toString(), 302)
       const state = await loadState(env)
       const providers = oidcProviders(state).filter((entry) => entry.enabled !== false)
-      // Every vault account is offered, not just the last one switched to. The
-      // current settings.vaultEmail is only a default: logging in used to be
-      // pinned to whichever account was selected last, so switching accounts
-      // locked you out of your own broker until you logged back in as that one.
-      let accounts = []
-      try {
-        const rows = await env.NODEWARDEN_DB.prepare('SELECT email FROM users ORDER BY created_at').all()
-        accounts = (rows.results ?? []).map((row) => String(row.email ?? '')).filter(Boolean)
-      } catch {}
-      return htmlResponse(standaloneLoginPage(nextTarget, providers, {
-        accounts,
-        current: state.settings?.vaultEmail || '',
-      }))
+      // The account is NOT listed here. This page is the only unauthenticated
+      // entry point, so rendering vault account emails on it would publish them
+      // to anyone who can reach the URL. A pre-auth caller learns nothing about
+      // who has an account. The account is chosen after login, in 设置 → 账户.
+      return htmlResponse(standaloneLoginPage(nextTarget, providers))
     }
     if (url.pathname === '/connect' && request.method === 'GET') {
       if (!(await adminAuthorized(request, env))) return Response.redirect(new URL('/login?next=' + encodeURIComponent(url.pathname + url.search), url).toString(), 302)
@@ -4551,54 +4558,6 @@ export default {
       return json({ ok: true, state: task.state, cancelRequested: task.cancelRequested === true })
     }
 
-    if (url.pathname === '/api/fill/task/redeem' && request.method === 'POST') {
-      const executor = await resolveFillExecutor(env, request)
-      if (!executor) return fail('unauthorized', 401)
-      const body = await request.json().catch(() => ({}))
-      const taskId = String(body.taskId ?? '')
-      const credential = String(body.credential ?? '')
-      if (!taskId || !credential) return fail('taskId and credential are required', 400)
-      const state = executor.state
-      const limited = await fillRateLimited(env, 'exec:' + executor.executorId, FILL_RATE_LIMITS.executorOpsPerMinute, 60000)
-      if (limited) return fail('rate limited', 429)
-      // The task must exist and must be in a state that allows a redemption.
-      const taskResponse = await stateStub(env).fetch('https://state/fill/task/get', {
-        method: 'POST',
-        body: JSON.stringify({ taskId }),
-      })
-      const taskPayload = await taskResponse.json()
-      if (!taskPayload?.ok) return fail('unknown task', 404)
-      const task = taskPayload.task
-      if (task.executorId !== executor.executorId) return fail('executor-mismatch', 403)
-      if (task.cancelRequested === true) return fail('task cancelled', 409)
-      if (!['claimed', 'running'].includes(task.state)) return fail('task is not claimable: ' + task.state, 409)
-      // The vault must still be unlocked.
-      const session = await getSession(env)
-      if (!session) return fail('vault locked', 423)
-      // The credential must be bound to exactly this task scope.
-      const verified = await verifyTaskCredential(env, credential, task)
-      if (!verified) return fail('task credential is not valid', 403)
-      // The stored task carries the item name so the broker can read the
-      // credential. The executor never sees the item name.
-      const stored = await stateStub(env).fetch('https://state/fill/task/secret', {
-        method: 'POST',
-        body: JSON.stringify({ taskId }),
-      })
-      const secret = await stored.json()
-      if (!secret?.ok) return fail('credential unavailable', 404)
-      const found = await readSecretFromRows(env, env.NODEWARDEN_DB, session, secret.itemName)
-      if (!found) return fail('credential not found', 404)
-      // One redemption per task: the credential nonce is burned atomically, so
-      // a replay of the same credential cannot fetch the value twice.
-      const burned = await stateStub(env).fetch('https://state/fill/task/burn', {
-        method: 'POST',
-        body: JSON.stringify({ taskId, nonce: verified.n }),
-      })
-      const burnResult = await burned.json()
-      if (!burnResult?.ok) return fail('task credential is not valid: ' + (burnResult?.reason ?? 'unknown'), 403)
-      await addAudit(env, { event: 'fill.redeem', agent: task.agent, itemId: task.cipherId, origin: task.origin, action: task.action, taskId: task.taskId, executor: executor.executorId })
-      return json({ username: found.username, password: found.value, totp: found.totp, origin: task.origin, action: task.action, taskId: task.taskId })
-    }
 
     // Admin: cancel a task. The broker records the request; the executor
     // confirms separately, so the broker never claims a task is stopped
@@ -5401,7 +5360,7 @@ export default {
       if (!question) return fail('question required', 400)
       const state = await loadState(env)
       const session = await getSession(env)
-      const snapshot = aiSnapshot(state, { vaultUnlocked: Boolean(session) })
+      const snapshot = aiSnapshot(state, { vaultUnlocked: Boolean(session), scope: await vaultItemNames(env, env.NODEWARDEN_DB) })
       const history = Array.isArray(body.history) ? body.history : []
       const answer = await askAi(env, state.settings, { question, snapshot, history })
       await addAudit(env, { event: 'ai.ask', agent: 'admin', source: 'console', ok: answer.ok === true, provider: answer.provider ?? '' })
@@ -5414,7 +5373,7 @@ export default {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const state = await loadState(env)
       const session = await getSession(env)
-      return json({ ok: true, insights: aiInsights(aiSnapshot(state, { vaultUnlocked: Boolean(session) })) })
+      return json({ ok: true, insights: aiInsights(aiSnapshot(state, { vaultUnlocked: Boolean(session), scope: await vaultItemNames(env, env.NODEWARDEN_DB) })) })
     }
     if (url.pathname === '/api/settings') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -5700,6 +5659,27 @@ export default {
     if (url.pathname === '/oauth/authorize') {
       const state = await loadState(env)
       const params = request.method === 'POST' ? new URLSearchParams(await request.text()) : url.searchParams
+      // Cross-site POST defence. The admin cookie is SameSite=None so the consent
+      // form works from a third-party page; that also means any site the operator
+      // visits can POST this endpoint with their cookie attached. A same-origin
+      // check on the Origin header (and the browser's own Sec-Fetch-Site verdict)
+      // keeps a form on evil.example from approving an attacker's client.
+      if (request.method === 'POST') {
+        const origin = request.headers.get('origin')
+        const fetchSite = String(request.headers.get('sec-fetch-site') ?? '').toLowerCase()
+        if (fetchSite === 'cross-site') {
+          await addAudit(env, { event: 'oauth.consent-deny', reason: 'cross-site', clientId: String(params.get('client_id') ?? '').slice(0, 40) }).catch(() => {})
+          return new Response('跨站提交被拒绝：请从本站打开授权页。', { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+        }
+        if (origin) {
+          let sameOrigin = false
+          try { sameOrigin = new URL(origin).origin === new URL(request.url).origin } catch {}
+          if (!sameOrigin) {
+            await addAudit(env, { event: 'oauth.consent-deny', reason: 'origin-mismatch', origin: String(origin).slice(0, 120) }).catch(() => {})
+            return new Response('跨站提交被拒绝：来源与本站不一致。', { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+          }
+        }
+      }
       const clientId = String(params.get('client_id') ?? '')
       const redirectUri = String(params.get('redirect_uri') ?? '')
       const client = state.oauthClients[clientId]
@@ -6251,7 +6231,10 @@ export default {
           // Second layer: the same guard already ran inside agentAccess. A
           // website login is refused; only an api credential with an explicit
           // read policy passes, unless the item is marked no-approval.
-          const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[secretName]?.noApproval === true })
+          // The item name here is `name`; `secretName` only exists in the /mcp
+          // tools scope, and referring to it made every successful /secret call
+          // throw a ReferenceError and answer 500.
+          const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[name]?.noApproval === true })
           if (!readGuard.ok) {
             await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name, reason: readGuard.reason })
             return fail('plaintext read is not allowed for this credential: ' + readGuard.reason, 403)
