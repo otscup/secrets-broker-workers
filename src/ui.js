@@ -406,9 +406,31 @@ nav button{display:inline-flex;align-items:center;gap:6px}
 .page-back,.page-action{display:flex;align-items:center;gap:2px;background:none;border:0;color:var(--blue);font-size:var(--text-body-lg);padding:0;min-height:44px;min-width:44px}
 .page-back svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
 .page-action{justify-content:flex-end}
+.page-close{display:none;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 auto;border:0;border-radius:50%;background:var(--fill);color:var(--label-2);padding:0}
+.page-close svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round}
 .page-body{flex:1 1 auto;min-height:0;overflow-y:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding:var(--sp-3)}
 .page-body>.card{max-width:680px;margin:0 auto}
 body.page-open{overflow:hidden}
+/* Wide screens: the detail stops covering the list and becomes the right-hand
+   column, the way a UISplitViewController .doubleColumn behaves on iPad. The
+   DOM does not move — the page just stops being full-width and the wrap gets
+   padded by the same amount, so the list stays where the eye left it. */
+@media (min-width:1000px){
+  body.page-open{overflow:auto}
+  body.page-open #item-page{left:auto;right:0;width:min(680px,54vw);border-left:1px solid var(--separator);box-shadow:-1px 0 30px rgba(0,0,0,.07)}
+  body.page-open .page-back{visibility:hidden;pointer-events:none}
+  body.page-open #item-page-close{display:flex}
+  body.page-open .wrap{max-width:none;padding-right:calc(min(680px,54vw) + var(--sp-3))}
+  /* The list column is narrower than the full page: the search field gets its
+     own row and the five actions split the next one evenly, instead of the
+     140px minimum wrapping them into three ragged lines. */
+  body.page-open #view-items .row{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:center}
+  body.page-open #view-items .row>input{flex:1 1 100%;min-width:0}
+  body.page-open #view-items .row>#item-filter{flex:0 0 auto}
+  body.page-open #view-items .row>button{min-width:0;padding:0 var(--sp-2);font-size:var(--text-body)}
+  /* The row the pane is showing gets the same tint a selected list row has. */
+  .ios-row.current{background:color-mix(in srgb, var(--blue) var(--mix-tint), transparent)}
+}
 .kv{display:flex;align-items:baseline;gap:var(--sp-3);padding:11px 0;border-bottom:1px solid var(--separator);font-size:var(--text-body-lg)}
 .kv:last-child{border-bottom:0}
 .kv>span{color:var(--label-2);flex:0 0 auto}
@@ -661,7 +683,7 @@ body.page-open{overflow:hidden}
 
 </div>
 <div id="toast" class="toast"></div>
-<section id="item-page" class="page hidden" aria-label="条目详情"><div class="page-nav"><button class="page-back" id="item-page-back" aria-label="返回"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>返回</button><div class="page-title" id="item-page-title"></div><button class="page-action" id="item-page-edit">编辑</button></div><div class="page-body" id="item-page-body"></div></section><div id="modal" class="modal hidden"><div class="card"><button class="modal-x" id="modal-close-x" title="关闭">×</button><h2 id="modal-title"></h2><div id="modal-body"></div><div style="margin-top:12px"><button id="modal-close">关闭</button></div></div></div>
+<section id="item-page" class="page hidden" aria-label="条目详情"><div class="page-nav"><button class="page-back" id="item-page-back" aria-label="返回"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>返回</button><div class="page-title" id="item-page-title"></div><button class="page-action" id="item-page-edit">编辑</button><button class="page-close" id="item-page-close" aria-label="关闭"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg></button></div><div class="page-body" id="item-page-body"></div></section><div id="modal" class="modal hidden"><div class="card"><button class="modal-x" id="modal-close-x" title="关闭">×</button><h2 id="modal-title"></h2><div id="modal-body"></div><div style="margin-top:12px"><button id="modal-close">关闭</button></div></div></div>
 <script>
 const $ = (id) => document.getElementById(id)
 const enc = new TextEncoder()
@@ -2629,6 +2651,13 @@ function openItemPage(title, html) {
   $('item-page-edit').textContent = '编辑'
   page.classList.remove('hidden')
   document.body.classList.add('page-open')
+  // Mark the row this page belongs to, so a wide-screen split shows which
+  // entry the right-hand column is describing.
+  for (const row of document.querySelectorAll('.ios-row.current')) row.classList.remove('current')
+  let host = null
+  if (window.CSS && CSS.escape) host = document.querySelector('[data-item-menu="' + CSS.escape(title) + '"]')
+  const current = host && host.closest('.ios-row')
+  if (current) current.classList.add('current')
   requestAnimationFrame(() => page.classList.add('in'))
 }
 function closeItemPage() {
@@ -2639,6 +2668,7 @@ function closeItemPage() {
   setTimeout(() => { if (!page.classList.contains('in')) page.classList.add('hidden') }, 360)
 }
 $('item-page-back').onclick = closeItemPage
+$('item-page-close').onclick = closeItemPage
 $('item-page-edit').onclick = () => {
   const page = $('item-page')
   const next = page.dataset.editing !== 'true'
