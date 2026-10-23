@@ -11,6 +11,28 @@ Bitwarden-compatible vault from **NodeWarden's D1 database**, decrypts items in
 the Worker only while a browser/CLI unlock session is active, and exposes a
 narrow agent API.
 
+## Built on NodeWarden
+
+This project does not ship its own vault. It runs on top of
+[**NodeWarden**](https://github.com/shuaiplus/NodeWarden), a self-hosted
+Bitwarden-compatible server for Cloudflare Workers. NodeWarden stores and syncs
+the encrypted vault; Secrets Broker reads that same D1 database and adds the
+agent-facing layer: per-agent tokens, approvals, short-lived grants, plaintext
+read policies, classification and an audit log.
+
+What that means in practice:
+
+- install NodeWarden first, then point this Worker at its D1 database and Worker
+  binding (see Setup below);
+- create your credentials in NodeWarden's vault UI (or with a Bitwarden client);
+  they appear here automatically;
+- NodeWarden stays the source of truth, so a vault backed up or migrated there
+  carries every credential with it.
+
+- NodeWarden: <https://github.com/shuaiplus/NodeWarden>
+- Bitwarden clients work against NodeWarden, so the same vault is usable from the
+  desktop app, browser extension and mobile.
+
 The Docker/Node broker remains the reference implementation; this project is a
 separate, Workers-only port so NodeWarden upgrades don't affect it.
 
@@ -23,7 +45,7 @@ DSH plugin (handles pending approvals inside the settings page):
 ## Current status (working PoC)
 
 - ✅ 1 Worker + 1 Durable Object; **0 new D1 databases**
-- ✅ Read-only D1 access to NodeWarden (`ciphers`, `users`)
+- ✅ Read access to NodeWarden (`ciphers`, `users`)
 - ✅ Browser-side PBKDF2/HKDF/AES unlock (master password never sent to the Worker)
 - ✅ Durable Object session storage (wrapped with `SESSION_KEK`)
 - ✅ Permanent / 7d / 24h / 1h unlock TTL
@@ -102,8 +124,26 @@ decryption (AES-CBC/HMAC, ~1ms). Free plan CPU is then sufficient per read.
 |---|---|---|
 | Worker | 1 | this project |
 | Durable Object | 1 namespace | SQLite storage, separate from D1 quota |
-| D1 | **0 new** | read-only binding to existing `nodewarden-db` |
+| D1 | **0 new** | binding to the existing `nodewarden-db` (read, plus item create/edit/delete) |
 | KV/R2 | optional | not required |
+
+### Which NodeWarden version
+
+Tested against **NodeWarden v1.8.1**. The integration is limited to three tables
+— `ciphers`, `users`, `folders` — and this project only ever adds or updates
+rows; it never alters the schema and never runs a migration. That is what makes
+a NodeWarden upgrade safe: v1.7.x through v1.8.1 all keep those columns, and the
+release notes for that range contain no schema change.
+
+Two things to know when upgrading NodeWarden:
+
+- **Upgrade NodeWarden in its own repo, not from here.** Run its migrations and
+  deploy it first, then deploy this Worker if its source changed.
+- NodeWarden v1.8.1 added revision tracking for vault edits made *through its own
+  API*. This project writes D1 directly, so those revisions are not bumped by a
+  change made here. Nothing breaks: the next client sync reads the new row. The
+  only visible effect is that a concurrently open Bitwarden client may not be
+  told to refresh the instant this Worker edits an item.
 
 ## Credentials
 

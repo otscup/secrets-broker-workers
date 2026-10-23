@@ -491,13 +491,38 @@ $('agent-new').onclick = openAgentCreate
 $('agent-search').oninput = renderAgents
 $('agent-type-filter').onchange = renderAgents
 $('agent-sort').onchange = renderAgents
+// A checkbox list of what actually exists, so the operator picks from real
+// item and group names instead of guessing at comma-separated text. Rendered as
+// a scrollable box that matches the modal's other fields.
+function pickListHtml(id, options, selected, emptyHint) {
+  if (!options.length) return '<div class="hint" style="margin:4px 0 8px">' + esc(emptyHint) + '</div>'
+  const chosen = new Set(selected || [])
+  const boxes = options.map((value) =>
+    '<label class="chk pick-row" style="display:flex;width:100%;margin:2px 0"><input type="checkbox" class="' + id + '" value="' + esc(value) + '"' + (chosen.has(value) ? ' checked' : '') + '> ' + esc(value) + '</label>'
+  ).join('')
+  return '<div id="' + id + '-box" class="pick-box" style="max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px 8px;margin:4px 0 8px">' + boxes + '</div>'
+}
+function pickListValues(id) {
+  return [...document.querySelectorAll('.' + id + ':checked')].map((box) => box.value)
+}
+// The names and groups that exist right now, for the pickers.
+function knownItemNames() {
+  return ((app.items || []).map((item) => item.name)).filter(Boolean).sort((a, b) => a.localeCompare(b))
+}
+function knownGroups() {
+  const groups = new Set()
+  for (const item of app.items || []) if (item.group) groups.add(item.group)
+  return [...groups].sort((a, b) => a.localeCompare(b))
+}
+
 // Creation moved into a modal so it no longer pushes the list down.
 function openAgentCreate() {
   openModal('新建 Agent', '<div class="hint">Token 只在创建后显示一次。</div>' +
     '<label class="field">名称</label><input id="ac-name" placeholder="如 dsh">' +
     '<label class="field">显示名（可选）</label><input id="ac-alias" placeholder="便于识别的名字">' +
     '<label class="field">备注（可选）</label><input id="ac-note" placeholder="用途说明">' +
-    '<label class="field">可读条目（逗号分隔，留空=无权限）</label><input id="ac-allow" placeholder="item-a, item-b">' +
+    '<label class="field">可读条目（勾选，不勾=无权限）</label>' + pickListHtml('ac-allow', knownItemNames(), [], '密钥库里还没有条目，先去「密钥」页新建。') +
+    '<label class="field">可读分组（勾选，不勾=不限）</label>' + pickListHtml('ac-groups', knownGroups(), [], '还没有任何分组。分组在新增条目时填写，或在条目菜单里改。') +
     '<label class="chk" style="margin-top:8px"><input type="checkbox" id="ac-allowall"> 允许全部条目</label>' +
     '<label class="chk" style="margin-top:8px"><input type="checkbox" id="ac-write"> 允许写入（可调 /agent/items/save）</label>' +
     '<div class="row" style="margin-top:14px"><button class="primary" id="ac-create">创建</button></div>' +
@@ -507,8 +532,9 @@ function openAgentCreate() {
     if (!name) return status('ac-status', '请输入名称', 'error')
     try {
       status('ac-status', '创建中…')
-      const allow = $('ac-allow').value.split(',').map((value) => value.trim()).filter(Boolean)
-      const result = await api('/api/agents/create', { method: 'POST', body: JSON.stringify({ name, alias: $('ac-alias').value.trim(), note: $('ac-note').value.trim(), allow, allowAll: $('ac-allowall').checked, write: $('ac-write').checked }) })
+      const allow = pickListValues('ac-allow')
+      const groups = pickListValues('ac-groups')
+      const result = await api('/api/agents/create', { method: 'POST', body: JSON.stringify({ name, alias: $('ac-alias').value.trim(), note: $('ac-note').value.trim(), allow, groups, allowAll: $('ac-allowall').checked, write: $('ac-write').checked }) })
       $('ac-token').classList.remove('hidden')
       $('ac-token').textContent = result.token
       try { await navigator.clipboard.writeText(result.token); status('ac-status', '已创建，token 已复制到剪贴板', 'ok') } catch { status('ac-status', '已创建，请手动复制 token', 'ok') }
@@ -1643,17 +1669,69 @@ function renderRecent() { $('recent-box').innerHTML = (app.data.audit || []).sli
 function renderLogs() { $('logs-box').innerHTML = (app.data.audit || []).length ? '<table><tr><th>时间</th><th>描述</th><th>Agent</th><th>条目</th></tr>' + (app.data.audit || []).slice(0, 200).map((entry) => '<tr><td>' + esc(new Date(entry.time).toLocaleString('zh-CN', { hour12: false })) + '</td><td>' + esc(describe(entry)) + '</td><td>' + esc(entry.agent || '') + '</td><td>' + esc(entry.name || '') + '</td></tr>').join('') + '</table>' : '<div class="hint">暂无日志</div>' }
 async function reveal(name) { try { const data = await api('/secret?name=' + encodeURIComponent(name)); $('modal-title').textContent = '读取 ' + name; $('modal-body').innerHTML = '<div class="hint">仅用于人工查看；Agent 应通过 /secret 或 MCP 获取。</div>' + (data.username ? '<label class="field">用户名</label><div class="secret">' + esc(data.username) + '</div>' : '') + '<label class="field">密钥</label><div class="secret">' + esc(data.value || '(空)') + '</div>' + (data.totp ? '<label class="field">TOTP Secret</label><div class="secret">' + esc(data.totp) + '</div>' : ''); show('modal', true) } catch (error) { toast(error.message, true) } }
 function createItemMenu() {
-  openModal('新增密钥条目', '<label class="field">名称</label><input id="new-item-name" placeholder="例如 tavily-api-key"><label class="field">用户名（可选）</label><input id="new-item-username" placeholder="登录用户名"><label class="field">密钥值</label><input id="new-item-value" placeholder="要保存的密钥"><label class="field">TOTP Secret（可选）</label><input id="new-item-totp" placeholder="Base32 TOTP secret"><label class="field">网址（可选）</label><input id="new-item-url" placeholder="https://example.com"><label class="field">分组（可选）</label><input id="new-item-group" placeholder="例如 blog/prod"><label class="field">备注（可选）</label><input id="new-item-notes"><label class="chk" style="margin-top:8px"><input type="checkbox" id="new-item-noapproval"> 免审批</label><div class="row" style="margin-top:12px"><button class="primary" id="new-item-save">创建</button></div>')
-  $('new-item-save').onclick = async () => { try { await api('/api/items/create', { method: 'POST', body: JSON.stringify({ name: $('new-item-name').value.trim(), username: $('new-item-username').value, value: $('new-item-value').value, totp: $('new-item-totp').value, url: $('new-item-url').value.trim(), group: $('new-item-group').value.trim(), notes: $('new-item-notes').value, noApproval: $('new-item-noapproval').checked }) }); show('modal', false); await Promise.all([loadItems(), loadState()]); toast('已创建') } catch (error) { toast(error.message, true) } }
+  openModal('新增密钥条目', '<label class="field">名称</label><input id="new-item-name" placeholder="例如 tavily-api-key"><label class="field">用户名（可选）</label><input id="new-item-username" placeholder="登录用户名"><label class="field">密钥值</label><input id="new-item-value" placeholder="要保存的密钥"><label class="field">TOTP Secret（可选）</label><input id="new-item-totp" placeholder="Base32 TOTP secret"><label class="field">网址（可选）</label><input id="new-item-url" placeholder="https://example.com"><label class="field">分组（可选）</label><input id="new-item-group" placeholder="例如 blog/prod"><label class="field">备注（可选）</label><input id="new-item-notes"><label class="field">类型</label><select id="new-item-kind"><option value="">未分类（暂不可读）</option><option value="api">api（API Key，可授权 Agent 读取）</option><option value="web">web（网站登录，只能填充）</option></select><div id="new-item-web" class="hidden"><label class="field">允许填充的 origin（每行一个）</label><textarea id="new-item-origins" rows="2" style="width:100%" placeholder="https://example.com"></textarea></div><label class="chk" style="margin-top:8px"><input type="checkbox" id="new-item-noapproval"> 免审批</label><div class="row" style="margin-top:12px"><button class="primary" id="new-item-save">创建</button></div><div class="status" id="new-item-status"></div>')
+  // The web fields only mean something for a website login.
+  $('new-item-kind').onchange = () => $('new-item-web').classList.toggle('hidden', $('new-item-kind').value !== 'web')
+  $('new-item-save').onclick = async () => {
+    const name = $('new-item-name').value.trim()
+    if (!name) return status('new-item-status', '请填写名称', 'error')
+    const kind = $('new-item-kind').value
+    const origins = kind === 'web' ? $('new-item-origins').value.split('\n').map((line) => line.trim()).filter(Boolean) : []
+    if (kind === 'web' && !origins.length) return status('new-item-status', 'web 类型至少填一个 origin', 'error')
+    try {
+      await api('/api/items/create', { method: 'POST', body: JSON.stringify({ name, username: $('new-item-username').value, value: $('new-item-value').value, totp: $('new-item-totp').value, url: $('new-item-url').value.trim(), group: $('new-item-group').value.trim(), notes: $('new-item-notes').value, noApproval: $('new-item-noapproval').checked }) })
+      // Classify in the same step: the item was just created with a kind, so
+      // making the operator reopen it to classify is a pointless round trip.
+      if (kind) {
+        await api('/api/fill/policy', { method: 'POST', body: JSON.stringify(kind === 'web' ? { item: name, kind, origins, actions: ['login'] } : { item: name, kind }) })
+        if (kind === 'api') await api('/api/fill/read-policy', { method: 'POST', body: JSON.stringify({ item: name, allow: true, ttlDays: 30 }) })
+      }
+      show('modal', false); await Promise.all([loadItems(), loadState()]); toast(kind ? '已创建并分类为 ' + kind : '已创建（未分类，Agent 暂时读不到）')
+    } catch (error) { status('new-item-status', error.message, 'error') }
+  }
 }
-async function importItems(event) {
-  const file = event.target.files?.[0]; event.target.value = ''; if (!file) return
-  try {
-    const text = await file.text(); const parsed = JSON.parse(text); const items = Array.isArray(parsed) ? parsed : parsed.items
-    if (!Array.isArray(items)) throw new Error('JSON 需要是 [{name,value,...}] 或 {items:[...]}')
-    const result = await api('/api/items/import', { method: 'POST', body: JSON.stringify({ items }) })
-    await Promise.all([loadItems(), loadState()]); toast('导入完成：新增 ' + (result.created?.length || 0) + '，跳过 ' + (result.skipped?.length || 0))
-  } catch (error) { toast('导入失败：' + error.message, true) }
+// The importer reads one shape: a JSON array of {name,value,...}, or the same
+// under {items:[...]}. That is deliberately narrow: a Bitwarden CSV export has
+// no encrypted payload we can map without the account keys, and a Bitwarden
+// JSON export is encrypted. Anything else must be converted first, so the
+// dialog says so rather than failing on an unreadable file.
+function importItems(event) {
+  const file = event.target.files?.[0]; event.target.value = ''
+  if (!file) return
+  openImportDialog(file)
+}
+function openImportDialog(file) {
+  openModal('导入密钥', '<div class="hint">当前文件：<code>' + esc(file.name) + '</code></div>' +
+    '<div class="hint" style="margin-top:10px">支持两种 JSON：<br>' +
+    '· <code>[{"name":"a","value":"b"}, …]</code><br>' +
+    '· <code>{"items":[{"name":"a","value":"b"}, …]}</code><br>' +
+    '每条可用字段：<code>name</code>（必填）、<code>value</code>、<code>username</code>、<code>url</code>、<code>notes</code>、<code>totp</code>、<code>group</code>、<code>noApproval</code>。</div>' +
+    '<div class="hint" style="margin-top:10px;color:var(--danger)">不是这两种格式？Bitwarden 的加密 JSON、CSV 导出、1Password/KeePass 的导出都需要先转换，否则无法直接映射。</div>' +
+    '<label class="field">导入后统一分类（可选）</label><select id="imp-kind"><option value="">保持未分类</option><option value="api">api（API Key）</option></select>' +
+    '<div class="hint" style="margin-top:4px">web 类型需要逐个指定 origin，因此不能批量导入分类。</div>' +
+    '<div class="row" style="margin-top:12px"><button class="primary" id="imp-go">开始导入</button></div><div class="status" id="imp-status"></div>')
+  $('imp-go').onclick = async () => {
+    try {
+      status('imp-status', '读取文件…')
+      const parsed = JSON.parse(await file.text())
+      const items = Array.isArray(parsed) ? parsed : parsed.items
+      if (!Array.isArray(items)) throw new Error('JSON 需要是 [{name,value,…}] 或 {items:[…]}')
+      const kind = $('imp-kind').value
+      status('imp-status', '导入 ' + items.length + ' 条…')
+      const result = await api('/api/items/import', { method: 'POST', body: JSON.stringify({ items }) })
+      let classified = 0
+      if (kind === 'api') {
+        // A batch of api credentials is the common case (a set of API keys), so
+        // it is offered here instead of one modal per item.
+        for (const name of result.created || []) {
+          try { await api('/api/fill/policy', { method: 'POST', body: JSON.stringify({ item: name, kind: 'api' }) }); await api('/api/fill/read-policy', { method: 'POST', body: JSON.stringify({ item: name, allow: true, ttlDays: 30 }) }); classified++ } catch {}
+        }
+      }
+      show('modal', false); await Promise.all([loadItems(), loadState()])
+      toast('导入完成：新增 ' + (result.created?.length || 0) + '，跳过 ' + (result.skipped?.length || 0) + (classified ? '，已分类 ' + classified : ''))
+      if (result.skipped?.length) console.warn('import skipped', result.skipped)
+    } catch (error) { status('imp-status', '导入失败：' + error.message, 'error') }
+  }
 }
 function openBulkShare() {
   const names = [...selectedItems]
@@ -1740,19 +1818,23 @@ async function saveAgentFromModal(originalName) {
       const renamed = await api('/api/agents/rename', { method: 'POST', body: JSON.stringify({ name: originalName, newName: requested }) })
       currentName = renamed.name
     }
-    await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name: currentName, alias: $('ma-alias').value.trim(), note: $('ma-note').value.trim(), allow: $('ma-allow').value.split(',').map((v) => v.trim()).filter(Boolean), groups: $('ma-groups').value.split(',').map((v) => v.trim()).filter(Boolean), allowAll: $('ma-allowall').checked, write: $('ma-write').checked }) })
+    await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name: currentName, alias: $('ma-alias').value.trim(), note: $('ma-note').value.trim(), allow: pickListValues('ma-allow'), groups: pickListValues('ma-groups'), allowAll: $('ma-allowall').checked, write: $('ma-write').checked }) })
     show('modal', false); await loadState(); toast('已保存 Agent')
   } catch (error) { toast(error.message, true) }
+}
+function agentPermFields(agent) {
+  return '<label class="field">可读条目（勾选，不勾=无权限）</label>' + pickListHtml('ma-allow', knownItemNames(), agent.allow || [], '密钥库里还没有条目。') +
+    '<label class="field">可读分组（勾选，不勾=不限）</label>' + pickListHtml('ma-groups', knownGroups(), agent.groups || [], '还没有任何分组。')
 }
 function openAgentMenu(name) {
   const agent = app.data.agents.find((entry) => entry.name === name); if (!agent) return
   if (agent.oauth) {
-    openModal('OAuth Agent「' + name + '」', '<div class="hint">OAuth 动态注册产生的 Agent，绑定账户：<code>' + esc(agent.account || '-') + '</code>。可以修改名称、备注、权限和写入开关；撤销授权会删除 token。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '"><label class="field">可读条目（逗号分隔，留空=全部）</label><input id="ma-allow" value="' + esc((agent.allow || []).join(', ')) + '"><label class="field">可读分组（逗号分隔，留空=不限）</label><input id="ma-groups" value="' + esc((agent.groups || []).join(', ')) + '"><label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存</button><button class="danger" id="ma-oauth-revoke">撤销 OAuth 授权</button></div>')
+    openModal('OAuth Agent「' + name + '」', '<div class="hint">OAuth 动态注册产生的 Agent，绑定账户：<code>' + esc(agent.account || '-') + '</code>。可以修改名称、备注、权限和写入开关；撤销授权会删除 token。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存</button><button class="danger" id="ma-oauth-revoke">撤销 OAuth 授权</button></div>')
     $('ma-save').onclick = () => saveAgentFromModal(name)
     $('ma-oauth-revoke').onclick = async () => { if (!confirm('撤销 ' + name + ' 的 OAuth token？')) return; try { await api('/api/oauth/revoke', { method: 'POST', body: JSON.stringify({ agent: name }) }); show('modal', false); await loadState(); toast('已撤销') } catch (error) { toast(error.message, true) } }
     return
   }
-  openModal('Agent「' + name + '」', '<div class="hint">绑定账户：<code>' + esc(agent.account || '未绑定（旧数据）') + '</code>。Agent 只能读取该账户；切换账户后旧 Agent 不会自动获得新账户权限。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '"><label class="field">可读条目（逗号分隔，留空=全部）</label><input id="ma-allow" value="' + esc((agent.allow || []).join(', ')) + '"><label class="field">可读分组（逗号分隔，留空=不限）</label><input id="ma-groups" value="' + esc((agent.groups || []).join(', ')) + '"><label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
+  openModal('Agent「' + name + '」', '<div class="hint">绑定账户：<code>' + esc(agent.account || '未绑定（旧数据）') + '</code>。Agent 只能读取该账户；切换账户后旧 Agent 不会自动获得新账户权限。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
   $('ma-save').onclick = () => saveAgentFromModal(name)
   $('ma-copy').onclick = async () => { try { const data = await api('/api/agents/token', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); toast('token 已复制') } catch (error) { toast(error.message, true) } }
   $('ma-rotate').onclick = async () => { if (!confirm('轮换 ' + name + ' 的 token？旧 token 会立即失效。')) return; try { const data = await api('/api/agents/rotate', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); await loadState(); toast('已轮换并复制新 token') } catch (error) { toast(error.message, true) } }

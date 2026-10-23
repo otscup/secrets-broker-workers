@@ -13,6 +13,25 @@ MCP/OAuth 或 Agent token 读取密钥。
 它从 **NodeWarden 的 D1 数据库**读取 Bitwarden 兼容的 vault，只在浏览器/CLI
 解锁会话有效期间于 Worker 内解密条目，并对外暴露一组范围很窄的 Agent API。
 
+## 基于 NodeWarden 构建
+
+这个项目不自带密码库。它跑在
+[**NodeWarden**](https://github.com/shuaiplus/NodeWarden) 之上——一个自托管的、
+Bitwarden 兼容的 Cloudflare Workers 服务端。NodeWarden 负责保存和同步加密的
+vault；Secrets Broker 读同一个 D1 数据库，在上面加一层面向 Agent 的能力：每个
+Agent 独立 token、审批、限时授权、明文读取策略、分类和审计日志。
+
+具体意味着：
+
+- 先装好 NodeWarden，再把本 Worker 指向它的 D1 数据库和 Worker 绑定（见下面的
+  部署步骤）；
+- 密钥在 NodeWarden 的界面里（或用 Bitwarden 客户端）创建，这里会自动出现；
+- NodeWarden 始终是唯一数据源，所以在那边做的备份或迁移会带走全部凭据。
+
+- NodeWarden 仓库：<https://github.com/shuaiplus/NodeWarden>
+- Bitwarden 客户端可以直接连 NodeWarden，因此同一个 vault 在桌面端、浏览器扩展和
+  移动端都能用。
+
 Docker/Node 版本（[otscup/secrets-broker](https://github.com/otscup/secrets-broker)）
 仍然是参考实现；本项目是一个独立的、仅运行在 Workers 上的移植版本，因此
 NodeWarden 升级不会影响它。
@@ -24,7 +43,7 @@ DSH 插件（在设置页内处理待审批）：[`dsh-plugin/`](dsh-plugin/)。
 ## 当前进度（可用 PoC）
 
 - ✅ 1 个 Worker + 1 个 Durable Object；**0 个新增 D1 数据库**
-- ✅ 只读访问 NodeWarden 的 D1（`ciphers`、`users`）
+- ✅ 访问 NodeWarden 的 D1（`ciphers`、`users`）
 - ✅ 浏览器端 PBKDF2/HKDF/AES 解锁（主密码不会发送给 Worker）
 - ✅ Durable Object 会话存储（由 `SESSION_KEK` 包裹）
 - ✅ 解锁 TTL：永久 / 7 天 / 24 小时 / 1 小时
@@ -100,7 +119,7 @@ Bitwarden 默认 KDF 是 PBKDF2 600,000 次迭代。免费套餐的 Worker 跑�
 |---|---|---|
 | Worker | 1 | 本项目 |
 | Durable Object | 1 个命名空间 | SQLite 存储，不占 D1 配额 |
-| D1 | **0 个新增** | 只读绑定到已有的 `nodewarden-db` |
+| D1 | **0 个新增** | 绑定到已有的 `nodewarden-db`（读取，以及条目新增/修改/删除） |
 | KV/R2 | 可选 | 非必需 |
 
 ## 凭据

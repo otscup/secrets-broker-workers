@@ -2801,10 +2801,43 @@ function oauthMetadata(origin) {
   }
 }
 
-function oauthConsentPage(origin, params, client) {
+// What the consent page may offer: item names and group names. Names only, no
+// values. Reading the vault needs an unlocked session, and this page is shown
+// right after login, so a failure yields an empty picker rather than an error
+// page the user cannot get past.
+async function consentCatalog(env, db) {
+  try {
+    const session = await getSession(env)
+    if (!session) return { items: [], groups: [] }
+    const items = await listCiphers(env, db, session)
+    const groups = [...new Set(items.map((item) => item.group).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+    return { items: items.map((item) => item.name).sort((a, b) => a.localeCompare(b)), groups }
+  } catch { return { items: [], groups: [] } }
+}
+
+// The consent page asks what the client may reach, not just "allow": an Agent
+// connects in order to read one credential, so choosing it here saves a second
+// trip to the console. The choices become the Agent's scope and a plaintext
+// read policy, so the very next get_secret works.
+function oauthConsentPage(origin, params, client, catalog = { items: [], groups: [] }) {
   const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
   const field = (name) => '<input type="hidden" name="' + name + '" value="' + escape(params.get(name)) + '">'
-  return '<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCP 授权</title><style>body{font:14px/1.6 system-ui;background:#f3f6fb;margin:0;padding:40px;color:#152033}.card{max-width:560px;margin:0 auto;background:#fff;border:1px solid #e3e9f2;border-radius:16px;padding:24px}button{border:0;border-radius:9px;padding:10px 16px;font:inherit;cursor:pointer;margin-right:8px}.primary{background:#0f9d8a;color:#fff}.muted{color:#6b7890;font-size:12px}code{background:#eef1f6;padding:2px 5px;border-radius:5px}</style><div class="card"><h2>Secrets Broker · MCP 授权</h2><p>客户端 <code>' + escape(client?.clientName ?? params.get('client_id')) + '</code> 请求访问你的密钥库。</p><p class="muted">Scope: ' + escape(params.get('scope') ?? 'secrets.read') + '</p><form method="post" action="/oauth/authorize">' + field('client_id') + field('redirect_uri') + field('state') + field('code_challenge') + field('code_challenge_method') + field('scope') + '<button class="primary" name="decision" value="allow">允许</button><button name="decision" value="deny">拒绝</button></form></div></html>'
+  const boxes = (name, values) => values.length
+    ? '<div class="pick" style="max-height:190px;overflow:auto;border:1px solid #e3e9f2;border-radius:10px;padding:6px 10px;margin:6px 0 14px">' + values.map((value) =>
+        '<label class="row" style="display:flex;gap:8px;align-items:center;margin:3px 0"><input type="checkbox" name="' + name + '" value="' + escape(value) + '"> ' + escape(value) + '</label>'
+      ).join('') + '</div>'
+    : '<p class="muted" style="margin:4px 0 14px">还没有可选的内容，可以先在控制台创建密钥，或稍后到 Agents 页勾选。</p>'
+  return '<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCP 授权</title>' +
+    '<style>body{font:14px/1.6 system-ui;background:#f3f6fb;margin:0;padding:40px;color:#152033}.card{max-width:560px;margin:0 auto;background:#fff;border:1px solid #e3e9f2;border-radius:16px;padding:24px}button{border:0;border-radius:9px;padding:10px 16px;font:inherit;cursor:pointer;margin-right:8px}.primary{background:#0f9d8a;color:#fff}.muted{color:#6b7890;font-size:12px}code{background:#eef1f6;padding:2px 5px;border-radius:5px}h3{font-size:13px;margin:14px 0 2px}</style>' +
+    '<div class="card"><h2 style="margin-top:0">Secrets Broker · MCP 授权</h2>' +
+    '<p>客户端 <code>' + escape(client?.clientName ?? params.get('client_id')) + '</code> 请求访问你的密钥库。</p>' +
+    '<p class="muted">Scope: ' + escape(params.get('scope') ?? 'secrets.read') + '</p>' +
+    '<p class="muted">在下面勾选这个 Agent 可以读取的条目。勾中的条目会同时开启明文读取（30 天后自动失效），所以授权后它就能直接读取，不用再回控制台逐个设置。不勾则暂时不给任何条目。</p>' +
+    '<form method="post" action="/oauth/authorize">' + field('client_id') + field('redirect_uri') + field('state') + field('code_challenge') + field('code_challenge_method') + field('scope') +
+    '<h3>可读条目</h3>' + boxes('grant_items', catalog.items) +
+    '<h3>可读分组</h3>' + boxes('grant_groups', catalog.groups) +
+    '<label class="row" style="display:flex;gap:8px;align-items:center;margin:10px 0"><input type="checkbox" name="grant_all" value="1"> 允许全部条目（含以后新增的）</label>' +
+    '<div style="margin-top:16px"><button class="primary" name="decision" value="allow">允许</button><button name="decision" value="deny">拒绝</button></div></form></div></html>'
 }
 
 function standaloneLoginPage(next, providers = []) {
@@ -5244,15 +5277,20 @@ export default {
         const session = await getSession(env)
         const account = session?.email || await vaultEmail(env, env.NODEWARDEN_DB, state)
         const code = randomToken()
+        // What the operator ticked on the consent page. It is carried in the
+        // code, not the token, so a code that is never exchanged grants nothing.
+        const grantItems = params.getAll('grant_items').map((value) => String(value)).filter(Boolean)
+        const grantGroups = params.getAll('grant_groups').map((value) => String(value)).filter(Boolean)
+        const grantAll = params.get('grant_all') === '1'
         await updateState(env, (next) => {
-          next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', scope: String(params.get('scope') ?? 'secrets.read'), account, createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000 }
+          next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', scope: String(params.get('scope') ?? 'secrets.read'), account, createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000, grantItems, grantGroups, grantAll }
           return next
         })
-        await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId })
+        await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId, items: grantItems.length, groups: grantGroups.length, all: grantAll })
         const target = new URL(redirectUri); target.searchParams.set('code', code); if (params.get('state')) target.searchParams.set('state', params.get('state'))
         return Response.redirect(target.toString(), 302)
       }
-      return htmlResponse(oauthConsentPage(url.origin, params, client))
+      return htmlResponse(oauthConsentPage(url.origin, params, client, await consentCatalog(env, env.NODEWARDEN_DB)))
     }
     if (url.pathname === '/oauth/token' && request.method === 'POST') {
       const form = new URLSearchParams(await request.text())
@@ -5287,16 +5325,47 @@ export default {
         delete next.oauthCodes[code]
         next.oauthTokens[hash] = { hash, agent: agentName, clientId: entry.clientId, account, createdAt: nowIso(), expiresAt }
         next.oauthAgentProfiles ??= {}
-        if (!next.oauthAgentProfiles[agentName]) {
-          // The readable client name becomes the alias; the opaque client id
-          // goes to the note so nobody has to retype a long identifier.
-          next.oauthAgentProfiles[agentName] = { alias: next.oauthClients?.[entry.clientId]?.clientName ?? '', note: entry.clientId, allow: [], groups: [], allowAll: false, write: false, legacy: false }
-        } else if (!next.oauthAgentProfiles[agentName].note) {
-          next.oauthAgentProfiles[agentName].note = entry.clientId
+        const profile = next.oauthAgentProfiles[agentName] ??= { alias: next.oauthClients?.[entry.clientId]?.clientName ?? '', note: entry.clientId, allow: [], groups: [], allowAll: false, write: false, legacy: false }
+        if (!profile.note) profile.note = entry.clientId
+        // The consent choices become this Agent's scope, so the read it was
+        // connected for works on the first call instead of failing with
+        // "not allowed to read this item" and sending the operator back to the
+        // console. A re-authorisation replaces the choices rather than merging,
+        // because the operator just answered the question again.
+        if (entry.grantAll === true) profile.allowAll = true
+        if (Array.isArray(entry.grantItems) && entry.grantItems.length) profile.allow = [...new Set([...(profile.allow ?? []), ...entry.grantItems])]
+        if (Array.isArray(entry.grantGroups) && entry.grantGroups.length) profile.groups = [...new Set([...(profile.groups ?? []), ...entry.grantGroups])]
+        // And a plaintext read policy for each chosen item, so the value is
+        // actually readable: scope alone only permits a request, it does not
+        // clear the read guard. 30 days matches the console's default.
+        next.plaintextReadPolicies ??= {}
+        const wanted = new Set(entry.grantItems ?? [])
+        if (entry.grantAll === true) for (const name of Object.keys(next.itemIds ?? {})) wanted.add(name)
+        // A read also needs a capability: the allow list is scope, not authority,
+        // and the read path denies "not-granted" without one. Minting it here is
+        // what makes the first get_secret succeed instead of stopping at an
+        // approval prompt the operator already answered by ticking the box.
+        next.capabilities ??= {}
+        for (const name of wanted) {
+          const itemId = next.itemIds?.[name]
+          if (!itemId) continue
+          // A web credential is fill-only by design and must never gain a
+          // plaintext read policy, so choosing one here cannot weaken that rule.
+          if (next.credentialKinds?.[itemId] === 'web') continue
+          next.plaintextReadPolicies[itemId] = { itemId, accountId: account, expiresAt: Date.now() + 30 * 86400e3, updatedAt: nowIso() }
+          const ckey = capabilityKey(agentName, itemId, 'secret.read')
+          if (!next.capabilities[ckey]?.revokedAt) {
+            next.capabilities[ckey] = {
+              id: ckey, subjectId: agentName, accountId: account, itemId, itemName: name, action: 'secret.read',
+              mode: 'preapproved', createdAt: nowIso(), createdBy: 'oauth-consent:' + account,
+              expiresAt: Date.now() + 30 * 86400e3, maxUses: null, usedCount: 0,
+              revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1,
+            }
+          }
         }
         return next
       })
-      await addAudit(env, { event: 'oauth.token-issue', agent: agentName, clientId: entry.clientId })
+      await addAudit(env, { event: 'oauth.token-issue', agent: agentName, clientId: entry.clientId, items: (entry.grantItems ?? []).length, groups: (entry.grantGroups ?? []).length, all: entry.grantAll === true })
       return json({ access_token: accessToken, token_type: 'Bearer', expires_in: 86400, scope: entry.scope })
     }
     if (url.pathname === '/mcp' && request.method === 'POST') {
