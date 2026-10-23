@@ -17,6 +17,9 @@ else fail('C1', 'open=' + open + ' close=' + close + ' - rules after the stray b
 const required = [
   '.agent-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))',
   '.grid3 .rank-box{',
+  // dbdacd6 removed this rule while three wrappers still used the class, so
+  // the settings pairs and the overview pair stacked for four commits.
+  '.grid2{display:grid;',
   '.legend{',
   '.globe-pause{',
   '.grid3>.card{',

@@ -517,6 +517,9 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 .ov-actions:empty{display:none}
 .ov-action{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3)}
 .ov-pair{margin-bottom:var(--sp-3)}
+/* Restored: dbdacd6 dropped this rule but three wrappers still use the class,
+   so the settings pairs and the overview pair silently stacked. */
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:stretch}
 .kpi{background:var(--card);border-radius:var(--r-lg);padding:var(--sp-3) var(--sp-4);min-height:104px;display:flex;flex-direction:column;justify-content:space-between}
 .kpi .value{font-size:34px;line-height:41px;font-weight:700;letter-spacing:-.41px}
 .kpi .label{font-size:var(--text-sub);color:var(--label-2)}
@@ -1577,7 +1580,9 @@ function renderOverviewActions() {
   const now = Date.now()
   const pending = (data.pending || []).length
   const denied = (data.deniedAttempts || []).length
-  const expiring = (data.grants || []).filter((g) => { const at = Date.parse(g.expiresAt || ''); return at > now && at - now < 86400000 && !g.revokedAt }).length
+  // grant.expiresAt is a number (Date.now()+ttl, 0 = permanent); Date.parse on
+  // a number is NaN, which silently made this row unreachable.
+  const expiring = (data.grants || []).filter((g) => g.expiresAt > now && g.expiresAt - now < 86400000 && !g.revokedAt).length
   const rows = []
   if (pending) rows.push(['有 ' + pending + ' 条请求等你批准', 'Agent 正等着读密钥，超时就自动失效', '去处理', 'grants', 'warn'])
   if (expiring) rows.push([expiring + ' 条授权 24 小时内到期', '到期后 Agent 要重新申请', '去续期', 'grants', ''])

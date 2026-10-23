@@ -23,7 +23,11 @@ const state = {
   agents: [{ name: 'dsh', alias: 'DSH 桌面助手', note: '', allowAll: true, expiresAt: null }],
   policies: {}, grants: [], pending: [], itemGroups: {}, requireClassification: true,
   deniedAttempts: {}, oauthClients: {}, legacyUnbound: [],
+  // One grant expiring inside 24h: the 需要你处理 card must surface it. The
+  // check read grant.expiresAt with Date.parse, which is NaN on a number, so
+  // the row could never appear.
 }
+state.grants = [{ agent: 'dsh', name: 'tavily-api-key', mode: '24h', createdAt: new Date().toISOString(), expiresAt: Date.now() + 3600e3, reads: 0, maxReads: null, revokedAt: null }]
 const items = {
   items: [{
     id: 'item-1', type: 1, name: 'tavily-api-key', url: 'https://tavily.com', folderId: null,
@@ -158,8 +162,13 @@ try {
   const pageGone = await evaluate("document.getElementById('item-page').classList.contains('in')")
   saved && !pageGone ? pass('A5 save posts and closes the detail page') : fail('A5', JSON.stringify({ saved, pageGone, writes }))
 
-  // A6 - nothing threw while all of that happened.
-  problems.length === 0 ? pass('A6 no runtime errors') : fail('A6', problems.slice(0, 3).join(' | '))
+  // A6 - the work queue surfaces a grant that expires inside 24h.
+  const workCard = await evaluate("document.getElementById('ov-actions').textContent")
+  const expiringRow = /条授权 24 小时内到期/.test(String(workCard))
+  expiringRow ? pass('A6 work queue shows the expiring grant') : fail('A6', 'ov-actions=' + JSON.stringify(workCard))
+
+  // A7 - nothing threw while all of that happened.
+  problems.length === 0 ? pass('A7 no runtime errors') : fail('A7', problems.slice(0, 3).join(' | '))
 } finally {
   try { ws?.close() } catch {}
   child.kill()
