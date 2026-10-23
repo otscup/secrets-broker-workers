@@ -27,6 +27,18 @@ const nowIso = () => new Date().toISOString()
 
 const emptyState = () => ({ agents: {}, policies: {}, grants: {}, pending: {}, audit: [], settings: { notifications: {} } })
 
+// Every write to the state document must bump the version that /state/cas
+// compares against. Only the CAS route used to do it, so a change committed by
+// a DO-side transaction (a capability use, a legacy grant migration) left the
+// version untouched: a Worker that had already read version V could then CAS its
+// stale snapshot over the change, reverting the counter it just incremented.
+// That is how 20 concurrent reads of an unlimited capability ended with
+// usedCount=19, and the same window can undo a maxUses increment.
+async function putStateVersioned(txn, store) {
+  await txn.put('state', store)
+  await txn.put('stateVersion', ((await txn.get('stateVersion')) ?? 0) + 1)
+}
+
 export class BrokerState extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url)
@@ -59,16 +71,22 @@ export class BrokerState extends DurableObject {
     }
     if (url.pathname === '/grant/consume' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
-      const state = (await this.ctx.storage.get('state')) ?? null
       const key = `${String(body.agent ?? '')}\u0000${String(body.name ?? '')}`
-      const grant = state?.grants?.[key]
-      if (!grant || grant.revokedAt) return json({ ok: false, reason: 'no-grant' })
-      if (grant.expiresAt && grant.expiresAt < Date.now()) return json({ ok: false, reason: 'expired' })
-      if (grant.maxReads != null && (grant.reads ?? 0) >= grant.maxReads) return json({ ok: false, reason: 'exhausted' })
-      grant.reads = (grant.reads ?? 0) + 1
-      if (grant.maxReads != null && grant.reads >= grant.maxReads) delete state.grants[key]
-      await this.ctx.storage.put('state', state)
-      return json({ ok: true, reads: grant.reads })
+      // Consuming a legacy grant is a read-modify-write of the whole document:
+      // without the transaction two callers can both see reads < maxReads and
+      // both get the plaintext.
+      const result = await this.ctx.storage.transaction(async (txn) => {
+        const state = (await txn.get('state')) ?? null
+        const grant = state?.grants?.[key]
+        if (!grant || grant.revokedAt) return { ok: false, reason: 'no-grant' }
+        if (grant.expiresAt && grant.expiresAt < Date.now()) return { ok: false, reason: 'expired' }
+        if (grant.maxReads != null && (grant.reads ?? 0) >= grant.maxReads) return { ok: false, reason: 'exhausted' }
+        grant.reads = (grant.reads ?? 0) + 1
+        if (grant.maxReads != null && grant.reads >= grant.maxReads) delete state.grants[key]
+        await putStateVersioned(txn, state)
+        return { ok: true, reads: grant.reads }
+      })
+      return json(result)
     }
     // Atomic capability check-and-consume. The counter mutation runs inside
     // storage.transaction() with exclusive access per Durable Object, so
@@ -100,7 +118,7 @@ export class BrokerState extends DurableObject {
           cap.exhaustedAt = new Date().toISOString()
           store.capabilities[key] = cap
         } else store.capabilities[key] = cap
-        await txn.put('state', store)
+        await putStateVersioned(txn, store)
         return { ok: true, usedCount: cap.usedCount, capabilityId: cap.id ?? key }
       })
       return json(result)
@@ -483,7 +501,7 @@ export class BrokerState extends DurableObject {
           else if (kind === 'merge' && op.value && typeof op.value === 'object') cursor[leaf] = { ...(cursor[leaf] ?? {}), ...op.value }
           else return { ok: false, reason: 'bad-op' }
         }
-        await txn.put('state', store)
+        await putStateVersioned(txn, store)
         return { ok: true }
       })
       return json(result)
@@ -618,7 +636,7 @@ export class BrokerState extends DurableObject {
           store.legacyItemBindings[bindingKey] = { itemId, boundAt: new Date(now).toISOString(), boundBy: source }
         }
         store.capabilities[key] = derived
-        await txn.put('state', store)
+        await putStateVersioned(txn, store)
         return { ok: true, existed: false, usedCount: derived.usedCount, source }
       })
       return json(result)
@@ -660,7 +678,7 @@ export class BrokerState extends DurableObject {
           keys.sort((a, b) => ((store.oidcUsedStates[a]?.at ?? 0) - (store.oidcUsedStates[b]?.at ?? 0)))
           for (const k of keys.slice(0, keys.length - 5000)) delete store.oidcUsedStates[k]
         }
-        await txn.put('state', store)
+        await putStateVersioned(txn, store)
         return true
       })
       if (!marked) return json({ ok: false, reason: 'replay' })
@@ -881,7 +899,7 @@ async function mutateState(env, ops) {
 //
 // The mutation runs against a snapshot and is retried while the stored version
 // keeps moving underneath it.
-const STATE_WRITE_ATTEMPTS = 8
+const STATE_WRITE_ATTEMPTS = 12
 async function loadStateVersioned(env) {
   const response = await stateStub(env).fetch('https://state/state/versioned')
   const payload = await response.json()
@@ -895,8 +913,13 @@ async function updateState(env, mutate) {
     const result = await mutate(state)
     const saved = await saveStateCas(env, state, loaded.version)
     if (saved?.ok) return result
-    // Lost the race: back off briefly and re-apply the mutation to fresh state.
-    await new Promise((resolve) => setTimeout(resolve, 5 + attempt * 10))
+    // Lost the race: back off and re-apply the mutation to fresh state. The
+    // delay grows exponentially with jitter, because twenty simultaneous
+    // readers all retrying at the same tick just collide again. Eight flat
+    // attempts of 5+10n ms were not enough under load; twelve spread over
+    // roughly a second are.
+    const backoff = Math.min(250, 10 * 2 ** attempt) * (0.6 + Math.random() * 0.8)
+    await new Promise((resolve) => setTimeout(resolve, Math.round(backoff)))
   }
   // Exhausted retries. Fail loudly rather than silently dropping a write.
   throw new Error('state write conflict: too many concurrent updates')
