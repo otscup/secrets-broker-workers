@@ -245,7 +245,8 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
   </section>
 
   <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读），这里可以设置免审批策略和读取。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
-    <div class="card"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。<b>未分类的凭据保持旧版授权行为</b>，Agent 仍可能直接读到明文。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap" style="margin-top:10px"></div></div>
+    <div class="card"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。未分类的凭据默认为拒绝读取。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap" style="margin-top:10px"></div></div>
+    <div class="card" id="card-denied"><h2>被拦下的请求</h2><div class="hint">Agent 试图读取但没通过权限检查的条目。这里只是记录，没有放行任何东西；点「授权」才会真正放开。</div><div id="denied-list" class="table-wrap" style="margin-top:10px"></div></div>
     
   </section>
 
@@ -473,7 +474,18 @@ $('modal-body').addEventListener('click', (event) => { const grantEdit = event.t
 $('modal-close-x').onclick = () => show('modal', false)
 $('modal').addEventListener('click', (event) => { if (event.target === $('modal')) show('modal', false) })
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('modal').classList.contains('hidden')) show('modal', false) })
-$('items-box').addEventListener('click', async (event) => { const grantEdit = event.target.closest('[data-item-grant]'); if (grantEdit) { openGrantMenu(grantEdit.dataset.agent, grantEdit.dataset.name); return } const menu = event.target.closest('[data-item-menu]'); if (menu) { openItemMenu(menu.dataset.itemMenu); return } const toggle = event.target.closest('[data-policy]'); if (toggle) { const item = app.items.find((entry) => entry.name === toggle.dataset.policy); if (!item) return; try { await api('/api/policies', { method: 'POST', body: JSON.stringify({ name: item.name, noApproval: !item.noApproval }) }); await loadItems(); toast('已更新免审批策略') } catch (error) { toast(error.message, true) } return } const read = event.target.closest('[data-read]'); if (read) reveal(read.dataset.read) })
+$('items-box').addEventListener('click', async (event) => {
+  const allowDenied = event.target.closest('[data-allow-denied]')
+  if (allowDenied) { openAllowDenied(allowDenied.dataset.agent, allowDenied.dataset.name, allowDenied.dataset.action); return }
+  const dismissDenied = event.target.closest('[data-dismiss-denied]')
+  if (dismissDenied) {
+    try {
+      await api('/api/denied/dismiss', { method: 'POST', body: JSON.stringify({ agent: dismissDenied.dataset.agent, name: dismissDenied.dataset.name, action: dismissDenied.dataset.action }) })
+      await loadState(); toast('已忽略')
+    } catch (error) { toast(error.message, true) }
+    return
+  }
+  const grantEdit = event.target.closest('[data-item-grant]'); if (grantEdit) { openGrantMenu(grantEdit.dataset.agent, grantEdit.dataset.name); return } const menu = event.target.closest('[data-item-menu]'); if (menu) { openItemMenu(menu.dataset.itemMenu); return } const toggle = event.target.closest('[data-policy]'); if (toggle) { const item = app.items.find((entry) => entry.name === toggle.dataset.policy); if (!item) return; try { await api('/api/policies', { method: 'POST', body: JSON.stringify({ name: item.name, noApproval: !item.noApproval }) }); await loadItems(); toast('已更新免审批策略') } catch (error) { toast(error.message, true) } return } const read = event.target.closest('[data-read]'); if (read) reveal(read.dataset.read) })
 $('agents-box').addEventListener('click', (event) => {
   const extend = event.target.closest('[data-agent-extend]')
   if (extend) { event.stopPropagation(); openExtendMenu(extend.dataset.agentExtend); return }
@@ -1551,9 +1563,64 @@ function fillPolicyState() {
   return (app.data && app.data.fillPolicies) || { items: [], executionLayer: false }
 }
 
+// What the Agents were refused, with the reason and a one-click way to allow it.
+// The refusals are recorded by the broker; this only displays them and offers
+// the grant, so nothing is authorised without the operator clicking.
+function renderDenied() {
+  const box = $('denied-list')
+  if (!box) return
+  const rows = (app.data && app.data.deniedAttempts) || []
+  if (!rows.length) { box.innerHTML = '<div class="hint">没有 Agent 被拦下的请求。</div>'; return }
+  const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持请求（http_request）', 'secret.fill': '网页填充' }
+  box.innerHTML = '<table><tr><th>Agent</th><th>条目</th><th>想要</th><th>被拦原因</th><th>次数</th><th>最近</th><th class="nowrap">操作</th></tr>' +
+    rows.map((entry) => {
+      const at = entry.lastAt ? new Date(entry.lastAt).toLocaleString('zh-CN', { hour12: false }) : '-'
+      return '<tr><td>' + esc(entry.agent || '') + '</td><td><b>' + esc(entry.name || '') + '</b></td>'
+        + '<td>' + esc(actionLabel[entry.action] || entry.action || '') + '</td>'
+        + '<td style="color:var(--danger)">' + esc(entry.reason || '') + '</td>'
+        + '<td>' + (entry.count ?? 1) + '</td><td class="hint nowrap">' + esc(at) + '</td>'
+        + '<td class="nowrap"><button class="small primary" data-allow-denied data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" data-action="' + esc(entry.action || '') + '">授权</button>'
+        + '<button class="small" data-dismiss-denied data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" data-action="' + esc(entry.action || '') + '">忽略</button></td></tr>'
+    }).join('') + '</table>'
+}
+// Grant what was refused, then drop the entry. secret.use additionally needs a
+// target policy for http_request to work at all, so the dialog asks for it.
+function openAllowDenied(agent, name, action) {
+  const target = action === 'secret.use'
+  const body = target
+    ? '<div class="hint">让「' + esc(agent) + '」可以对「' + esc(name) + '」发起 http_request。密钥在 broker 服务端注入，Agent 拿不到明文值。</div>'
+      + '<label class="field">允许的目标主机（每行一个，如 httpbin.org）</label><textarea id="ad-hosts" rows="2" style="width:100%" placeholder="httpbin.org"></textarea>'
+      + '<label class="field">允许的方法</label><select id="ad-methods"><option value="GET,POST">GET + POST</option><option value="GET">仅 GET</option><option value="GET,POST,PUT,PATCH,DELETE">全部</option></select>'
+      + '<label class="field">端口</label><input id="ad-ports" value="443" placeholder="443">'
+    : '<div class="hint">让「' + esc(agent) + '」可以读取「' + esc(name) + '」的明文值。</div>'
+      + '<label class="field">明文有效期</label><select id="ad-hours"><option value="1">1 小时</option><option value="24" selected>24 小时</option><option value="168">7 天</option><option value="720">30 天</option><option value="0">永久</option></select>'
+      + '<div class="hint" style="margin-top:4px;color:var(--danger)">允许后该 Agent 能拿到这条凭据的真实值。确认这是你信任的 Agent。</div>'
+  openModal('授权「' + agent + ' → ' + name + '」', body + '<div class="row" style="margin-top:12px"><button class="primary" id="ad-go">授权</button></div><div class="status" id="ad-status"></div>')
+  $('ad-go').onclick = async () => {
+    try {
+      status('ad-status', '授权中…')
+      if (target) {
+        const hosts = $('ad-hosts').value.split('\n').map((v) => v.trim()).filter(Boolean)
+        if (!hosts.length) return status('ad-status', '至少填一个目标主机', 'error')
+        const methods = $('ad-methods').value.split(',').map((v) => v.trim()).filter(Boolean)
+        const ports = $('ad-ports').value.split(',').map((v) => v.trim()).filter(Boolean)
+        await api('/api/use-policy', { method: 'POST', body: JSON.stringify({ item: name, hosts, methods, ports }) })
+      }
+      const duration = target ? '1d' : ({ '1': '1d', '24': '1d', '168': '7d', '720': '30d', '0': 'permanent' })[$('ad-hours')?.value || '24']
+      await api('/api/action-grants', { method: 'POST', body: JSON.stringify({ agent, item: name, actions: [action], terms: { [action]: { duration } } }) })
+      if (!target && $('ad-hours')?.value && $('ad-hours').value !== '0') {
+        await api('/api/fill/read-policy', { method: 'POST', body: JSON.stringify({ item: name, allow: true, ttlDays: Math.max(1, Math.round(Number($('ad-hours').value) / 24)) }) })
+      }
+      await api('/api/denied/dismiss', { method: 'POST', body: JSON.stringify({ agent, name, action }) })
+      show('modal', false); await loadState(); toast('已授权：' + agent + ' → ' + name)
+    } catch (error) { status('ad-status', error.message, 'error') }
+  }
+}
+
 function renderFillPolicies() {
   const list = $('fp-list')
   if (!list) return
+  renderDenied()
   const state = fillPolicyState()
   const note = $('fp-exec-note')
   if (note) {
@@ -1666,7 +1733,18 @@ function describe(entry) {
   }
 }
 function renderRecent() { $('recent-box').innerHTML = (app.data.audit || []).slice(0, 8).map((entry) => '<div class="rowline"><span class="ev">' + esc(new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false })) + '</span><span>' + esc(describe(entry)) + '</span></div>').join('') || '<div class="hint">暂无活动</div>' }
-function renderLogs() { $('logs-box').innerHTML = (app.data.audit || []).length ? '<table><tr><th>时间</th><th>描述</th><th>Agent</th><th>条目</th></tr>' + (app.data.audit || []).slice(0, 200).map((entry) => '<tr><td>' + esc(new Date(entry.time).toLocaleString('zh-CN', { hour12: false })) + '</td><td>' + esc(describe(entry)) + '</td><td>' + esc(entry.agent || '') + '</td><td>' + esc(entry.name || '') + '</td></tr>').join('') + '</table>' : '<div class="hint">暂无日志</div>' }
+// Anything that cleared a guard rather than passing it is red: a no-approval
+// read skipped every check, and a denial shows what was refused. Everything
+// else stays neutral so the red still means something.
+const RED_LOG_EVENTS = new Set(['secret.read-noapproval', 'access.denied', 'secret.read-deny', 'secret.write-deny', 'grant.revoke', 'fill.redeem-deny', 'credential.cancel', 'policy.shadow-mismatch', 'admin.login-fail'])
+function renderLogs() {
+  const rows = app.data.audit || []
+  $('logs-box').innerHTML = rows.length ? '<table><tr><th>时间</th><th>描述</th><th>Agent</th><th>条目</th></tr>' + rows.slice(0, 200).map((entry) => {
+    const red = RED_LOG_EVENTS.has(String(entry.event || ''))
+    const cell = red ? ' style="color:var(--danger)"' : ''
+    return '<tr><td' + cell + '>' + esc(new Date(entry.time).toLocaleString('zh-CN', { hour12: false })) + '</td><td' + cell + '>' + esc(describe(entry)) + '</td><td' + cell + '>' + esc(entry.agent || '') + '</td><td' + cell + '>' + esc(entry.name || '') + '</td></tr>'
+  }).join('') + '</table>' : '<div class="hint">暂无日志</div>'
+}
 async function reveal(name) { try { const data = await api('/secret?name=' + encodeURIComponent(name)); $('modal-title').textContent = '读取 ' + name; $('modal-body').innerHTML = '<div class="hint">仅用于人工查看；Agent 应通过 /secret 或 MCP 获取。</div>' + (data.username ? '<label class="field">用户名</label><div class="secret">' + esc(data.username) + '</div>' : '') + '<label class="field">密钥</label><div class="secret">' + esc(data.value || '(空)') + '</div>' + (data.totp ? '<label class="field">TOTP Secret</label><div class="secret">' + esc(data.totp) + '</div>' : ''); show('modal', true) } catch (error) { toast(error.message, true) } }
 function createItemMenu() {
   openModal('新增密钥条目', '<label class="field">名称</label><input id="new-item-name" placeholder="例如 tavily-api-key"><label class="field">用户名（可选）</label><input id="new-item-username" placeholder="登录用户名"><label class="field">密钥值</label><input id="new-item-value" placeholder="要保存的密钥"><label class="field">TOTP Secret（可选）</label><input id="new-item-totp" placeholder="Base32 TOTP secret"><label class="field">网址（可选）</label><input id="new-item-url" placeholder="https://example.com"><label class="field">分组（可选）</label><input id="new-item-group" placeholder="例如 blog/prod"><label class="field">备注（可选）</label><input id="new-item-notes"><label class="field">类型</label><select id="new-item-kind"><option value="">未分类（暂不可读）</option><option value="api">api（API Key，可授权 Agent 读取）</option><option value="web">web（网站登录，只能填充）</option></select><div id="new-item-web" class="hidden"><label class="field">允许填充的 origin（每行一个）</label><textarea id="new-item-origins" rows="2" style="width:100%" placeholder="https://example.com"></textarea></div><label class="chk" style="margin-top:8px"><input type="checkbox" id="new-item-noapproval"> 免审批</label><div class="row" style="margin-top:12px"><button class="primary" id="new-item-save">创建</button></div><div class="status" id="new-item-status"></div>')
@@ -1775,7 +1853,17 @@ function uaLabel(ua) {
   return browser + (os ? ' · ' + os : '')
 }
 function agentLabel(name) { const agent = (app.data.agents || []).find((entry) => entry.name === name); return agent?.alias || agent?.name || name || '系统' }
-function describeEvent(entry) { return ({ 'secret.read': '读取密钥', 'grant.share': '分享授权', 'grant.approve': '批准授权', 'grant.revoke': '撤销授权', 'transfer.complete': '跨账户复制完成', 'item.create': '创建条目', 'item.update': '修改条目', 'vault.unlock': '解锁' })[entry.event] || entry.event || '' }
+function describeEvent(entry) {
+  const map = {
+    'secret.read': '读取密钥', 'secret.read-noapproval': '⚠ 免审批直接读取（跳过所有检查）',
+    'access.denied': '⚠ 被拦下的读取请求', 'secret.read-deny': '拒绝读取明文',
+    'grant.share': '分享授权', 'grant.approve': '批准授权', 'grant.revoke': '撤销授权',
+    'transfer.complete': '跨账户复制完成', 'item.create': '创建条目', 'item.update': '修改条目',
+    'vault.unlock': '解锁', 'secret.use': '代持请求', 'secret.fill': '网页填充',
+    'use-policy.update': '修改使用策略', 'fill-policy.update': '修改分类',
+  }
+  return map[entry.event] || entry.event || ''
+}
 function itemInfoHtml(item) {
   const grants = (app.data.grants || []).filter((grant) => grant.name === item.name)
   const usage = (app.data.audit || []).filter((entry) => entry.name === item.name && ['secret.read', 'grant.share', 'grant.approve', 'transfer.complete', 'item.create', 'item.update'].includes(entry.event)).slice(0, 10)

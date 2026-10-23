@@ -1996,12 +1996,17 @@ function fillPolicyFor(state, itemId, origin) {
 // its value must never travel back to an Agent, it may only be filled into a
 // page by the execution layer. An 'api' credential may still be read, but only
 // when the admin enabled that explicitly for the item.
-function plaintextReadAllowed(state, itemId) {
+// noApproval is the per-item "let it through" switch: the operator accepted the
+// risk for this credential, so it satisfies the classification and read-policy
+// requirement too. It never overrides the web rule, which is about the
+// credential type, not about permission.
+function plaintextReadAllowed(state, itemId, { noApproval = false } = {}) {
   // An id that could not be resolved is not an unclassified credential: it is an
   // unknown item, and an unknown item never gets plaintext.
   if (!itemId) return { ok: false, reason: 'item-id-unresolved' }
   const kind = credentialKind(state, itemId)
   if (kind === 'web') return { ok: false, reason: 'web-credential-is-fill-only' }
+  if (noApproval) return { ok: true, noApproval: true }
   if (kind === 'api') {
     const policy = state.plaintextReadPolicies?.[itemId] ?? null
     if (!policy) return { ok: false, reason: 'no-plaintext-read-policy' }
@@ -2679,9 +2684,32 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     // is decisive. Never fall through to approval, legacy grants or legacy
     // scope — that would resurrect access the operator already withdrew.
     if (decision.capabilityDecisive) return { status: 'forbidden', error: `capability ${decision.reason}: access denied`, reason: decision.reason }
-    // Not capability-eligible at all -> hard deny. Eligible-but-unapproved
-    // falls through to the approval gate below (pending), never a bypass.
-    if (!decision.grantEligible && !decision.legacy) return { status: 'forbidden', error: 'agent not allowed to read this item', reason: 'not-granted' }
+    // A no-approval item is a standing yes for an Agent that is already in
+    // scope: it clears the capability requirement, the approval prompt, the
+    // classification check and the plaintext policy in one step. Scope is still
+    // required — "免审批" means "don't ask me again", not "any Agent may read
+    // this". A revoked/expired capability was already returned as decisive.
+    const noApprovalInScope = action === 'secret.read' && state.policies?.[name]?.noApproval === true
+      && agentInScope(agent, state.itemGroups, name)
+    if (!decision.grantEligible && !decision.legacy && !noApprovalInScope) {
+      const why = !itemId ? '条目 id 无法解析'
+        : !agentInScope(agent, state.itemGroups, name) ? '该条目不在 Agent 的可读范围内'
+        : '在可读范围内，但缺少这条授权'
+      await updateState(env, (next) => {
+        const key = 'deny\u0000' + agentName + '\u0000' + name + '\u0000' + action
+        next.deniedAttempts ??= {}
+        const prior = next.deniedAttempts[key]
+        next.deniedAttempts[key] = {
+          agent: agentName, name, itemId, account: session.email, action, reason: why,
+          origin: action === 'secret.use' ? String(target?.host ?? '') : '',
+          count: (prior?.count ?? 0) + 1, firstAt: prior?.firstAt ?? nowIso(), lastAt: nowIso(),
+        }
+        return next
+      })
+      await addAudit(env, { event: 'access.denied', agent: agentName, name, itemId, action, reason: why, source: 'agent' })
+      await notifyPending(env, origin, { id: 'deny-' + itemId, agent: agentName, name, createdAt: nowIso(), action, denied: true, reason: why }, ctx).catch(() => {})
+      return { status: 'forbidden', error: 'agent not allowed to read this item', reason: 'not-granted' }
+    }
   }
   const policy = state.policies?.[name]
   // Approval gate.
@@ -2749,13 +2777,13 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   // credential never reaches the caller; an api credential needs an explicit
   // read policy. An id that cannot be resolved is refused, not treated as
   // unclassified.
-  const readGuard = plaintextReadAllowed(state, resolvedItemId)
+  const readGuard = plaintextReadAllowed(state, resolvedItemId, { noApproval: policy?.noApproval === true })
   if (!readGuard.ok) {
     await addAudit(env, { event: 'secret.read-deny', agent: agentName, name, reason: readGuard.reason })
     return { status: 'forbidden', error: 'plaintext read is not allowed for this credential: ' + readGuard.reason, reason: readGuard.reason }
   }
-  await addAudit(env, { event: 'secret.read', agent: agentName, name, mode: policy?.noApproval ? 'no-approval' : 'grant', via: 'agent', legacy: decision.legacy === true })
-  return { status: 'allowed', itemId: resolvedItemId, value: result.value, url: result.url }
+  await addAudit(env, { event: readGuard.noApproval ? 'secret.read-noapproval' : 'secret.read', agent: agentName, name, itemId: resolvedItemId, mode: readGuard.noApproval ? 'no-approval' : 'grant', via: 'agent', legacy: decision.legacy === true, ...(readGuard.noApproval ? { severity: 'warn', source: 'no-approval' } : {}) })
+  return { status: 'allowed', itemId: resolvedItemId, value: result.value, url: result.url, noApproval: readGuard.noApproval === true }
 }
 
 function statsFor(state, range) {
@@ -2832,11 +2860,17 @@ function oauthConsentPage(origin, params, client, catalog = { items: [], groups:
     '<div class="card"><h2 style="margin-top:0">Secrets Broker · MCP 授权</h2>' +
     '<p>客户端 <code>' + escape(client?.clientName ?? params.get('client_id')) + '</code> 请求访问你的密钥库。</p>' +
     '<p class="muted">Scope: ' + escape(params.get('scope') ?? 'secrets.read') + '</p>' +
-    '<p class="muted">在下面勾选这个 Agent 可以读取的条目。勾中的条目会同时开启明文读取（30 天后自动失效），所以授权后它就能直接读取，不用再回控制台逐个设置。不勾则暂时不给任何条目。</p>' +
+    '<p class="muted">在下面勾选这个 Agent 可以读取的条目。勾选只给它申请和读取的资格，值本身还要看同类里的明文开关。不勾则暂时不给任何条目。</p>' +
     '<form method="post" action="/oauth/authorize">' + field('client_id') + field('redirect_uri') + field('state') + field('code_challenge') + field('code_challenge_method') + field('scope') +
     '<h3>可读条目</h3>' + boxes('grant_items', catalog.items) +
     '<h3>可读分组</h3>' + boxes('grant_groups', catalog.groups) +
     '<label class="row" style="display:flex;gap:8px;align-items:center;margin:10px 0"><input type="checkbox" name="grant_all" value="1"> 允许全部条目（含以后新增的）</label>' +
+    // Off by default, and short: granting scope must not silently open the
+    // plaintext door for a month. The operator opts in and picks the window.
+    '<label class="row" style="display:flex;gap:8px;align-items:center;margin:10px 0"><input type="checkbox" name="grant_plaintext" value="1"> 同时允许读取明文值</label>' +
+    '<div class="muted" style="margin:-4px 0 12px 24px">不勾选时，Agent 只能看到条目名称并提交审批申请，读不到值。web 类型的网站登录无论是否勾选都不会给明文。</div>' +
+    '<label class="row" style="display:flex;gap:8px;align-items:center;margin:6px 0"><span class="muted">明文有效期</span>' +
+    '<select name="grant_hours"><option value="1">1 小时</option><option value="24" selected>24 小时</option><option value="168">7 天</option><option value="720">30 天</option></select></label>' +
     '<div style="margin-top:16px"><button class="primary" name="decision" value="allow">允许</button><button name="decision" value="deny">拒绝</button></div></form></div></html>'
 }
 
@@ -3884,6 +3918,43 @@ export default {
       const methods = (Array.isArray(body.methods) ? body.methods : []).map((v) => String(v).toUpperCase()).filter(Boolean)
       const pathPrefixes = (Array.isArray(body.pathPrefixes) ? body.pathPrefixes : []).map(String).filter(Boolean)
       const ports = (Array.isArray(body.ports) ? body.ports : ['443']).map(String).filter(Boolean)
+      if (!hosts.length || !methods.length) return fail('hosts and methods are required', 400)
+      await updateState(env, (state) => {
+        state.usePolicies ??= {}
+        state.usePolicies[itemId] = { itemId, accountId: session.email, hosts, methods, pathPrefixes, ports, updatedAt: nowIso() }
+        return state
+      })
+      await addAudit(env, { event: 'use-policy.update', name: itemName, itemId, hosts, methods })
+      return json({ ok: true, itemId })
+    }
+    // The operator has seen a refusal and does not want it listed any more.
+    // Dismissing changes nothing about permissions: only /api/action-grants does.
+    if (url.pathname === '/api/denied/dismiss' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      await updateState(env, (next) => {
+        delete next.deniedAttempts?.['deny\u0000' + String(body.agent ?? '') + '\u0000' + String(body.name ?? '') + '\u0000' + String(body.action ?? '')]
+        return next
+      })
+      return json({ ok: true })
+    }
+    // Per-item target rules for secret.use: which hosts, methods and ports an
+    // Agent may reach when the broker injects the credential server-side. This
+    // is the switch behind http_request, and it is separate from a plaintext
+    // read: it grants use, never the value.
+    if (url.pathname === '/api/use-policy' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const itemName = String(body.item ?? '').trim()
+      if (!itemName) return fail('item required', 400)
+      const itemId = await resolveItemId(env, env.NODEWARDEN_DB, session, itemName)
+      if (!itemId) return fail('item not found', 404)
+      const hosts = (Array.isArray(body.hosts) ? body.hosts : []).map((v) => String(v).toLowerCase().trim()).filter(Boolean)
+      const methods = (Array.isArray(body.methods) ? body.methods : []).map((v) => String(v).toUpperCase()).filter(Boolean)
+      const ports = (Array.isArray(body.ports) ? body.ports : ['443']).map(String).filter(Boolean)
+      const pathPrefixes = (Array.isArray(body.pathPrefixes) ? body.pathPrefixes : []).map(String).filter(Boolean)
       if (!hosts.length || !methods.length) return fail('hosts and methods are required', 400)
       await updateState(env, (state) => {
         state.usePolicies ??= {}
@@ -5282,11 +5353,13 @@ export default {
         const grantItems = params.getAll('grant_items').map((value) => String(value)).filter(Boolean)
         const grantGroups = params.getAll('grant_groups').map((value) => String(value)).filter(Boolean)
         const grantAll = params.get('grant_all') === '1'
+        const grantPlaintext = params.get('grant_plaintext') === '1'
+        const grantHours = Math.max(1, Math.min(720, Number(params.get('grant_hours')) || 24))
         await updateState(env, (next) => {
-          next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', scope: String(params.get('scope') ?? 'secrets.read'), account, createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000, grantItems, grantGroups, grantAll }
+          next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', scope: String(params.get('scope') ?? 'secrets.read'), account, createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000, grantItems, grantGroups, grantAll, grantPlaintext, grantHours }
           return next
         })
-        await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId, items: grantItems.length, groups: grantGroups.length, all: grantAll })
+        await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId, items: grantItems.length, groups: grantGroups.length, all: grantAll, plaintext: grantPlaintext, hours: grantPlaintext ? grantHours : 0 })
         const target = new URL(redirectUri); target.searchParams.set('code', code); if (params.get('state')) target.searchParams.set('state', params.get('state'))
         return Response.redirect(target.toString(), 302)
       }
@@ -5335,16 +5408,15 @@ export default {
         if (entry.grantAll === true) profile.allowAll = true
         if (Array.isArray(entry.grantItems) && entry.grantItems.length) profile.allow = [...new Set([...(profile.allow ?? []), ...entry.grantItems])]
         if (Array.isArray(entry.grantGroups) && entry.grantGroups.length) profile.groups = [...new Set([...(profile.groups ?? []), ...entry.grantGroups])]
-        // And a plaintext read policy for each chosen item, so the value is
-        // actually readable: scope alone only permits a request, it does not
-        // clear the read guard. 30 days matches the console's default.
+        // Scope alone only permits a request; it does not clear the read guard.
+        // The plaintext policy is written only when the operator ticked it, and
+        // for the window they picked. The capability is always minted so the
+        // Agent can read once approved — a scope grant is not a month-long
+        // authority by accident.
         next.plaintextReadPolicies ??= {}
         const wanted = new Set(entry.grantItems ?? [])
         if (entry.grantAll === true) for (const name of Object.keys(next.itemIds ?? {})) wanted.add(name)
-        // A read also needs a capability: the allow list is scope, not authority,
-        // and the read path denies "not-granted" without one. Minting it here is
-        // what makes the first get_secret succeed instead of stopping at an
-        // approval prompt the operator already answered by ticking the box.
+        const livedMs = (Number(entry.grantHours) || 24) * 3600e3
         next.capabilities ??= {}
         for (const name of wanted) {
           const itemId = next.itemIds?.[name]
@@ -5352,13 +5424,16 @@ export default {
           // A web credential is fill-only by design and must never gain a
           // plaintext read policy, so choosing one here cannot weaken that rule.
           if (next.credentialKinds?.[itemId] === 'web') continue
-          next.plaintextReadPolicies[itemId] = { itemId, accountId: account, expiresAt: Date.now() + 30 * 86400e3, updatedAt: nowIso() }
+          if (entry.grantPlaintext === true) {
+            next.plaintextReadPolicies[itemId] = { itemId, accountId: account, expiresAt: Date.now() + livedMs, updatedAt: nowIso() }
+          }
           const ckey = capabilityKey(agentName, itemId, 'secret.read')
           if (!next.capabilities[ckey]?.revokedAt) {
             next.capabilities[ckey] = {
               id: ckey, subjectId: agentName, accountId: account, itemId, itemName: name, action: 'secret.read',
               mode: 'preapproved', createdAt: nowIso(), createdBy: 'oauth-consent:' + account,
-              expiresAt: Date.now() + 30 * 86400e3, maxUses: null, usedCount: 0,
+              expiresAt: Date.now() + (entry.grantPlaintext === true ? livedMs : 24 * 3600e3),
+              maxUses: null, usedCount: 0,
               revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1,
             }
           }
@@ -5428,10 +5503,10 @@ export default {
               return result(text(access.error, true))
             }
             // Second layer: the same guard already ran inside agentAccess, where
-            // the real item id is known. A website login and an unclassified
-            // item are both refused here; only an api credential with an
-            // explicit read policy passes.
-            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '')
+            // the real item id is known. A website login is refused here; only an
+            // api credential with an explicit read policy passes, unless the item
+            // is marked no-approval (the operator accepted the risk per item).
+            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[secretName]?.noApproval === true })
             if (!readGuard.ok) {
               await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name: secretName, reason: readGuard.reason })
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
@@ -5455,8 +5530,9 @@ export default {
               return result(text(access.error, true))
             }
             // A website login is fill-only: its username/password/totp must never
-            // reach the Agent. An api key needs an explicit read policy.
-            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '')
+            // reach the Agent. An api key needs an explicit read policy, unless
+            // the item is marked no-approval.
+            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[secretName]?.noApproval === true })
             if (!readGuard.ok) {
               await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name: secretName, reason: readGuard.reason })
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
@@ -5747,9 +5823,9 @@ export default {
           if (access.status === 'forbidden') return fail(access.error, 403)
           if (access.status === 'notfound') return fail(access.error, 404)
           // Second layer: the same guard already ran inside agentAccess. A
-          // website login and an unclassified item are refused; only an api
-          // credential with an explicit read policy passes.
-          const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '')
+          // website login is refused; only an api credential with an explicit
+          // read policy passes, unless the item is marked no-approval.
+          const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[secretName]?.noApproval === true })
           if (!readGuard.ok) {
             await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name, reason: readGuard.reason })
             return fail('plaintext read is not allowed for this credential: ' + readGuard.reason, 403)

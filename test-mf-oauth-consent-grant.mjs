@@ -111,9 +111,11 @@ const exchange = async (location) => {
   })).json().catch(() => ({}))
 }
 
-// O1: after allowing on the consent page, get_secret works immediately.
+// O1: after allowing on the consent page, get_secret works immediately when the
+// plaintext opt-in was ticked. Plaintext is deliberately NOT granted by scope
+// alone, so this asks for it explicitly.
 {
-  const res = await allowWith({ grant_items: API })
+  const res = await allowWith({ grant_items: API, grant_plaintext: '1', grant_hours: '24' })
   const location = res.headers.get('location') || ''
   const tokenBody = await exchange(location)
   const token = tokenBody.access_token
@@ -128,6 +130,28 @@ const exchange = async (location) => {
   const readable = text.includes(SECRET_VALUE)
   if (token && readable) pass('O1 an OAuth Agent can read the item ticked on the consent page, first try')
   else fail('O1', JSON.stringify({ hasToken: Boolean(token), text: text.slice(0, 240) }))
+}
+
+// O1b: ticking scope WITHOUT the plaintext opt-in grants the ability to ask but
+// not to read, which is the safer default the operator asked for. The state is
+// reset first: O1 already wrote a policy for this agent and item.
+{
+  const reset = (await (await stub.fetch('https://do/state')).json()).state
+  reset.oauthCodes = {}; reset.oauthTokens = {}; reset.oauthAgentProfiles = {}
+  reset.plaintextReadPolicies = {}; reset.capabilities = {}
+  await stub.fetch('https://do/state', { method: 'PUT', body: JSON.stringify(reset) })
+  const res = await allowWith({ grant_items: API })
+  const tokenBody = await exchange(res.headers.get('location') || '')
+  const token = tokenBody.access_token
+  const r = await mf.dispatchFetch('https://broker.test/mcp', {
+    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_secret', arguments: { name: API } } }),
+  })
+  const text = JSON.stringify(await r.json().catch(() => ({})))
+  const state = (await (await stub.fetch('https://do/state')).json()).state
+  const policy = (state.plaintextReadPolicies || {})[API_ID]
+  if (!text.includes(SECRET_VALUE) && !policy) pass('O1b scope alone does not open plaintext')
+  else fail('O1b', JSON.stringify({ leaked: text.includes(SECRET_VALUE), policy }))
 }
 
 // O3: ticking a web credential grants no plaintext read policy for it.
