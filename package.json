@@ -31,6 +31,7 @@
     "test:state-write": "node test-mf-state-write-safety.mjs",
     "test:cookie-clearing": "node test-mf-cookie-clearing.mjs",
     "test:ui": "node test-mf-ui-smoke.mjs",
+    "test:ui-item-page": "node test-ui-item-page.mjs",
     "test:reminders": "node test-mf-reminders.mjs",
     "test:items": "node test-mf-items-activity.mjs",
     "test:scheduled": "node test-mf-scheduled.mjs",

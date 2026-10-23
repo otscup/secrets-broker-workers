@@ -145,5 +145,7 @@ jobs:
         run: npm run test:globe-arcs
       - name: Globe arc fan-out
         run: npm run test:globe-fanout
+      - name: Item detail page (browser)
+        run: npm run test:ui-item-page
       - name: Full security suite (short path)
         run: npm run test:security:short
