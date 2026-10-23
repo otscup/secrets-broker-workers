@@ -165,6 +165,16 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}
 .table-wrap table{min-width:520px}th{color:var(--muted);font-weight:500;text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}td.actions{white-space:nowrap}td.actions button+button{margin-left:6px}th.nowrap{white-space:nowrap}tr:last-child td{border-bottom:0}tbody tr:hover td{background:#f8fafc}
 .table-wrap{overflow-x:auto;max-width:100%}
 .pill{display:inline-block;background:#eef7f5;color:#0b7d6d;border-radius:999px;padding:1px 8px;font-size:11px;border:0;cursor:pointer}.pill:hover{background:#dff3ee}.pill.off{background:#f3f4f6;color:var(--muted)}
+/* Item kind, right beside the name: green api, blue web, grey unclassified.
+   The same three colours are used in the picker, so the label a credential gets
+   is the colour the operator chose. */
+.kind-tag{display:inline-block;border-radius:999px;padding:1px 8px;font-size:11px;margin-left:6px;border:1px solid transparent;white-space:nowrap}
+.kind-api{background:#e8f7f4;color:#0b7d6d;border-color:#bfe6dd}
+.kind-web{background:#eaf1fd;color:#1f5fbf;border-color:#c6d9f7}
+.kind-none{background:#fdecec;color:#c0392b;border-color:#f2c4c0}
+html[data-theme="dark"] .kind-api{background:#0d3b36;color:#5fd8c4;border-color:#1c5c54}
+html[data-theme="dark"] .kind-web{background:#152b4d;color:#7fb0f5;border-color:#26476f}
+html[data-theme="dark"] .kind-none{background:#3b1d1d;color:#f08f86;border-color:#5c2a2a}
 .link-button{display:inline-block;border-radius:10px;padding:9px 13px;text-decoration:none;font-size:14px}
 .link-button.primary{background:var(--ok);color:#fff}
 .donut-wrap{display:flex;gap:12px;align-items:flex-start;flex-wrap:nowrap;min-width:0;overflow:hidden}.donut-svg{position:relative;width:140px;height:140px;flex:0 0 auto;max-width:45%;align-self:flex-start}.donut-svg svg{width:140px;height:140px;transform:rotate(-90deg)}.donut-svg .donut-center{inset:31px}.donut-center{position:absolute;inset:25px;background:#fff;border-radius:50%;display:grid;place-items:center;font-weight:650;font-size:17px;text-align:center;padding:6px}.legend{font-size:12px}.legend div{display:flex;justify-content:space-between;gap:18px;margin:5px 0;cursor:pointer;border-radius:6px;padding:2px 4px}.legend div.active{background:var(--btn);font-weight:600}.dot{display:inline-block;width:8px;height:8px;border-radius:99px;margin-right:6px}
@@ -888,19 +898,25 @@ function renderStats() {
 }
 function renderItems() {
   const query = ($('item-filter')?.value || '').trim().toLowerCase(); const items = (app.items || []).filter((item) => !query || item.name.toLowerCase().includes(query) || String(item.url || '').toLowerCase().includes(query) || String(item.group || '').toLowerCase().includes(query))
-  // Which items are already classified, by name. The classified list is keyed
-  // by id, so map it back through the item rows.
-  const classified = new Set(((fillPolicyState().items) || []).map((entry) => entry.itemName).filter(Boolean))
+  // Which items are already classified, by name, and with which kind. The
+  // classified list is keyed by id, so map it back through the item rows.
+  const kindByName = new Map()
+  for (const entry of fillPolicyState().items || []) {
+    if (entry.itemName) kindByName.set(entry.itemName, entry.kind)
+  }
   const guarded = (app.data && app.data.requireClassification) !== false
+  const kindTag = (kind) => {
+    if (kind === 'api') return ' <span class="kind-tag kind-api" title="API Key：可按需允许 Agent 读取明文">api</span>'
+    if (kind === 'web') return ' <span class="kind-tag kind-web" title="网站登录：只能被填充到指定网站，Agent 永远拿不到明文">web</span>'
+    return ' <span class="kind-tag kind-none" title="' + (guarded ? '未分类：明文读取已被拒绝，请在条目里分类' : '未分类：Agent 可能读到明文，请在条目里分类') + '">' + (guarded ? '未分类 · 禁读' : '未分类 · 可读明文') + '</span>'
+  }
   $('items-box').innerHTML = items.length ? '<table><tr><th><input type="checkbox" id="select-all-items"></th><th>名称</th><th>最后活动</th><th>最后操作</th><th class="nowrap">免审批</th><th class="nowrap">有效期</th><th class="nowrap">操作</th></tr>' + items.map((item) => {
     const when = item.lastActivityAt ? relativeTime(Date.parse(item.lastActivityAt)) : '无记录'
     const who = item.lastActor || '-'
-    // An unclassified credential is the one case where an agent may still read
-    // plaintext, so it is flagged in red until someone labels it.
-    const unclassified = !classified.has(item.name)
-    const nameBadge = unclassified
-      ? ' <span class="hint" style="color:var(--danger)" title="' + (guarded ? '未分类：明文读取已被拒绝，请在条目里分类' : '未分类：Agent 可能读到明文，请在条目里分类') + '">' + (guarded ? '未分类 · 禁读' : '未分类 · 可读明文') + '</span>'
-      : ''
+    // The kind is shown for every item, so the operator sees at a glance which
+    // credentials are classified and which are not, instead of deducing it from
+    // a second table further down the page.
+    const nameBadge = kindTag(kindByName.get(item.name))
     return '<tr><td><input type="checkbox" class="item-select" data-name="' + esc(item.name) + '" ' + (selectedItems.has(item.name) ? 'checked' : '') + '></td>' +
       '<td><b>' + esc(item.name) + '</b>' + nameBadge + '</td>' +
       '<td class="hint">' + esc(when) + '</td>' +
@@ -1421,9 +1437,9 @@ function fillEditorHtml(item) {
     + '<option value="web"' + (kind === 'web' ? ' selected' : '') + '>web（网站登录，只能填充）</option>'
     + '</select>'
     + '<div id="fe-web" class="' + (kind === 'web' ? '' : 'hidden') + '">'
-    + '<label class="field">允许填充的 origin（每行一个，https://host 或 https://host:port）</label>'
-    + '<textarea id="fe-origins" rows="3" style="width:100%" placeholder="https://example.com">' + esc(origins) + '</textarea>'
-    + '<div class="hint">只做精确匹配：example.com.evil.test、任意子域或其他端口都不会被放行。</div></div>'
+    + '<label class="field">允许填充的 origin（每行一个）</label>'
+    + '<textarea id="fe-origins" rows="3" style="width:100%" placeholder="https://example.com&#10;192.168.1.10:8080">' + esc(origins) + '</textarea>'
+    + '<div class="hint">只做精确匹配：example.com.evil.test、任意子域或其他端口都不会被放行。省略协议时按 https 处理；内网地址（127.x、10.x、192.168.x、172.16-31.x、localhost、*.lan）可以用 http，公网地址只允许 https。</div></div>'
     + '<label class="chk" id="fe-read-row" style="margin-top:8px' + (kind === 'web' ? ';display:none' : '') + '"><input type="checkbox" id="fe-read"' + (read ? ' checked' : '') + '> 允许 Agent 直接读取明文（仅 api；30 天后自动失效）</label>'
     + '<div class="row" style="margin-top:10px"><button class="primary" id="fe-save">保存</button>' + (entry ? '<button class="danger" id="fe-clear">清除分类</button>' : '') + '</div>'
     + '<div class="status" id="fe-status"></div></div>'
@@ -1447,7 +1463,7 @@ function wireFillEditor(item) {
     try {
       if (value === 'web') {
         const origins = $('fe-origins').value.split('\n').map((line) => line.trim()).filter(Boolean)
-        if (!origins.length) return status('fe-status', 'web 凭据至少需要一个 https origin', true)
+        if (!origins.length) return status('fe-status', 'web 凭据至少需要一个 origin', true)
         await api('/api/fill/policy', { method: 'POST', body: JSON.stringify({ item: item.name, kind: 'web', origins, actions: ['login'] }) })
       } else {
         await api('/api/fill/policy', { method: 'POST', body: JSON.stringify({ item: item.name, kind: 'api' }) })

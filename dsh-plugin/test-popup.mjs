@@ -35,6 +35,8 @@ const doc = {
   body: new El('body'),
   createElement: (t) => new El(t),
   getElementById: (id) => doc.body.children.find((c) => c.id === id) ?? null,
+  addEventListener() {},
+  removeEventListener() {},
 }
 globalThis.document = doc
 globalThis.window = { innerWidth: 1400 }

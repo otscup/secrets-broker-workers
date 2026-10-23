@@ -1381,6 +1381,17 @@ async function deleteCipher(env, db, session, name) {
     delete state.itemGroups?.[name]
     for (const key of Object.keys(state.grants ?? {})) if (state.grants[key].name === name) delete state.grants[key]
     for (const [id, entry] of Object.entries(state.pending ?? {})) if (entry.name === name) delete state.pending[id]
+    // A deleted credential must not leave a classification or a fill policy
+    // behind: the id is gone from the vault, so anything keyed by it is dead
+    // weight, and a recreated item with the same name must start unclassified.
+    const gone = Object.keys(state.itemIds ?? {}).filter((key) => key === name).map((key) => state.itemIds[key])
+    for (const id of gone) {
+      delete state.credentialKinds?.[id]
+      delete state.fillPolicies?.[id]
+      delete state.plaintextReadPolicies?.[id]
+      delete state.usePolicies?.[id]
+    }
+    delete state.itemIds?.[name]
     return state
   })
   await addAudit(env, { event: 'item.delete', name })
@@ -1897,19 +1908,68 @@ function fillPolicyKey(itemId) { return itemId }
 // Normalise an origin to scheme + host + port so comparisons are exact.
 // No suffix or wildcard matching: "example.com.evil.test" must never match
 // a policy for "example.com".
+// https is required because a credential filled over plain http crosses the
+// network in the clear. The exception is a host that cannot leave the local
+// network (loopback, RFC1918, .lan/.local): a homelab console has no
+// certificate, and refusing it makes the feature unusable there.
+function isPrivateHost(host) {
+  const name = String(host || '').toLowerCase().replace(/^\[|\]$/g, '')
+  if (name === 'localhost' || name === '::1' || name === '0.0.0.0') return true
+  if (/\.(local|lan|internal|home\.arpa|localhost)$/.test(name)) return true
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(name)
+  if (!v4) return false
+  const [a, b] = [Number(v4[1]), Number(v4[2])]
+  if (a === 10 || a === 127) return true
+  if (a === 192 && b === 168) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  return false
+}
+
 function normalizeOrigin(value) {
+  const raw = String(value ?? '').trim()
+  if (!raw) return null
+  // An operator typing an internal service writes "192.168.1.10:8080", so a
+  // missing scheme means https rather than a parse failure.
+  const text = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : 'https://' + raw
   let url
-  try { url = new URL(String(value)) } catch { return null }
-  if (url.protocol !== 'https:') return null
+  try { url = new URL(text) } catch { return null }
   if (url.username || url.password) return null
+  const scheme = url.protocol === 'https:' ? 'https' : url.protocol === 'http:' ? 'http' : ''
+  if (!scheme) return null
+  if (scheme === 'http' && !isPrivateHost(url.hostname)) return null
   const host = url.hostname.toLowerCase().replace(/\.$/, '')
   if (!host) return null
-  const port = url.port ? String(url.port) : '443'
-  return { origin: 'https://' + host + (port === '443' ? '' : ':' + port), host, port }
+  const fallback = scheme === 'http' ? '80' : '443'
+  const port = url.port ? String(url.port) : fallback
+  const shownPort = port === fallback ? '' : ':' + port
+  return { origin: scheme + '://' + host + shownPort, host, port }
 }
 
 function credentialKind(state, itemId) {
   return state.credentialKinds?.[itemId] ?? null
+}
+
+// Record a classification and, for a website login, the origins it may be
+// filled into. Shared by the admin route and the plugin route: one shape in
+// state, one audit event, one place to change.
+// Returns { ok } or { ok: false, error } so each caller can shape its failure.
+function applyCredentialKind(state, { itemId, kind, origins, actions, accountId, autoApprove }) {
+  state.credentialKinds ??= {}
+  state.credentialKinds[itemId] = kind
+  if (kind === 'web') {
+    state.fillPolicies ??= {}
+    state.fillPolicies[itemId] = {
+      itemId, accountId, origins, actions,
+      // A fresh revision on every change. It is unique, so a policy that is
+      // deleted and recreated never matches an old authorization.
+      policyRevision: crypto.randomUUID(),
+      autoApprove: autoApprove === true, updatedAt: nowIso(),
+    }
+  } else {
+    // An api credential has no fill policy: it is not a website login.
+    delete state.fillPolicies?.[itemId]
+  }
+  return state
 }
 
 // A policy is applicable only when the item is classified as a web
@@ -2538,7 +2598,12 @@ function itemIdByName(state, name) {
 // action model, which binds grants to itemId rather than a renameable name.
 async function resolveItemId(env, db, session, name) {
   const found = await findCipherRow(env, db, session, name)
-  return found?.row?.id ?? ''
+  const id = found?.row?.id ?? ''
+  // Record the binding. The admin UI reverse-maps a classification from its id
+  // back to a name, so an id resolved here and never cached makes a credential
+  // the operator just classified keep showing as unclassified.
+  if (id) await updateState(env, (next) => { next.itemIds ??= {}; next.itemIds[name] = id; return next })
+  return id
 }
 
 // The cipher id for a name, resolved from the live vault when the cache has no
@@ -3048,8 +3113,20 @@ export default {
       if (!name) return fail('name required', 400)
       const value = String(body.value ?? '')
       if (!value) return fail('value required', 400)
+      // An optional classification, so a key typed in the plugin arrives already
+      // labelled instead of showing as unclassified until someone opens the
+      // console. Invalid values are refused rather than silently dropped: the
+      // operator picked a category, and "saved but not applied" is the bug they
+      // reported.
+      const wantKind = String(body.kind ?? '').trim()
+      if (wantKind && !CREDENTIAL_KINDS.has(wantKind)) return fail('kind must be api or web', 400)
+      const wantOrigins = (Array.isArray(body.origins) ? body.origins : [])
+        .map((entry) => normalizeOrigin(entry)?.origin)
+        .filter(Boolean)
+      if (wantKind === 'web' && !wantOrigins.length) return fail('a website login needs at least one origin', 400)
       try {
         const found = await findCipherRow(env, env.NODEWARDEN_DB, session, name)
+        let itemId = found?.row?.id ?? ''
         if (found) {
           await updateCipher(env, env.NODEWARDEN_DB, session, name, {
             value,
@@ -3058,17 +3135,30 @@ export default {
             notes: typeof body.notes === 'string' ? body.notes : undefined,
           })
           await addAudit(env, { event: 'item.update', name, source: 'dsh-plugin' })
-          return json({ ok: true, name, updated: true })
+        } else {
+          const created = await createCipher(env, env.NODEWARDEN_DB, session, {
+            name, value,
+            username: typeof body.username === 'string' ? body.username : '',
+            url: typeof body.url === 'string' ? body.url : '',
+            notes: typeof body.notes === 'string' ? body.notes : '',
+            group: typeof body.group === 'string' ? body.group : '',
+          })
+          itemId = created.id ?? ''
+          await addAudit(env, { event: 'item.create', name, source: 'dsh-plugin' })
         }
-        const created = await createCipher(env, env.NODEWARDEN_DB, session, {
-          name, value,
-          username: typeof body.username === 'string' ? body.username : '',
-          url: typeof body.url === 'string' ? body.url : '',
-          notes: typeof body.notes === 'string' ? body.notes : '',
-          group: typeof body.group === 'string' ? body.group : '',
-        })
-        await addAudit(env, { event: 'item.create', name, source: 'dsh-plugin' })
-        return json({ ok: true, name: created.name, created: true })
+        if (wantKind && itemId) {
+          const kind = wantKind
+          await updateState(env, (state) => applyCredentialKind(state, {
+            itemId, kind, origins: wantOrigins, actions: ['login'], accountId: session.email, autoApprove: false,
+          }))
+          await addAudit(env, { event: 'fill-policy.update', name, itemId, kind, origins: wantOrigins, source: 'dsh-plugin' })
+          await cancelTasksFor(env, (task) => task.cipherId === itemId, 'policy-changed')
+        } else if (wantKind && !itemId) {
+          // The cipher is stored but its id is unknown, so the classification
+          // cannot be recorded against it. Say so instead of pretending.
+          return json({ ok: true, name, created: !found, kindApplied: false, warning: 'item id unavailable; classification not applied' })
+        }
+        return json({ ok: true, name: found ? name : name, updated: Boolean(found), created: !found, kindApplied: Boolean(wantKind && itemId) })
       } catch (error) { return fail(String(error.message ?? error), 500) }
     }
     if (url.pathname === '/api/plugin/items/delete' && request.method === 'POST') {
@@ -3688,6 +3778,22 @@ export default {
       const completedTransfers = await processTransfers(env, session)
       try {
         const items = await listCiphers(env, env.NODEWARDEN_DB, session)
+        // Self-heal the id->name map. A credential classified before the id was
+        // cached has a kind recorded against its id but no name, so the list
+        // showed it as unclassified even though the classification was saved.
+        // This is the one place that holds both the ids and the names.
+        {
+          const state = await loadState(env)
+          const known = new Set(Object.values(state.itemIds ?? {}))
+          const missing = (items || []).filter((item) => item.id && item.name && !known.has(item.id))
+          if (missing.length) {
+            await updateState(env, (next) => {
+              next.itemIds ??= {}
+              for (const item of missing) next.itemIds[item.name] = item.id
+              return next
+            })
+          }
+        }
         // Enrich each item with the most recent activity recorded in the audit
         // trail, plus who performed it. Used by the list view so operators do
         // not have to open every item to see whether it is still in use.
@@ -4138,24 +4244,7 @@ export default {
         .filter((value) => FILL_ACTIONS.has(value))
       if (kind === 'web' && !origins.length) return fail('web credentials need at least one https origin', 400)
       if (kind === 'web' && !actions.length) return fail('web credentials need at least one action', 400)
-      await updateState(env, (state) => {
-        state.credentialKinds ??= {}
-        state.credentialKinds[itemId] = kind
-        if (kind === 'web') {
-          state.fillPolicies ??= {}
-          state.fillPolicies[itemId] = {
-            itemId, accountId: session.email, origins, actions,
-            // A fresh revision on every change. It is unique, so a policy that
-            // is deleted and recreated never matches an old authorization.
-            policyRevision: crypto.randomUUID(),
-            autoApprove: body.autoApprove === true, updatedAt: nowIso(),
-          }
-        } else {
-          // An api credential has no fill policy: it is not a website login.
-          delete state.fillPolicies?.[itemId]
-        }
-        return state
-      })
+      await updateState(env, (state) => applyCredentialKind(state, { itemId, kind, origins, actions, accountId: session.email, autoApprove: body.autoApprove === true }))
       await addAudit(env, { event: 'fill-policy.update', name: itemName, itemId, kind, origins, actions })
       // The policy changed, so any task still working on this credential is
       // cancelled. The executor stops at its next checkpoint.

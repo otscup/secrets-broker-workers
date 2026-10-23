@@ -34,9 +34,15 @@ class El {
 const doc = {
   body: new El('body'),
   activeElement: null,
+  handlers: {},
   createElement: (t) => { const el = new El(t); nodes.push(el); return el },
   getElementById: (id) => doc.body.children.find((c) => c.id === id) ?? null,
+  addEventListener(type, fn) { (doc.handlers[type] ||= []).push(fn) },
+  removeEventListener(type, fn) { doc.handlers[type] = (doc.handlers[type] || []).filter((f) => f !== fn) },
 }
+// Dispatch is what lets a test prove the outside-click listener reacts; a
+// simple call of every handler is enough for one listener with no options.
+doc.dispatch = (type, target, extra) => { for (const fn of doc.handlers[type] || []) fn({ target, ...extra }) }
 globalThis.document = doc
 globalThis.window = { innerWidth: 1400 }
 globalThis.confirm = () => true
@@ -175,6 +181,46 @@ if (doc.body.children.includes(overlay)) {
     const spent = calls.length - before
     // A fresh load fires at most five GETs; a cached paint fires none.
     record('C7 switching tabs costs no network round trip', spent === 0, String(spent) + ' requests')
+  }
+}
+
+// C8: clicking outside the panel dismisses it, and clicking inside does not.
+// One document-level listener does this; it must ignore the panel's own clicks.
+{
+  if (!panel()) { launcher.onclick(); await sleep(400) }
+  const inside = collect(panel())[1] ?? panel()   // a real child, like a tab chip
+  doc.dispatch('click', inside)                  // inside: must survive
+  await sleep(50)
+  const survived = Boolean(panel())
+  doc.dispatch('click', new El('div'))            // outside: must close
+  await sleep(50)
+  record('C8 a click outside closes the panel, a click inside does not', survived && !panel(), JSON.stringify({ survived, closed: !panel() }))
+}
+
+// C9: the add tab sends the chosen category and the origins it was given.
+{
+  if (!panel()) { launcher.onclick(); await sleep(400) }
+  const addChip = findButton(panel(), '添加')
+  if (addChip) { addChip.onclick(); await sleep(400) }
+  const webChip = findButton(panel(), '网站登录')
+  if (webChip) { webChip.onclick(); await sleep(300) }
+  const fields = collect(panel())
+  const originsBox = fields.find((n) => n.tagName === 'TEXTAREA')
+  const inputs = fields.filter((n) => n.tagName === 'INPUT')
+  const saveButton = findButton(panel(), '保存到 vault')
+  if (!webChip || !originsBox || inputs.length < 2 || !saveButton) record('C9 the add tab sends kind and origins', false, JSON.stringify({ webChip: !!webChip, originsBox: !!originsBox, inputs: inputs.length }))
+  else {
+    inputs[0].value = 'web-login'; inputs[0].oninput?.()
+    inputs[2].value = 'pw-123'; inputs[2].oninput?.()
+    originsBox.value = 'https://a.example.com\nhttps://b.example.com\n'
+    originsBox.oninput?.()
+    const before = calls.length
+    saveButton.onclick()
+    await sleep(200)
+    const post = calls.slice(before).find((c) => c.method === 'POST' && c.path.includes('/items/save'))
+    const body = post ? JSON.parse(post.body) : {}
+    const ok = body.kind === 'web' && Array.isArray(body.origins) && body.origins.length === 2 && body.origins[0] === 'https://a.example.com'
+    record('C9 the add tab sends kind and origins', ok, JSON.stringify(body))
   }
 }
 

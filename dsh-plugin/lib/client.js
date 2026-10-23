@@ -153,6 +153,12 @@ window.__ModuleLoader__.load({
       })[event] || String(event || '').replace(/^[a-z]+\./, '');
       const dismissed = new Set();
       const drafts = new Map();
+      // The add form is rebuilt on every poll, so what the operator typed and
+      // the chosen category live outside it, the way `drafts` does.
+      const add = { kind: '' };
+      // Ids painted last, so closing marks them seen and the next poll does not
+      // pop the panel the operator just dismissed straight back open.
+      let seenIds = [];
       let overlay = null;
       let busy = false;
       let queued = false;
@@ -167,6 +173,17 @@ window.__ModuleLoader__.load({
       const styleInput = "width:100%;box-sizing:border-box;border:1px solid #d8e0ec;border-radius:6px;padding:6px;margin:3px 0;font:12px system-ui";
       const mk = (tag, text, style) => { const el = document.createElement(tag); if (text) el.textContent = text; if (style) el.style.cssText = style; return el; };
       const remove = () => { if (overlay) { overlay.remove(); overlay = null } };
+      // Closing counts what was on screen as seen, so the 15s poll does not
+      // reopen the panel the operator just dismissed.
+      const close = () => {
+        if (!overlay) return;
+        for (const id of seenIds) dismissed.add(id);
+        showEmpty = false;
+        remove();
+        // Everything painted is now dismissed, so the badge goes too instead
+        // of waiting up to 15s for the next poll to recount.
+        badge(0);
+      };
       // The launcher carries a badge so a wait is visible without opening it.
       const ensureLauncher = () => {
         if (document.getElementById('secrets-broker-launcher')) return;
@@ -179,7 +196,11 @@ window.__ModuleLoader__.load({
         launcher.onmouseenter = () => { launcher.style.transform = 'translateY(-2px) scale(1.04)'; launcher.style.boxShadow = '0 12px 28px rgba(15,23,42,.2)' };
         launcher.onmouseleave = () => { launcher.style.transform = ''; launcher.style.boxShadow = '0 8px 22px rgba(15,23,42,.12)' };
         launcher.onclick = () => {
-          if (overlay) { remove(); return }
+          if (overlay) { close(); return }
+          // A dismissal only silences the panel; opening it deliberately shows
+          // everything again, so an accidental outside click cannot hide a
+          // pending approval for the rest of the session.
+          dismissed.clear();
           showEmpty = true;
           tab = 'queue';
           // Paint from the last payload at once, then refresh behind it. On the
@@ -235,6 +256,7 @@ window.__ModuleLoader__.load({
           const pending = (pendingResponse.pending || []).filter((entry) => !dismissed.has(entry.id));
           const requests = (requestResponse.requests || []).filter((entry) => !dismissed.has(entry.id));
           const activity = Array.isArray(activityResponse.activity) ? activityResponse.activity : [];
+          seenIds = pending.concat(requests).map((entry) => entry.id);
           badge(pending.length + requests.length);
           const empty = pending.length === 0 && requests.length === 0;
           // A request the operator ignored before a restart must not reopen the
@@ -263,7 +285,7 @@ window.__ModuleLoader__.load({
             head.appendChild(chip);
           }
           const close = mk('button', '×', 'border:0;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:#6b7890');
-          close.onclick = () => { for (const entry of pending) dismissed.add(entry.id); for (const entry of requests) dismissed.add(entry.id); showEmpty = false; remove() };
+          close.onclick = () => close();
           head.appendChild(close);
           out.push(head);
 
@@ -350,11 +372,17 @@ window.__ModuleLoader__.load({
             const items = Array.isArray(activityResponse.activity) ? activityResponse.activity : [];
             if (!items.length) out.push(mk('div', '还没有活动记录。', 'font-size:12px;color:#6b7890;padding:6px 0'));
             for (const entry of items) {
-              const at = entry.time ? new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+              // 12 rows of bare HH:MM:SS read as today even when they are from
+              // yesterday, so a row that is not today carries its date.
+              const when = entry.time ? new Date(entry.time) : null;
+              const at = when ? when.toLocaleTimeString('zh-CN', { hour12: false }) : '';
+              const stamp = when && when.toDateString() !== new Date().toDateString()
+                ? (when.getMonth() + 1) + '/' + when.getDate() + ' ' + at
+                : at;
               const who = entry.agent || '系统';
               const what = entry.name ? '「' + entry.name + '」' : '';
               const row = mk('div', '', 'display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid #f0f3f8;font-size:12px');
-              row.appendChild(mk('span', at, 'color:#9aa6b8;font:11px/1.4 ui-monospace,monospace;flex:0 0 auto'));
+              row.appendChild(mk('span', stamp, 'color:#9aa6b8;font:11px/1.4 ui-monospace,monospace;flex:0 0 auto'));
               row.appendChild(mk('span', eventLabel(entry.event), 'color:' + (entry.ok ? '#0b7d6d' : '#c0392b') + ';flex:0 0 auto'));
               row.appendChild(mk('span', who + ' ' + what, 'color:#6b7890;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
               out.push(row);
@@ -362,24 +390,48 @@ window.__ModuleLoader__.load({
           }
 
           if (tab === 'add') {
-            out.push(mk('div', '存一个密钥，Agent 下次就能直接取。名称必填，值只在你和 broker 之间。', 'font-size:11.5px;color:#6b7890;margin-bottom:6px'));
-            const nameInput = mk('input'); nameInput.placeholder = '名称，例如 tavily-api-key'; nameInput.style.cssText = styleInput;
-            const userInput = mk('input'); userInput.placeholder = '用户名（可选）'; userInput.style.cssText = styleInput;
-            const valueInput = mk('input'); valueInput.placeholder = '密钥值'; valueInput.type = 'password'; valueInput.style.cssText = styleInput;
-            const urlInput = mk('input'); urlInput.placeholder = '网址（可选）'; urlInput.style.cssText = styleInput;
-            const noteInput = mk('input'); noteInput.placeholder = '备注（可选）'; noteInput.style.cssText = styleInput;
+            out.push(mk('div', '存一个密钥。名称必填，值只在你和 broker 之间。', 'font-size:11.5px;color:#6b7890;margin-bottom:6px'));
+            // The kind decides what an Agent may do with the key, so it sits
+            // first. It lives in `add` like `tab` does: every poll rebuilds the
+            // form, and a reset chip would silently misclassify the next save.
+            const kindRow = mk('div', '', 'display:flex;gap:6px;margin:2px 0 4px');
+            for (const [value, label] of [['', '未分类'], ['api', 'API key'], ['web', '网站登录']]) {
+              const chip = mk('button', label, 'border:1px solid ' + (add.kind === value ? '#0f9d8a' : '#d8e0ec') + ';background:' + (add.kind === value ? '#e8f7f4' : '#fff') + ';color:' + (add.kind === value ? '#0b7d6d' : '#6b7890') + ';border-radius:999px;padding:3px 9px;font:11.5px system-ui;cursor:pointer');
+              chip.onclick = () => { add.kind = value; load(true) };
+              kindRow.appendChild(chip);
+            }
+            out.push(kindRow, mk('div', 'API key 可以授权给 Agent 读取；网站登录只回填到这些站点，永远读不到明文。', 'font-size:11px;color:#9aa6b8;margin-bottom:6px'));
+            const originsInput = mk('textarea');
+            originsInput.placeholder = 'https://example.com，一行一个站点';
+            originsInput.style.cssText = styleInput + ';height:52px;resize:vertical';
+            originsInput.value = add.origins || '';
+            originsInput.oninput = () => { add.origins = originsInput.value };
+            // Only a website login is pinned to origins; an API key is not.
+            if (add.kind === 'web') out.push(originsInput);
+            const nameInput = mk('input'); nameInput.placeholder = '名称，例如 tavily-api-key'; nameInput.style.cssText = styleInput; nameInput.value = add.name || ''; nameInput.oninput = () => { add.name = nameInput.value };
+            const userInput = mk('input'); userInput.placeholder = '用户名（可选）'; userInput.style.cssText = styleInput; userInput.value = add.username || ''; userInput.oninput = () => { add.username = userInput.value };
+            const valueInput = mk('input'); valueInput.placeholder = '密钥值'; valueInput.type = 'password'; valueInput.style.cssText = styleInput; valueInput.value = add.value || ''; valueInput.oninput = () => { add.value = valueInput.value };
+            const urlInput = mk('input'); urlInput.placeholder = '网址（可选）'; urlInput.style.cssText = styleInput; urlInput.value = add.url || ''; urlInput.oninput = () => { add.url = urlInput.value };
+            const noteInput = mk('input'); noteInput.placeholder = '备注（可选）'; noteInput.style.cssText = styleInput; noteInput.value = add.notes || ''; noteInput.oninput = () => { add.notes = noteInput.value };
             const hint = mk('div', '', 'font-size:11px;min-height:16px;margin-top:4px');
+            const originsList = () => String(add.origins || '').split('\n').map((line) => line.trim()).filter(Boolean);
             const save = mk('button', '保存到 vault', stylePrimary); save.style.width = '100%'; save.style.marginTop = '6px';
             save.onclick = async () => {
               if (!nameInput.value.trim()) { hint.textContent = '名称必填'; hint.style.color = '#c0392b'; return }
               if (!valueInput.value) { hint.textContent = '密钥值必填'; hint.style.color = '#c0392b'; return }
+              if (add.kind === 'web' && !originsList().length) { hint.textContent = '网站登录至少填一个站点'; hint.style.color = '#c0392b'; return }
               save.disabled = true;
               hint.textContent = '保存中…'; hint.style.color = '#6b7890';
               try {
-                const response = await fetch('/api/secrets-broker/items/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: nameInput.value.trim(), username: userInput.value, value: valueInput.value, url: urlInput.value.trim(), notes: noteInput.value }) });
+                const body = { name: nameInput.value.trim(), username: userInput.value, value: valueInput.value, url: urlInput.value.trim(), notes: noteInput.value, kind: add.kind };
+                if (add.kind === 'web') body.origins = originsList();
+                const response = await fetch('/api/secrets-broker/items/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                 const payload = await response.json().catch(() => ({}));
                 if (!response.ok || payload.ok === false) throw new Error(payload.error || 'save failed');
-                valueInput.value = '';
+                // Clear the whole form, not just the value: a stale name next
+                // to an empty value saves the wrong key on the next click.
+                for (const input of [nameInput, userInput, valueInput, urlInput, noteInput, originsInput]) input.value = '';
+                for (const key of ['name', 'username', 'value', 'url', 'notes', 'origins']) add[key] = '';
                 hint.textContent = payload.updated ? '已更新 ' + payload.name : '已保存 ' + payload.name;
                 hint.style.color = '#0b7d6d';
                 save.disabled = false;
@@ -433,9 +485,34 @@ window.__ModuleLoader__.load({
         }
       };
       const timer = setInterval(load, 15000);
+      // Clicking the tab's own outside area — or pressing Escape — should close
+      // the panel, which used to need the × or the launcher. One listener for
+      // the popup's whole life: it no-ops when nothing is open, and cleanup
+      // removes it so a plugin reload cannot stack duplicates.
+      const onOutside = (event) => {
+        if (!overlay) return;
+        const target = event.target;
+        if (overlay.contains(target)) return;
+        const launcher = document.getElementById('secrets-broker-launcher');
+        if (launcher && launcher.contains(target)) return;
+        close();
+      };
+      const onKey = (event) => { if (event.key === 'Escape' && overlay) close() };
+      // Capture phase, so the check runs before a button inside the panel
+      // repaints it: afterwards the clicked node is detached and would look
+      // like a click outside.
+      document.addEventListener('click', onOutside, true);
+      document.addEventListener('keydown', onKey, true);
       ensureLauncher();
       load();
-      return () => { clearInterval(timer); remove(); const launcher = document.getElementById('secrets-broker-launcher'); if (launcher) launcher.remove() };
+      return () => {
+        document.removeEventListener('click', onOutside, true);
+        document.removeEventListener('keydown', onKey, true);
+        clearInterval(timer);
+        remove();
+        const launcher = document.getElementById('secrets-broker-launcher');
+        if (launcher) launcher.remove();
+      };
     }
 
 

@@ -175,6 +175,69 @@ const call = (path, options = {}) => mf.dispatchFetch('https://broker.test' + pa
   else fail('P13', JSON.stringify((body.activity || []).map((e) => e.event)))
 }
 
+// P14: a key typed in the plugin arrives already classified, so it does not
+// show as 未分类 the moment it is saved. Without this the plugin's category
+// picker is decorative: the route accepted `kind` and dropped it.
+{
+  const res = await call('/api/plugin/items/save', { method: 'POST', body: JSON.stringify({ name: 'typed-web-key', value: 'web-value', kind: 'web', origins: ['https://example.com'] }) })
+  const body = await res.json().catch(() => ({}))
+  const state = await (await stub.fetch('https://do/state')).json()
+  const kinds = state.state.credentialKinds || {}
+  const policies = state.state.fillPolicies || {}
+  const applied = Object.values(kinds).includes('web')
+  const withOrigin = Object.values(policies).some((p) => (p.origins || []).includes('https://example.com'))
+  if (res.ok && body.kindApplied === true && applied && withOrigin) pass('P14 a key saved from the plugin is classified immediately')
+  else fail('P14', JSON.stringify({ status: res.status, body, applied, withOrigin }))
+}
+
+// P15: a web credential without an origin is refused, not saved unclassified.
+{
+  const res = await call('/api/plugin/items/save', { method: 'POST', body: JSON.stringify({ name: 'typed-web-bad', value: 'v', kind: 'web' }) })
+  if (res.status === 400) pass('P15 a website login saved without an origin is refused')
+  else fail('P15', String(res.status))
+}
+
+// P16: an invented kind is refused, so a typo cannot silently unclassify.
+{
+  const res = await call('/api/plugin/items/save', { method: 'POST', body: JSON.stringify({ name: 'typed-bad-kind', value: 'v', kind: 'banana' }) })
+  if (res.status === 400) pass('P16 an unknown category is refused')
+  else fail('P16', String(res.status))
+}
+
+// P17: saving without a category still works, and reports that none was applied.
+{
+  const res = await call('/api/plugin/items/save', { method: 'POST', body: JSON.stringify({ name: 'typed-no-kind', value: 'v' }) })
+  const body = await res.json().catch(() => ({}))
+  if (res.ok && body.kindApplied === false) pass('P17 a key can still be saved without a category')
+  else fail('P17', JSON.stringify({ status: res.status, body }))
+}
+
+// P18: the classification made from the plugin shows up in the policy list
+// under the credential's own name, which is what the console reads.
+{
+  const state = await (await stub.fetch('https://do/state')).json()
+  const ids = state.state.itemIds || {}
+  const id = ids['typed-web-key']
+  const kinds = state.state.credentialKinds || {}
+  if (id && kinds[id] === 'web') pass('P18 the plugin-saved credential is addressable by name')
+  else fail('P18', JSON.stringify({ id, kinds }))
+}
+
+// P19: deleting a credential clears its classification too, so a name reused
+// later does not inherit the old kind and the console shows no ghost row.
+{
+  const stateBefore = await (await stub.fetch('https://do/state')).json()
+  const id = (stateBefore.state.itemIds || {})['typed-web-key']
+  const had = Boolean((stateBefore.state.credentialKinds || {})[id])
+  const res = await call('/api/plugin/items/delete', { method: 'POST', body: JSON.stringify({ name: 'typed-web-key' }) })
+  const stateAfter = await (await stub.fetch('https://do/state')).json()
+  const kindGone = !(stateAfter.state.credentialKinds || {})[id]
+  const policyGone = !(stateAfter.state.fillPolicies || {})[id]
+  const mappingGone = !(stateAfter.state.itemIds || {})['typed-web-key']
+  if (had && res.ok && kindGone && policyGone && mappingGone) pass('P19 deleting a credential clears its classification')
+  else fail('P19', JSON.stringify({ had, status: res.status, kindGone, policyGone, mappingGone }))
+}
+
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== plugin operator endpoints ' + passed + '/' + results.length + ' passed ====')
