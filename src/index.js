@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { uiHtml } from './ui.js'
+import { aiSnapshot, askAi, aiInsights } from './ai.js'
 import { LOGO_PNG_B64, FAVICON_ICO_B64 } from './logo.js'
 import {
   b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, decryptStr, encryptStr, extractSecret, extractUsername, extractTotp,
@@ -5184,6 +5185,32 @@ export default {
       } else results.wxpush = 'not configured'
       return json({ ok: true, results })
     }
+    // The assistant, and the facts it is given. Read-only: it can explain and
+    // suggest, and it cannot change a thing. The snapshot is built here, on the
+    // server, from state metadata — no credential value, username or TOTP seed
+    // ever enters it, and the model never sees the vault.
+    if (url.pathname === '/api/ai/ask' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const question = String(body.question ?? '').trim()
+      if (!question) return fail('question required', 400)
+      const state = await loadState(env)
+      const session = await getSession(env)
+      const snapshot = aiSnapshot(state, { vaultUnlocked: Boolean(session) })
+      const history = Array.isArray(body.history) ? body.history : []
+      const answer = await askAi(env, state.settings, { question, snapshot, history })
+      await addAudit(env, { event: 'ai.ask', agent: 'admin', source: 'console', ok: answer.ok === true, provider: answer.provider ?? '' })
+      if (!answer.ok) return json({ ok: false, error: answer.reason, insights: aiInsights(snapshot) }, 200)
+      return json({ ok: true, text: answer.text, provider: answer.provider, insights: aiInsights(snapshot) })
+    }
+    // The deterministic attention list. Costs nothing, so the console can show it
+    // on load without spending a model call.
+    if (url.pathname === '/api/ai/insights' && request.method === 'GET') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const session = await getSession(env)
+      return json({ ok: true, insights: aiInsights(aiSnapshot(state, { vaultUnlocked: Boolean(session) })) })
+    }
     if (url.pathname === '/api/settings') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       if (request.method === 'GET') {
@@ -5207,7 +5234,18 @@ export default {
           jwksUri: effectiveOidc?.jwksUri ?? '',
           configured: Boolean(effectiveOidc),
           secretConfigured: Boolean(state.settings?.oidc?.clientSecret || env.OIDC_CLIENT_SECRET),
-        }, vaultFolder: state.settings?.vaultFolder ?? '', vaultEmail: state.settings?.vaultEmail ?? '', siteName: state.settings?.siteName ?? 'Secrets Broker', requireClassification: requireClassification(state) })
+        }, vaultFolder: state.settings?.vaultFolder ?? '', vaultEmail: state.settings?.vaultEmail ?? '', siteName: state.settings?.siteName ?? 'Secrets Broker', requireClassification: requireClassification(state),
+        // The key itself is never returned; only whether one is stored.
+        ai: {
+          enabled: state.settings?.ai?.enabled !== false,
+          provider: state.settings?.ai?.provider === 'workers-ai' ? 'workers-ai' : 'custom',
+          endpoint: state.settings?.ai?.endpoint ?? '',
+          model: state.settings?.ai?.model ?? '',
+          workersModel: state.settings?.ai?.workersModel ?? '@cf/meta/llama-3.1-8b-instruct',
+          timeoutMs: state.settings?.ai?.timeoutMs ?? 25000,
+          hasApiKey: Boolean(state.settings?.ai?.apiKey || env.AI_API_KEY),
+          workersAiAvailable: Boolean(env.AI),
+        } })
       }
       if (request.method === 'POST') {
         const body = await request.json().catch(() => ({}))
@@ -5216,6 +5254,24 @@ export default {
         await updateState(env, (state) => {
           state.settings ??= { notifications: {} }
           state.settings.notifications ??= {}
+          // AI settings. An empty apiKey keeps the stored one (so saving the form
+          // without retyping the key does not wipe it); a literal null clears it.
+          if (body.ai && typeof body.ai === 'object') {
+            const inc = body.ai
+            state.settings.ai ??= {}
+            const ai = state.settings.ai
+            if (typeof inc.enabled === 'boolean') ai.enabled = inc.enabled
+            if (inc.provider === 'workers-ai' || inc.provider === 'custom') ai.provider = inc.provider
+            if (typeof inc.endpoint === 'string') ai.endpoint = inc.endpoint.trim().slice(0, 300)
+            if (typeof inc.model === 'string') ai.model = inc.model.trim().slice(0, 200)
+            if (typeof inc.workersModel === 'string') ai.workersModel = inc.workersModel.trim().slice(0, 200)
+            if (inc.timeoutMs != null) {
+              const ms = Number(inc.timeoutMs)
+              if (Number.isFinite(ms)) ai.timeoutMs = Math.max(5000, Math.min(60000, Math.floor(ms)))
+            }
+            if (inc.apiKey === null) delete ai.apiKey
+            else if (typeof inc.apiKey === 'string' && inc.apiKey.trim()) ai.apiKey = inc.apiKey.trim().slice(0, 400)
+          }
           for (const channel of ['telegram', 'ntfy', 'gotify', 'wxpush']) {
             if (!incoming[channel]) continue
             const current = state.settings.notifications[channel] ?? {}

@@ -218,6 +218,7 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
 <button id="theme-cycle" class="theme-cycle" title="切换主题：浅色 / 深色 / 跟随系统">☀️</button>
 <nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button><a class="icon-btn" href="https://github.com/otscup/secrets-broker-workers" target="_blank" rel="noreferrer" title="GitHub"><svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a></nav>
 <button id="page-refresh" class="small" title="刷新当前页面">刷新</button>
+<button id="ai-help" class="small" title="用 AI 解释当前状态">问 AI</button>
 <div class="user-wrap"><span class="user"><span class="who-name" id="who"></span><button id="avatar" class="avatar" title="账户">SB</button></span>
 <div id="account-menu" class="account-menu hidden"><button data-view="profile">个人资料</button><button data-view="settings">系统设置</button><button id="account-logout">退出登录</button><button id="lock" class="danger">锁定</button></div></div>
 </header>
@@ -320,6 +321,25 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
 
   <section id="view-settings" class="view hidden">
     <div class="card"><h2>站点</h2><label class="field">站点名称</label><input id="site-name" placeholder="Secrets Broker"><div class="hint">显示在左上角，点击可回首页。</div></div>
+    <div class="card collapsible" id="card-ai"><h2 class="card-toggle" data-collapse="card-ai">AI 助手 <span class="card-caret">▾</span></h2>
+      <div class="card-body">
+      <div class="hint">用来自动解释「为什么这个 Agent 读不到」「哪条授权过期了」。它只读汇总信息（Agent、条目名、授权状态、日志），<b>永远拿不到密钥值、用户名或 TOTP</b>，也<b>不能修改任何东西</b>——所有修复仍由你在界面上点。</div>
+      <label class="chk" style="margin-top:10px"><input type="checkbox" id="ai-enabled"> 启用 AI 助手</label>
+      <label class="field">优先使用</label>
+      <select id="ai-provider"><option value="custom">自建 / 第三方 API（OpenAI 兼容）</option><option value="workers-ai">Cloudflare Workers AI</option></select>
+      <div class="hint" id="ai-workers-note" style="margin-top:4px"></div>
+      <div id="ai-custom-box">
+        <label class="field">接口地址（Base URL）</label><input id="ai-endpoint" placeholder="https://api.openai.com/v1">
+        <div class="hint">填到 <code>/v1</code> 即可，会自动加 <code>/chat/completions</code>；也可以直接填完整路径。</div>
+        <label class="field">API Key</label><input id="ai-apikey" type="password" placeholder="留空保留原值；填 null 清空">
+        <div class="hint" id="ai-key-status"></div>
+        <label class="field">模型</label><input id="ai-model" placeholder="例如 gpt-4o-mini / deepseek-chat">
+      </div>
+      <label class="field">Workers AI 模型</label><input id="ai-workers-model" placeholder="@cf/meta/llama-3.1-8b-instruct">
+      <label class="field">超时（毫秒）</label><input id="ai-timeout" type="number" min="5000" max="60000" value="25000">
+      <div class="row" style="margin-top:12px"><button class="primary" id="ai-save">保存 AI 设置</button><button id="ai-test">测试</button></div>
+      <div class="status" id="ai-status"></div>
+      </div></div>
     <div class="card"><h2>明文读取策略</h2><div class="hint">未被分类的凭据，Agent 拿到授权后还能不能读到明文。<b>关掉这个开关等于放行</b>：任何没标成 api 或 web 的密钥都可以被 Agent 读取明文，这正是分类要解决的问题。</div><label class="chk" style="margin-top:10px"><input type="checkbox" id="require-classification"> 未分类的凭据拒绝明文读取（推荐开启）</label><div class="row" style="margin-top:10px"><button class="primary" id="require-classification-save">保存</button></div><div class="status" id="require-classification-status"></div></div>
     <div class="card collapsible collapsed" id="card-notify-channels"><h2 class="card-toggle" data-collapse="card-notify-channels">通知渠道 <span class="card-caret">▸</span></h2><div class="hint">待批准请求会推送到这里。留空的 token 表示保留原值。</div>
       <div class="card-body">
@@ -558,7 +578,7 @@ $('global-search-results').addEventListener('click', (event) => {
   if (view === 'items') { const filter = $('item-filter'); if (filter) { filter.value = row.dataset.name || ''; renderItems() } }
   if (view === 'agents') openAgentDetail(row.dataset.name)
 })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('require-classification-save').onclick = saveRequireClassification; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
+$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('require-classification-save').onclick = saveRequireClassification; $('ai-save').onclick = saveAiSettings; $('ai-help').onclick = () => openAiHelp(); $('ai-provider').onchange = () => $('ai-custom-box').classList.toggle('hidden', $('ai-provider').value !== 'custom'); $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + (d.provider === 'workers-ai' ? 'Workers AI' : '自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
 // Collapsible settings cards. One delegated handler covers every card, so a
 // new collapsible card needs no extra wiring.
@@ -950,6 +970,7 @@ async function loadSettings() {
     $('vault-folder').value = data.vaultFolder || ''
     $('site-name').value = data.siteName || 'Secrets Broker'
     $('require-classification').checked = data.requireClassification !== false
+    renderAiSettings(data.ai)
     try { const folders = (await api('/api/folders')).folders || []; $('vault-folder').innerHTML = '<option value="">全部文件夹</option>' + folders.map((folder) => '<option value="' + esc(folder.name) + '">' + esc(folder.name) + '</option>').join(''); $('vault-folder').value = data.vaultFolder || ''; $('vault-folder-status').textContent = data.vaultFolder ? '当前只读取：' + data.vaultFolder : '当前读取全部文件夹' } catch { $('vault-folder-status').textContent = '需要先解锁 vault 才能读取文件夹' }
     try { const accounts = (await api('/api/accounts')).accounts || []; $('vault-email').innerHTML = accounts.map((account) => '<option value="' + esc(account.email) + '">' + esc(account.email) + '</option>').join(''); $('vault-email').value = data.vaultEmail || accounts[0]?.email || ''; $('vault-email-status').textContent = '当前账户：' + ($('vault-email').value || '-') } catch { $('vault-email-status').textContent = '无法读取账户列表' }
   } catch (error) { status('settings-status', error.message, 'error') }
@@ -969,6 +990,98 @@ async function saveSettings() {
     $('site-title').textContent = $('site-name').value.trim() || 'Secrets Broker'
     status('settings-status', '已保存', 'ok'); await loadSettings()
   } catch (error) { status('settings-status', error.message, 'error') }
+}
+// AI settings live on the same endpoint but save separately, so retyping a model
+// name cannot silently reset a notification template.
+async function saveAiSettings() {
+  try {
+    status('ai-status', '保存中…')
+    const key = $('ai-apikey').value.trim()
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ ai: {
+      enabled: $('ai-enabled').checked,
+      provider: $('ai-provider').value,
+      endpoint: $('ai-endpoint').value.trim(),
+      model: $('ai-model').value.trim(),
+      workersModel: $('ai-workers-model').value.trim(),
+      timeoutMs: Number($('ai-timeout').value) || 25000,
+      // A blank field keeps the stored key; only a typed value replaces it.
+      ...(key ? { apiKey: key } : {}),
+    } }) })
+    $('ai-apikey').value = ''
+    status('ai-status', '已保存', 'ok')
+    await loadSettings()
+  } catch (error) { status('ai-status', error.message, 'error') }
+}
+function renderAiSettings(ai) {
+  if (!ai) return
+  $('ai-enabled').checked = ai.enabled !== false
+  $('ai-provider').value = ai.provider || 'custom'
+  $('ai-endpoint').value = ai.endpoint || ''
+  $('ai-model').value = ai.model || ''
+  $('ai-workers-model').value = ai.workersModel || '@cf/meta/llama-3.1-8b-instruct'
+  $('ai-timeout').value = ai.timeoutMs || 25000
+  $('ai-key-status').textContent = ai.hasApiKey ? '已保存一个 key（留空则沿用）' : '还没有 key'
+  $('ai-workers-note').textContent = ai.workersAiAvailable
+    ? '这个 Worker 已绑定 Workers AI，可以不填 key 直接用它。'
+    : '这个 Worker 没有绑定 Workers AI；要用它需要在 wrangler 里加 AI binding。'
+  $('ai-custom-box').classList.toggle('hidden', (ai.provider || 'custom') !== 'custom')
+}
+// The one place the console talks to the model. Read-only by construction: the
+// broker only exposes /api/ai/ask, which answers questions and changes nothing.
+function openAiHelp(preset) {
+  openModal('问 AI', '<div class="hint">它会读取当前状态（Agent、条目名、授权、日志），但拿不到任何密钥值，也不能修改东西。</div>'
+    + '<div id="ai-chat" style="max-height:300px;overflow:auto;scrollbar-width:none;margin:10px 0"></div>'
+    + '<label class="field">你的问题</label>'
+    + '<input id="ai-question" placeholder="例如：为什么 Muse 读不到 tavily-api-key？" value="' + esc(preset || '') + '">'
+    + '<div class="row" style="margin-top:10px"><button class="primary" id="ai-ask">发送</button><button id="ai-insights">只看待处理项</button></div>'
+    + '<div class="status" id="ai-chat-status"></div>')
+  const chat = $('ai-chat')
+  const history = []
+  const append = (role, text) => {
+    const node = document.createElement('div')
+    node.style.cssText = 'border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:6px 0;font-size:12.5px;white-space:pre-wrap'
+    node.style.background = role === 'user' ? 'var(--btn)' : 'transparent'
+    node.textContent = (role === 'user' ? '你：' : 'AI：') + text
+    chat.appendChild(node)
+    chat.scrollTop = chat.scrollHeight
+  }
+  const renderInsights = (insights) => {
+    if (!insights || !insights.length) return
+    for (const item of insights) {
+      const node = document.createElement('div')
+      node.style.cssText = 'border-left:3px solid ' + (item.level === 'warn' ? 'var(--warn,#f2994a)' : 'var(--ok,#0f9d8a)') + ';padding:4px 8px;margin:6px 0;font-size:12px'
+      node.textContent = item.text
+      chat.appendChild(node)
+    }
+  }
+  $('ai-insights').onclick = async () => {
+    try {
+      const data = await api('/api/ai/insights')
+      chat.innerHTML = ''
+      renderInsights(data.insights)
+      if (!(data.insights || []).length) chat.textContent = '没有发现需要处理的项。'
+    } catch (error) { status('ai-chat-status', error.message, 'error') }
+  }
+  $('ai-ask').onclick = async () => {
+    const question = $('ai-question').value.trim()
+    if (!question) return status('ai-chat-status', '先写一个问题', 'error')
+    append('user', question)
+    $('ai-question').value = ''
+    status('ai-chat-status', '思考中…')
+    try {
+      const data = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question, history: history.slice(-6) }) })
+      if (!data.ok) {
+        append('ai', '暂时回答不了：' + (data.error || '未知原因'))
+        status('ai-chat-status', '')
+        renderInsights(data.insights)
+        return
+      }
+      append('ai', data.text)
+      history.push({ role: 'user', content: question }, { role: 'assistant', content: data.text })
+      status('ai-chat-status', '由 ' + (data.provider === 'workers-ai' ? 'Workers AI' : '自建 API') + ' 回答')
+    } catch (error) { status('ai-chat-status', error.message, 'error') }
+  }
+  $('ai-question').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('ai-ask').click() })
 }
 // A separate control, so changing it does not rewrite every notification
 // channel's empty token field.

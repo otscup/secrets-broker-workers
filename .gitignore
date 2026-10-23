@@ -91,3 +91,4 @@ attach-route.mjs
 extension.pem
 extension.crx
 !test-mf-global-search.mjs
+!test-mf-ai-assistant.mjs
