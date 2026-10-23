@@ -437,6 +437,36 @@ body.page-open{overflow:hidden}
 .kv>b{margin-left:auto;font-weight:400;text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .kv a{color:var(--blue);text-decoration:none}
 .card.edit-only{display:none}
+/* Rows that behave like a grouped settings list: a label on the left, the
+   control on the right, one hairline between them. */
+.ios-field{display:flex;align-items:center;gap:var(--sp-3);min-height:var(--row-h);padding:0 var(--sp-4);border-bottom:1px solid var(--separator)}
+.ios-field:last-child{border-bottom:0}
+.card>.ios-field{margin:0 calc(-1 * var(--sp-4))}
+.ios-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2)}
+.ios-field>label{flex:1 1 auto;min-width:0;font-size:var(--text-body-lg);color:var(--label)}
+.ios-field>label small{display:block;font-size:var(--text-sub);line-height:var(--lh-sub);color:var(--label-2);margin-top:1px}
+.ios-field>select,.ios-field>input[type="date"]{flex:0 1 auto;max-width:60%;text-align:right;background:transparent;border:0;padding:0;font-size:var(--text-body-lg);color:var(--label-2);appearance:none}
+/* The dark theme paints every select through its own rule, which outranks
+   the row rule and wipes the chevron; restate both here. */
+html[data-theme="dark"] .ios-field>select,html[data-theme="dark"] .ios-field>input[type="date"]{background-color:transparent;border:0;color:var(--blue)}
+html[data-theme="dark"] .ios-field>select{background-repeat:no-repeat;background-position:right center;background-size:9px 9px;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238e8e93' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")}
+.ios-field>select{color:var(--blue);padding-right:18px;background-repeat:no-repeat;background-position:right center;background-size:9px 9px;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")}
+.ios-field--stack{display:block;padding-top:var(--sp-3);padding-bottom:var(--sp-3)}
+.ios-field--stack textarea{width:100%;margin-top:var(--sp-2);min-height:74px}
+/* A checkbox dressed as a UISwitch: 51x31 track, 27pt knob, green when on. */
+input.ios-switch{appearance:none;-webkit-appearance:none;flex:0 0 auto;width:51px;height:31px;min-width:51px;border:0;border-radius:16px;background:var(--fill-2);position:relative;transition:background var(--dur-fade) var(--ease);cursor:pointer;margin:0;padding:0}
+input.ios-switch::after{content:"";position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;border:0;box-shadow:0 2px 5px rgba(0,0,0,.22);transform:none;transition:transform var(--dur-fade) var(--ease)}
+input.ios-switch:checked{background:var(--green);border-color:var(--green)}
+input.ios-switch:checked::after{transform:translateX(20px);border:0}
+/* Buttons inside the detail pane are full-width actions, not toolbar chips. */
+.page .row>button{flex:1 1 auto;min-width:0;min-height:44px;border-radius:var(--r-md);font-size:var(--text-body-lg);font-weight:500}
+.page .row>button.primary{background:var(--blue);color:#fff}
+.page .row>button.danger{background:color-mix(in srgb,var(--red) var(--mix-badge),var(--card));color:var(--red)}
+html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,var(--red) 16%,var(--card))}
+.page .row>button:not(.primary):not(.danger){background:var(--fill);color:var(--label)}
+.page select[multiple]{width:100%;border:1px solid var(--separator);border-radius:var(--r-md);background:var(--card);padding:var(--sp-2);font-size:var(--text-body-lg);color:var(--label)}
+.page select[multiple] option{padding:7px 9px;border-radius:8px}
+.page select[multiple] option:checked{background:color-mix(in srgb,var(--blue) var(--mix-tint),transparent);color:var(--blue)}
 .page[data-editing="true"] .card.edit-only{display:block}
 .hdr-actions{margin-left:auto;display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;justify-content:flex-end}
 .hdr-actions .small{font-size:var(--text-sub);padding:6px 12px}
@@ -464,7 +494,9 @@ body.page-open{overflow:hidden}
   /* Let the trend card hug its chart instead of leaving a 100px hole. */
   .grid3>.card{height:auto}
   .grid3 .trend-box{flex:0 0 auto}
-  .ios-pill.plain{display:none}
+  /* Only the trail of a list row is too tight for a second pill; the detail
+     pane has the width to keep its own actions. */
+  .ios-trail .ios-pill.plain{display:none}
   #view-items .row{gap:6px}
   #view-items .row button{width:auto;flex:0 0 auto;padding:8px 11px;font-size:var(--text-body);min-height:38px}
   #view-items .row>*{min-width:0}
@@ -2103,20 +2135,18 @@ function fillEditorHtml(item) {
   const origins = entry ? (entry.origins || []).join('\n') : ''
   const actions = entry ? (entry.actions || []) : ['login']
   const read = Boolean(entry && entry.plaintextRead)
-  return '<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px">'
-    + '<b>网页填充与明文读取</b>'
-    + '<div class="hint" style="margin-top:4px">api = API Key，可按需允许 Agent 读取明文；web = 网站登录，只能被填充到指定网站，Agent 永远拿不到明文。未分类则保持旧版授权行为。</div>'
-    + '<label class="field">类型</label><select id="fe-kind">'
-    + '<option value=""' + (kind === '' ? ' selected' : '') + '>未分类（旧版行为）</option>'
-    + '<option value="api"' + (kind === 'api' ? ' selected' : '') + '>api（API Key）</option>'
-    + '<option value="web"' + (kind === 'web' ? ' selected' : '') + '>web（网站登录，只能填充）</option>'
-    + '</select>'
+  return '<div class="card"><h2>网页填充与明文读取</h2>'
+    + '<div class="hint">api = API Key，可按需允许 Agent 读取明文；web = 网站登录，只能被填充到指定网站，Agent 永远拿不到明文。未分类则保持旧版授权行为。</div>'
+    + '<div class="ios-field"><label for="fe-kind">类型</label><select id="fe-kind">'
+    + '<option value=""' + (kind === '' ? ' selected' : '') + '>未分类</option>'
+    + '<option value="api"' + (kind === 'api' ? ' selected' : '') + '>API 密钥</option>'
+    + '<option value="web"' + (kind === 'web' ? ' selected' : '') + '>网页登录</option></select></div>'
     + '<div id="fe-web" class="' + (kind === 'web' ? '' : 'hidden') + '">'
-    + '<label class="field">允许填充的 origin（每行一个）</label>'
-    + '<textarea id="fe-origins" rows="3" style="width:100%" placeholder="https://example.com&#10;192.168.1.10:8080">' + esc(origins) + '</textarea>'
-    + '<div class="hint">只做精确匹配：example.com.evil.test、任意子域或其他端口都不会被放行。省略协议时按 https 处理；内网地址（127.x、10.x、192.168.x、172.16-31.x、localhost、*.lan）可以用 http，公网地址只允许 https。</div></div>'
-    + '<label class="chk" id="fe-read-row" style="margin-top:8px' + (kind === 'web' ? ';display:none' : '') + '"><input type="checkbox" id="fe-read"' + (read ? ' checked' : '') + '> 允许 Agent 直接读取明文（仅 api；30 天后自动失效）</label>'
-    + '<div class="row" style="margin-top:10px"><button class="primary" id="fe-save">保存</button>' + (entry ? '<button class="danger" id="fe-clear">清除分类</button>' : '') + '</div>'
+    + '<div class="ios-field ios-field--stack"><label for="fe-origins">允许填充的站点（每行一个）</label>'
+    + '<textarea id="fe-origins" rows="3" placeholder="https://example.com&#10;192.168.1.10:8080">' + esc(origins) + '</textarea>'
+    + '<div class="hint">只做精确匹配：example.com.evil.test、任意子域或其他端口都不会被放行。省略协议时按 https 处理；内网地址（127.x、10.x、192.168.x、172.16-31.x、localhost、*.lan）可以用 http，公网地址只允许 https。</div></div></div>'
+    + '<div class="ios-field" id="fe-read-row"><label for="fe-read">允许 Agent 直接读取明文<small>仅 api；30 天后自动失效</small></label><input type="checkbox" class="ios-switch" id="fe-read"' + (read ? ' checked' : '') + '></div>'
+    + '<div class="row" style="margin-top:var(--sp-3)"><button class="primary" id="fe-save">保存</button>' + (entry ? '<button class="danger" id="fe-clear">清除分类</button>' : '') + '</div>'
     + '<div class="status" id="fe-status"></div></div>'
 }
 
@@ -2628,9 +2658,9 @@ function itemInfoHtml(item) {
   const grants = (app.data.grants || []).filter((grant) => grant.name === item.name)
   const usage = (app.data.audit || []).filter((entry) => entry.name === item.name && ['secret.read', 'grant.share', 'grant.approve', 'transfer.complete', 'item.create', 'item.update'].includes(entry.event)).slice(0, 10)
   const durationLabel = (grant) => { if (!grant.expiresAt) return '永久'; const ms = grant.expiresAt - Date.now(); if (ms <= 0) return '已过期'; const days = Math.ceil(ms / 86400000); return days <= 1 ? Math.max(1, Math.ceil(ms / 3600000)) + ' 小时' : days + ' 天' }
-  const rows = grants.length ? '<table><tr><th>Agent</th><th>方式</th><th>时长</th><th>读取</th></tr>' + grants.map((grant) => '<tr><td>' + esc(agentLabel(grant.agent)) + '</td><td>' + esc(grant.mode || '') + '</td><td><button class="pill" data-item-grant data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="点击修改时长和读取次数">' + esc(durationLabel(grant)) + '</button></td><td>' + (grant.reads || 0) + '/' + (grant.maxReads || '∞') + '</td></tr>').join('') + '</table>' : '<div class="hint">当前没有分享给 Agent</div>'
-  const usageRows = usage.length ? '<table><tr><th>时间</th><th>Agent</th><th>动作</th><th>方式</th></tr>' + usage.map((entry) => '<tr><td>' + esc(entry.time ? new Date(entry.time).toLocaleString('zh-CN', { hour12: false }) : '') + '</td><td>' + esc(agentLabel(entry.agent)) + '</td><td>' + esc(describeEvent(entry)) + '</td><td>' + esc(entry.mode || entry.source || '') + '</td></tr>').join('') + '</table>' : '<div class="hint">暂无使用记录</div>'
-  return '<div class="hint" style="margin-bottom:8px">创建：' + esc(item.createdAt ? new Date(item.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-') + ' · 创建人：' + esc(item.creator || '-') + '</div><div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center"><b>分享情况</b><button class="small" id="mi-share-sync">分享 / 同步</button></div>' + rows + '<div style="margin-top:10px"><b>最近使用</b></div>' + usageRows + '</div>'
+  const grantRows = grants.length ? grants.map((grant) => '<div class="ios-field"><label>' + esc(agentLabel(grant.agent)) + '<small>' + esc(grant.mode || '授权') + ' · 已读 ' + (grant.reads || 0) + '/' + (grant.maxReads || '∞') + '</small></label><button class="ios-pill plain" data-item-grant data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="点击修改时长和读取次数">' + esc(durationLabel(grant)) + '</button></div>').join('') : '<div class="ios-field"><label>当前没有分享给 Agent</label></div>'
+  const usageRows = usage.length ? usage.map((entry) => '<div class="ios-row ios-row--log"><div class="ios-main"><div class="ios-log-text">' + esc(describeEvent(entry)) + '</div><div class="ios-sub">' + esc(entry.time ? new Date(entry.time).toLocaleString('zh-CN', { hour12: false }) : '') + ' · ' + esc(agentLabel(entry.agent)) + (entry.mode || entry.source ? ' · ' + esc(entry.mode || entry.source) : '') + '</div></div></div>').join('') : '<div class="ios-field"><label>暂无使用记录</label></div>'
+  return '<div class="card"><div class="ios-head"><h2 style="margin:0">分享情况</h2><button class="ios-pill plain" id="mi-share-sync">分享 / 同步</button></div><div class="hint">创建：' + esc(item.createdAt ? new Date(item.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-') + ' · 创建人：' + esc(item.creator || '-') + '</div>' + grantRows + '<h2 style="margin-top:var(--sp-4)">最近使用</h2>' + usageRows + '</div>'
 }
 // The expiry field of the edit dialog. A secret without an expiry shows an
 // empty date, and an empty date on save means no expiry.
