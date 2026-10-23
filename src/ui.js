@@ -349,8 +349,8 @@ ul.items .type{font-size:var(--text-caption);color:var(--label-2)}
 .gs-group-title{font-size:var(--text-caption);color:var(--label-2);text-transform:none}
 #global-search-results{background:var(--card);border:0;border-radius:var(--r-lg);padding:var(--sp-2)}
 @media(max-width:720px){
-  body{padding-bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom))}
-  nav{position:fixed;left:0;right:0;bottom:0;z-index:50;order:0;width:auto;margin:0;padding:6px var(--sp-2) calc(6px + env(safe-area-inset-bottom));display:flex;justify-content:space-around;gap:0;border-radius:0;background:var(--tabbar-bg);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border-top:1px solid var(--separator);overflow:visible}
+  body{padding-bottom:calc(var(--tabbar-h) + 14px + env(safe-area-inset-bottom))}
+  nav{position:fixed;left:0;right:0;bottom:0;z-index:50;order:0;width:auto;margin:0;padding:6px var(--sp-2) calc(6px + env(safe-area-inset-bottom));display:flex;justify-content:space-around;gap:0;border-radius:0;min-height:var(--tabbar-h);background:var(--tabbar-bg);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border-top:1px solid var(--separator);overflow:visible}
   nav button,nav .icon-btn{flex:1 1 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:var(--nav-h);padding:2px 0;font-size:var(--text-tab);font-weight:500;color:var(--label-2);background:transparent !important;box-shadow:none !important;border-radius:0}
   nav button.active{color:var(--blue);background:transparent !important;box-shadow:none !important}
   .wrap{padding:var(--sp-3) var(--sp-4) calc(var(--sp-5) + env(safe-area-inset-bottom))}
@@ -412,6 +412,10 @@ button.ios-pill{border:0;cursor:pointer;min-width:0}
 .ios-actions .ios-chip:first-child{background:var(--blue);color:#fff}
 .ios-more{width:44px;height:44px;display:grid;place-items:center;background:transparent;color:var(--label-3);font-size:18px;padding:0;border-radius:var(--r-md)}
 .ios-more:hover{background:var(--fill-2);color:var(--label-2)}
+/* A segmented control is text-only on desktop; the tab bar below 720px
+   is the place where a UITabBarItem needs its glyph. */
+nav button svg{display:none;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+nav button{display:inline-flex;align-items:center;gap:6px}
 .page{position:fixed;inset:0;z-index:70;display:flex;flex-direction:column;background:var(--bg-grouped);transform:translateX(100%);transition:transform var(--dur-push) var(--ease);will-change:transform}
 .page.in{transform:translateX(0)}
 .page-nav{flex:0 0 auto;height:var(--nav-h);display:flex;align-items:center;gap:var(--sp-2);padding:0 var(--sp-3);background:var(--nav-bg);border-bottom:1px solid var(--separator);position:relative}
@@ -446,6 +450,8 @@ body.page-open{overflow:hidden}
 #view-items .row>#item-filter{flex:1 1 240px}
 @media(max-width:720px){.hdr-actions .who-name,.user .who-name{display:none}}
 @media(max-width:720px){
+  nav button{flex-direction:column;gap:3px;font-size:var(--text-tab);line-height:1;padding:6px 2px}
+  nav button svg{display:block;width:26px;height:26px;stroke-width:1.7}
   #view-agents .row>select,#view-logs .row>select{width:auto;flex:1 1 0;min-width:0}
   #view-logs .row>input{flex:1 1 100%}
   #view-logs .row>button{flex:1 1 100%}
@@ -472,7 +478,7 @@ body.page-open{overflow:hidden}
 <div class="user-wrap"><span class="user"><span class="who-name" id="who"></span><button id="avatar" class="avatar" title="账户">SB</button></span>
 <div id="account-menu" class="account-menu hidden"><button data-view="profile">个人资料</button><button data-view="settings">系统设置</button><button id="account-logout">退出登录</button><button id="lock" class="danger">锁定</button></div></div>
 </div>
-<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button></nav>
+<nav id="nav"><button data-view="overview" class="active"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 12 4l8 7.5"/><path d="M6.5 10.5V20h11v-9.5"/></svg><span>概览</span></button><button data-view="items"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="3.6"/><path d="M10.6 10.6 20 20"/><path d="M15.6 15.6l2-2"/><path d="M17.8 17.8l2-2"/></svg><span>密钥</span></button><button data-view="agents"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8.4" r="3"/><path d="M3.5 19c0-2.9 2.5-4.6 5.5-4.6s5.5 1.7 5.5 4.6"/><path d="M16.2 6.6a2.6 2.6 0 0 1 0 5"/><path d="M17.6 14.6c2 .6 3.4 2.2 3.4 4.4"/></svg><span>Agents</span></button><button data-view="grants"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.6 5 6.4v5c0 4.3 2.9 7.4 7 8.9 4.1-1.5 7-4.6 7-8.9v-5z"/><path d="M9 12.1l2.1 2.1 4-4.4"/></svg><span>授权</span></button><button data-view="logs"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 6.5h11"/><path d="M8.5 12h11"/><path d="M8.5 17.5h11"/><circle cx="4.6" cy="6.5" r="1.1"/><circle cx="4.6" cy="12" r="1.1"/><circle cx="4.6" cy="17.5" r="1.1"/></svg><span>日志</span></button></nav>
 </header>
 
 <section id="login-card" class="card hidden">
