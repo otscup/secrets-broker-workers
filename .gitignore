@@ -90,3 +90,4 @@ attach-route.mjs
 # Extension signing artefacts are local only; never commit a private key
 extension.pem
 extension.crx
+!test-mf-global-search.mjs

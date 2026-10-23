@@ -164,6 +164,25 @@ html[data-theme="dark"] .agent-stat{box-shadow:none;background:#151f31}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 .table-wrap table{min-width:520px}th{color:var(--muted);font-weight:500;text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}td.actions{white-space:nowrap}td.actions button+button{margin-left:6px}th.nowrap{white-space:nowrap}tr:last-child td{border-bottom:0}tbody tr:hover td{background:#f8fafc}
 .table-wrap{overflow-x:auto;max-width:100%}
+/* Long lists scroll inside their card instead of stretching the page: about 13
+   rows, then scroll. The bar is hidden because the row count is obvious and a
+   visible bar on every table is noise; the wheel and touch still work. */
+.scroll-list{max-height:620px;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none}
+.scroll-list::-webkit-scrollbar{width:0;height:0;display:none}
+/* Global search on the overview: grouped rows, each one a button that opens the
+   page owning the hit. About 13 rows fit, then it scrolls; the bar is hidden
+   like the other in-card lists. Height is fixed because this sits above the charts. */
+.gs-box{max-height:400px;overflow-y:auto;scrollbar-width:none;-ms-overflow-style:none}
+.gs-box::-webkit-scrollbar{width:0;height:0;display:none}
+#global-search-results{border:1px solid var(--line);border-radius:12px;padding:6px 8px;margin-bottom:12px;background:var(--card)}
+.gs-group-title{font-size:11px;color:var(--muted);margin:6px 2px 2px}
+.gs-row{display:flex;gap:8px;align-items:center;width:100%;text-align:left;background:transparent;padding:6px 8px;border-radius:8px;font-size:12.5px}
+.gs-row:hover,.gs-row:focus-visible{background:var(--btn)}
+.gs-row b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gs-sub{color:var(--muted);font-size:11px;flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gs-more{font-size:11px;color:var(--muted);padding:2px 8px 4px}
+.toolbar .gs-input{flex:0 1 280px;width:280px;min-width:0}
+@media(max-width:720px){.toolbar .gs-input{flex:1 1 100%;width:100%}}
 .pill{display:inline-block;background:#eef7f5;color:#0b7d6d;border-radius:999px;padding:1px 8px;font-size:11px;border:0;cursor:pointer}.pill:hover{background:#dff3ee}.pill.off{background:#f3f4f6;color:var(--muted)}
 /* Item kind, right beside the name: green api, blue web, grey unclassified.
    The same three colours are used in the picker, so the label a credential gets
@@ -219,7 +238,8 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
 
 <section id="dashboard" class="hidden">
   <section id="view-overview" class="view">
-    <div class="toolbar"><div class="seg" id="range-row"><button data-range="24h" class="on">24 小时</button><button data-range="7d">7 天</button><button data-range="30d">30 天</button></div><span class="spacer"></span><span class="hint" id="updated"></span></div>
+    <div class="toolbar"><div class="seg" id="range-row"><button data-range="24h" class="on">24 小时</button><button data-range="7d">7 天</button><button data-range="30d">30 天</button></div><span class="spacer"></span><span class="hint" id="updated"></span><input id="global-search" class="gs-input" placeholder="搜索 Agent、密钥、授权、日志…" autocomplete="off" aria-label="全局搜索"></div>
+    <div id="global-search-results" class="gs-box hidden"></div>
     <div id="notice-bar" class="notice-bar hidden" role="button" tabindex="0" title="点击查看全部通知"></div>
     <div id="kpis" class="kpis"></div>
     <div class="grid3">
@@ -245,8 +265,8 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
   </section>
 
   <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读），这里可以设置免审批策略和读取。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
-    <div class="card"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。未分类的凭据默认为拒绝读取。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap" style="margin-top:10px"></div></div>
-    <div class="card" id="card-denied"><h2>被拦下的请求</h2><div class="hint">Agent 试图读取但没通过权限检查的条目。这里只是记录，没有放行任何东西；点「授权」才会真正放开。</div><div id="denied-list" class="table-wrap" style="margin-top:10px"></div></div>
+    <div class="card"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。未分类的凭据默认为拒绝读取。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
+    <div class="card" id="card-denied"><h2>被拦下的请求</h2><div class="hint">Agent 试图读取但没通过权限检查的条目。这里只是记录，没有放行任何东西；点「授权」才会真正放开。</div><div id="denied-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     
   </section>
 
@@ -271,19 +291,19 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
           <option value="name">按名称</option>
         </select>
       </div>
-      <div id="agents-box" class="table-wrap" style="margin-top:10px"></div>
+      <div id="agents-box" class="table-wrap scroll-list" style="margin-top:10px"></div>
       <div class="status" id="agent-status"></div>
     </div>
   </section>
 
   <section id="view-grants" class="view hidden">
-    <div class="card" id="transfers-card"><h2>待复制到其他账户</h2><div class="hint">主账户分享后先进入队列；切回目标账户并解锁后自动复制到指定文件夹并生成授权。</div><div id="transfers-box" class="table-wrap" style="margin-top:10px"></div></div>
-    <div class="card"><h2>待批准请求</h2><div class="hint">点按钮即授权；同 Docker 版的 once/1h/24h/7d/永久。</div><div id="pending-box" class="table-wrap" style="margin-top:10px"></div></div>
-    <div class="card"><h2>有效授权</h2><div class="hint">过期的授权会显示「已过期」，点该行的时长即可延期。</div><div id="grants-box" class="table-wrap"></div></div>
+    <div class="card" id="transfers-card"><h2>待复制到其他账户</h2><div class="hint">主账户分享后先进入队列；切回目标账户并解锁后自动复制到指定文件夹并生成授权。</div><div id="transfers-box" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
+    <div class="card"><h2>待批准请求</h2><div class="hint">点按钮即授权；同 Docker 版的 once/1h/24h/7d/永久。</div><div id="pending-box" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
+    <div class="card"><h2>有效授权</h2><div class="hint">过期的授权会显示「已过期」，点该行的时长即可延期。</div><div id="grants-box" class="table-wrap scroll-list"></div></div>
     <div class="card"><h2>OAuth 客户端</h2><div class="hint">每个连接（Muse、Codex、ChatGPT 等）在首次授权时会注册一个客户端。重复或失效的注册可以逐个撤销，撤销会同时清除它的 token。</div><div id="oauth-clients-box" class="table-wrap" style="margin-top:10px"></div></div>
   </section>
 
-  <section id="view-logs" class="view hidden"><div class="card"><h2>审计日志</h2><div class="hint">最近 500 条，数据在 Durable Object 中。</div><div id="logs-box" class="table-wrap" style="margin-top:10px"></div></div></section>
+  <section id="view-logs" class="view hidden"><div class="card"><h2>审计日志</h2><div class="hint">最近 500 条，数据在 Durable Object 中。</div><div id="logs-box" class="table-wrap scroll-list" style="margin-top:10px"></div></div></section>
 
   <section id="view-profile" class="view hidden">
     <div class="card"><h2>个人资料</h2><div class="hint">用于页面显示；OIDC 登录会同步姓名/邮箱/头像。</div>
@@ -369,7 +389,24 @@ async function hmac(keyBytes, data) { const key = await crypto.subtle.importKey(
 async function pbkdf2(password, salt, iterations) { const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']); return new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(salt), iterations }, key, 256)) }
 async function hkdf(prk, info, length) { const key = await crypto.subtle.importKey('raw', prk, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const infoBytes = enc.encode(info); const out = new Uint8Array(length); let prev = new Uint8Array(0), offset = 0, counter = 1; while (offset < length) { const input = new Uint8Array(prev.length + infoBytes.length + 1); input.set(prev); input.set(infoBytes, prev.length); input[input.length - 1] = counter; prev = new Uint8Array(await crypto.subtle.sign('HMAC', key, input)); const n = Math.min(prev.length, length - offset); out.set(prev.slice(0, n), offset); offset += n; counter++ } return out }
 async function decryptBw(text, encKey, macKey) { const dot = text.indexOf('.'); const type = Number(text.slice(0, dot)); const parts = text.slice(dot + 1).split('|'); const iv = unb64(parts[0]), ct = unb64(parts[1]); if (type === 2) { const expected = await hmac(macKey, cat(iv, ct)); const mac = unb64(parts[2]); if (!expected.every((b, i) => b === mac[i])) throw new Error('MAC 校验失败') } const key = await crypto.subtle.importKey('raw', encKey, { name: 'AES-CBC' }, false, ['decrypt']); return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, key, ct)) }
-async function api(path, options = {}) { const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } }); const body = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(body.error || ('HTTP ' + response.status)); error.status = response.status; error.data = body; throw error } return body }
+// A bare "unauthorized" is useless: it means either the cookie expired or the
+// page was loaded from a different host than it posts to, and the fix differs.
+// Name which one, and what to do about it.
+async function api(path, options = {}) {
+  const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    let message = body.error || ('HTTP ' + response.status)
+    if (response.status === 401 && message === 'unauthorized') {
+      message = '登录状态已失效，或页面域名与接口域名不一致。请重新登录；如果反复出现，确认地址栏是 ' + location.origin + '，而不是别名域名。'
+    }
+    const error = new Error(message)
+    error.status = response.status
+    error.data = body
+    throw error
+  }
+  return body
+}
 const DEFAULT_LOGO = '/logo.png'
 let app = { me: null, data: { agents: [], policies: {}, grants: [], pending: [], audit: [] }, items: [], stats: null, range: '24h', token: '' }
 const selectedItems = new Set()
@@ -458,6 +495,69 @@ async function lock() {
 $('lock').onclick = lock; $('lock2').onclick = lock
 document.querySelectorAll('#nav button').forEach((button) => { button.onclick = () => { const view = button.dataset.view; document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b === button)); document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-' + view)); if (view === 'settings') loadSettings(); if (view === 'profile') loadProfile() } })
 document.querySelectorAll('#range-row button').forEach((button) => { button.onclick = () => { app.range = button.dataset.range; document.querySelectorAll('#range-row button').forEach((b) => b.classList.toggle('on', b === button)); loadStats() } })
+// ── Global search ───────────────────────────────────────────────────────────
+// One box on the overview searches every source the console already keeps in
+// app, so no other page needs its own search field. Groups cap at 8 rows and
+// the list at 60, so a one-letter query cannot build thousands of rows.
+function globalSearch(query) {
+  // '' includes '' would match every row, so the empty guard lives here and not
+  // only in the caller. Same for the case fold, so any caller gets one behaviour.
+  query = String(query ?? '').trim().toLowerCase()
+  if (!query) return []
+  const hit = (...values) => values.some((value) => String(value ?? '').toLowerCase().includes(query))
+  const groups = []
+  const add = (label, view, list) => { if (list.length) groups.push({ label, view, list }) }
+  add('Agent', 'agents', (app.data.agents || []).filter((agent) => hit(agent.name, agent.alias, agent.note))
+    .map((agent) => ({ title: agentDisplayName(agent), sub: agent.name, name: agent.name })))
+  add('密钥', 'items', (app.items || []).filter((item) => hit(item.name, item.group, item.url))
+    .map((item) => ({ title: item.name, sub: item.group || item.url || '', name: item.name })))
+  add('授权', 'grants', (app.data.grants || []).filter((grant) => hit(agentLabel(grant.agent), grant.agent, grant.name))
+    .map((grant) => ({ title: grant.name, sub: agentLabel(grant.agent) })))
+  add('待审批', 'grants', (app.data.pending || []).filter((request) => hit(agentLabel(request.agent), request.agent, request.name))
+    .map((request) => ({ title: request.name, sub: agentLabel(request.agent) })))
+  add('日志', 'logs', (app.data.audit || []).filter((entry) => hit(entry.event, entry.agent, entry.name))
+    .map((entry) => ({ title: describeEvent(entry) || entry.event, sub: [agentLabel(entry.agent), entry.name].filter(Boolean).join(' · ') })))
+  add('被拦下的请求', 'grants', (app.data.deniedAttempts || []).filter((entry) => hit(entry.agent, entry.name))
+    .map((entry) => ({ title: entry.name, sub: agentLabel(entry.agent) + (entry.reason ? ' · ' + entry.reason : '') })))
+  return groups
+}
+function renderGlobalSearch() {
+  const box = $('global-search-results')
+  if (!box) return
+  const input = $('global-search')
+  const query = String((input && input.value) || '').trim().toLowerCase()
+  if (!query) { box.innerHTML = ''; box.classList.add('hidden'); return }
+  const groups = globalSearch(query)
+  const html = []
+  let left = 60
+  for (const group of groups) {
+    if (left <= 0) break
+    const shown = group.list.slice(0, Math.min(8, left))
+    left -= shown.length
+    html.push('<div class="gs-group-title">' + esc(group.label) + ' · ' + group.list.length + '</div>')
+    for (const row of shown) {
+      html.push('<button class="gs-row" data-goto="' + esc(group.view) + '"' + (row.name ? ' data-name="' + esc(row.name) + '"' : '') + '><b>' + esc(row.title) + '</b>' + (row.sub ? ' <span class="gs-sub">' + esc(row.sub) + '</span>' : '') + '</button>')
+    }
+    if (group.list.length > shown.length) html.push('<div class="gs-more">还有 ' + (group.list.length - shown.length) + ' 条</div>')
+  }
+  box.innerHTML = html.length ? html.join('') : '<div class="hint">没有找到匹配「' + esc(query) + '」的内容</div>'
+  box.classList.remove('hidden')
+}
+if ($('global-search')) {
+  $('global-search').oninput = renderGlobalSearch
+  $('global-search').onkeydown = (event) => { if (event.key === 'Escape') { event.target.value = ''; renderGlobalSearch() } }
+}
+// A row opens the page that owns the hit; the nav click keeps the active tab and
+// the hidden-view toggling in one place instead of duplicating it here.
+$('global-search-results').addEventListener('click', (event) => {
+  const row = event.target.closest('[data-goto]')
+  if (!row) return
+  const view = row.dataset.goto
+  const tab = document.querySelector('#nav [data-view=' + view + ']')
+  if (tab) tab.click()
+  if (view === 'items') { const filter = $('item-filter'); if (filter) { filter.value = row.dataset.name || ''; renderItems() } }
+  if (view === 'agents') openAgentDetail(row.dataset.name)
+})
 $('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('require-classification-save').onclick = saveRequireClassification; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
 // Collapsible settings cards. One delegated handler covers every card, so a
@@ -1722,7 +1822,7 @@ function renderGrants() {
   const rows = grants.map((grant) => {
     const state = grant.revokedAt ? '已撤销' : (grant.expiresAt && grant.expiresAt <= Date.now() ? '已过期' : (grant.maxReads && (grant.reads ?? 0) >= grant.maxReads ? '次数用尽' : '生效中'))
     const bad = state !== '生效中'
-    return '<tr><td>' + esc(grant.agent) + '</td><td><b>' + esc(grant.name) + '</b></td>'
+    return '<tr><td>' + esc(agentLabel(grant.agent)) + '</td><td><b>' + esc(grant.name) + '</b></td>'
       + '<td' + (bad ? ' style="color:var(--danger)"' : '') + '>' + esc(state) + '</td>'
       + '<td>' + esc(grant.mode) + '</td>'
       + '<td class="nowrap"><button class="pill" data-item-grant data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" title="点击修改时长和读取次数">' + esc(remaining(grant)) + '</button></td>'
@@ -1973,10 +2073,82 @@ async function saveAgentFromModal(originalName) {
     show('modal', false); await loadState(); toast('已保存 Agent')
   } catch (error) { toast(error.message, true) }
 }
+// What this Agent may DO, per item. Read, use and fill are separate grants: a
+// readable credential is not a fillable one, and the fill grant had no way to be
+// given from this dialog at all — you had to provoke a denial first.
+function agentActionFields(agent) {
+  const held = ((app.data && app.data.agentActions) || []).filter((entry) => entry.agent === agent.name)
+  const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持调用（http_request）', 'secret.fill': '网页填充' }
+  const rows = held.length
+    ? held.map((entry) => '<tr><td><b>' + esc(entry.itemName) + '</b></td><td>' + esc(actionLabel[entry.action] || entry.action) + '</td>'
+        + '<td class="hint">' + esc(entry.expiresAt ? new Date(entry.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</td>'
+        + '<td><button class="small danger" data-revoke-action data-agent="' + esc(agent.name) + '" data-action="' + esc(entry.action) + '" data-item="' + esc(entry.itemName) + '">撤销</button></td></tr>').join('')
+    : '<tr><td colspan="4" class="hint">还没有任何动作授权。范围只决定能申请，真正能读/能填还要在这里授权。</td></tr>'
+  return '<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px">'
+    + '<b>动作授权</b>'
+    + '<div class="hint" style="margin:4px 0 8px">读取明文、代持调用、网页填充是三件独立的事，要分别给。'
+    + '<b>网页填充</b>需要条目先分类为 web 并填好站点，否则给了也填不了。</div>'
+    + '<div class="table-wrap scroll-list" style="max-height:180px"><table><tr><th>条目</th><th>动作</th><th>到期</th><th></th></tr>' + rows + '</table></div>'
+    + '<div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap">'
+    + '<select id="aa-item" style="flex:1;min-width:140px">' + knownItemNames().map((name) => '<option value="' + esc(name) + '">' + esc(name) + '</option>').join('') + '</select>'
+    + '<select id="aa-action" style="flex:0 0 auto"><option value="secret.read">读取明文</option><option value="secret.use">代持调用</option><option value="secret.fill">网页填充</option></select>'
+    + '<select id="aa-days" style="flex:0 0 auto"><option value="1">1 天</option><option value="7">7 天</option><option value="30" selected>30 天</option><option value="permanent">永久</option></select>'
+    + '<button class="small primary" id="aa-grant">授予</button></div>'
+    + '<div class="status" id="aa-status"></div></div>'
+}
 function agentPermFields(agent) {
   return '<div class="hint" style="margin:2px 0 6px">这里的「可读条目」是<b>范围</b>：决定这个 Agent 有资格申请哪些条目（list_secrets 也按它过滤）。它不等于已经拿到授权——分享/审批产生的是一次具体的<b>授权</b>，在「授权」页能看到。两者都满足才能读到值。</div>'
     + '<label class="field">可读条目（范围内的条目，不勾=看不到也申请不了）</label>' + pickListHtml('ma-allow', knownItemNames(), agent.allow || [], '密钥库里还没有条目。')
     + '<label class="field">可读分组（范围内按分组放行）</label>' + pickListHtml('ma-groups', knownGroups(), agent.groups || [], '还没有任何分组。')
+    + agentActionFields(agent)
+}
+// Wire the action-grant controls that agentPermFields renders. Shared by the
+// token and OAuth dialogs so both can grant read/use/fill from one place.
+function wireAgentActions(agentName) {
+  const grant = $('aa-grant')
+  if (!grant) return
+  grant.onclick = async () => {
+    const item = $('aa-item').value
+    const action = $('aa-action').value
+    const days = $('aa-days').value
+    if (!item) return status('aa-status', '没有可授权的条目', true)
+    try {
+      status('aa-status', '授权中…')
+      // secret.fill only makes sense for a web credential with an origin; refuse
+      // early with the reason instead of minting a grant that can never apply.
+      if (action === 'secret.fill') {
+        const fill = ((app.data && app.data.fillPolicies && app.data.fillPolicies.items) || []).find((entry) => entry.itemName === item)
+        if (!fill || fill.kind !== 'web') return status('aa-status', '「' + item + '」不是 web 类型，先到「密钥」页把它设为 web 并填站点', true)
+        if (!(fill.origins || []).length) return status('aa-status', '「' + item + '」还没填允许的站点', true)
+      }
+      const duration = days === 'permanent' ? 'permanent' : ({ '1': '1d', '7': '7d', '30': '30d' })[days] || '30d'
+      await api('/api/action-grants', { method: 'POST', body: JSON.stringify({ agent: agentName, item, actions: [action], terms: { [action]: { duration } } }) })
+      // Reading wants a plaintext policy too, or the grant still cannot read.
+      if (action === 'secret.read') {
+        await api('/api/fill/read-policy', { method: 'POST', body: JSON.stringify({ item, allow: true, ttlDays: days === 'permanent' ? 3650 : Number(days) }) }).catch(() => {})
+      }
+      await loadState()
+      toast('已授权：' + agentName + ' → ' + item + '（' + action + '）')
+      openAgentMenu(agentName)
+    } catch (error) { status('aa-status', error.message, true) }
+  }
+  for (const button of document.querySelectorAll('[data-revoke-action]')) {
+    button.onclick = async () => {
+      const item = button.dataset.item
+      const action = button.dataset.action
+      if (!confirm('撤销「' + agentName + '」对「' + item + '」的「' + action + '」授权？')) return
+      try {
+        const items = app.items || []
+        const found = items.find((entry) => entry.name === item)
+        const itemId = found && found.id ? found.id : ''
+        if (!itemId) return status('aa-status', '找不到条目 id，刷新页面后重试', true)
+        await api('/api/action-grants/revoke', { method: 'POST', body: JSON.stringify({ agent: agentName, itemId, action }) })
+        await loadState()
+        toast('已撤销')
+        openAgentMenu(agentName)
+      } catch (error) { status('aa-status', error.message, true) }
+    }
+  }
 }
 async function openAgentMenu(name) {
   await ensureItems()
@@ -1984,11 +2156,13 @@ async function openAgentMenu(name) {
   if (agent.oauth) {
     openModal('OAuth Agent「' + name + '」', '<div class="hint">OAuth 动态注册产生的 Agent，绑定账户：<code>' + esc(agent.account || '-') + '</code>。可以修改名称、备注、权限和写入开关；撤销授权会删除 token。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存</button><button class="danger" id="ma-oauth-revoke">撤销 OAuth 授权</button></div>')
     $('ma-save').onclick = () => saveAgentFromModal(name)
+    wireAgentActions(name)
     $('ma-oauth-revoke').onclick = async () => { if (!confirm('撤销 ' + name + ' 的 OAuth token？')) return; try { await api('/api/oauth/revoke', { method: 'POST', body: JSON.stringify({ agent: name }) }); show('modal', false); await loadState(); toast('已撤销') } catch (error) { toast(error.message, true) } }
     return
   }
   openModal('Agent「' + name + '」', '<div class="hint">绑定账户：<code>' + esc(agent.account || '未绑定（旧数据）') + '</code>。Agent 只能读取该账户；切换账户后旧 Agent 不会自动获得新账户权限。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
   $('ma-save').onclick = () => saveAgentFromModal(name)
+  wireAgentActions(name)
   $('ma-copy').onclick = async () => { try { const data = await api('/api/agents/token', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); toast('token 已复制') } catch (error) { toast(error.message, true) } }
   $('ma-rotate').onclick = async () => { if (!confirm('轮换 ' + name + ' 的 token？旧 token 会立即失效。')) return; try { const data = await api('/api/agents/rotate', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); await loadState(); toast('已轮换并复制新 token') } catch (error) { toast(error.message, true) } }
   $('ma-delete').onclick = async () => { if (!confirm('删除 Agent ' + name + '？')) return; try { await api('/api/agents/delete', { method: 'POST', body: JSON.stringify({ name }) }); show('modal', false); await loadState(); toast('已删除') } catch (error) { toast(error.message, true) } }

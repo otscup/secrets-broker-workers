@@ -1132,7 +1132,16 @@ async function adminAuthorized(request, env) {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
     const origin = request.headers.get('origin')
     if (origin) {
-      try { if (new URL(origin).origin !== new URL(request.url).origin) return false } catch { return false }
+      try {
+        // Compare origins exactly. A page loaded from a different host than the
+        // one it posts to (an alias domain, a reverse proxy, a preview URL) used
+        // to fail here with a bare "unauthorized", which is indistinguishable
+        // from an expired cookie. Name the actual reason instead.
+        if (new URL(origin).origin !== new URL(request.url).origin) {
+          await addAudit(env, { event: 'admin.origin-mismatch', origin: String(origin).slice(0, 120), expected: new URL(request.url).origin }).catch(() => {})
+          return false
+        }
+      } catch { return false }
     }
   }
   const ok = await validCookie(request, env)
