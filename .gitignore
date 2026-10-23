@@ -78,3 +78,4 @@ attach-route.mjs
 !test-mf-globe-routes.mjs
 !test-mf-require-classification.mjs
 !test-mf-plugin-endpoints.mjs
+!test-plugin-endpoints.mjs

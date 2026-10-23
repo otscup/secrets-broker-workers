@@ -3025,6 +3025,86 @@ export default {
       const state = await loadState(env)
       return json({ requests: Object.values(state.credentialRequests ?? {}).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, description: entry.description ?? '', createdAt: entry.createdAt })) })
     }
+    // The operator typing a credential in the plugin, with no Agent behind the
+    // request. Separate from connect/save: there is no request id and no Agent to
+    // grant to, so this only stores the item in the vault.
+    if (url.pathname === '/api/plugin/items/save' && request.method === 'POST') {
+      if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('vault locked; unlock the broker first', 423)
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '').trim()
+      if (!name) return fail('name required', 400)
+      const value = String(body.value ?? '')
+      if (!value) return fail('value required', 400)
+      try {
+        const found = await findCipherRow(env, env.NODEWARDEN_DB, session, name)
+        if (found) {
+          await updateCipher(env, env.NODEWARDEN_DB, session, name, {
+            value,
+            username: typeof body.username === 'string' ? body.username : undefined,
+            url: typeof body.url === 'string' ? body.url : undefined,
+            notes: typeof body.notes === 'string' ? body.notes : undefined,
+          })
+          await addAudit(env, { event: 'item.update', name, source: 'dsh-plugin' })
+          return json({ ok: true, name, updated: true })
+        }
+        const created = await createCipher(env, env.NODEWARDEN_DB, session, {
+          name, value,
+          username: typeof body.username === 'string' ? body.username : '',
+          url: typeof body.url === 'string' ? body.url : '',
+          notes: typeof body.notes === 'string' ? body.notes : '',
+          group: typeof body.group === 'string' ? body.group : '',
+        })
+        await addAudit(env, { event: 'item.create', name, source: 'dsh-plugin' })
+        return json({ ok: true, name: created.name, created: true })
+      } catch (error) { return fail(String(error.message ?? error), 500) }
+    }
+    if (url.pathname === '/api/plugin/items/delete' && request.method === 'POST') {
+      if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('vault locked; unlock the broker first', 423)
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '').trim()
+      if (!name) return fail('name required', 400)
+      try {
+        const deleted = await deleteCipher(env, env.NODEWARDEN_DB, session, name)
+        if (!deleted) return fail('item not found', 404)
+        await addAudit(env, { event: 'item.delete', name, source: 'dsh-plugin' })
+        return json({ ok: true, name })
+      } catch (error) { return fail(String(error.message ?? error), 500) }
+    }
+    // The operator's own list, so the plugin can show what it may pick from
+    // without loading the console. Names and groups only: never a value.
+    if (url.pathname === '/api/plugin/items' && request.method === 'GET') {
+      if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('vault locked; unlock the broker first', 423)
+      try {
+        const items = await listCiphers(env, env.NODEWARDEN_DB, session)
+        return json({ items: items.map((item) => ({ name: item.name, group: item.group ?? '', url: item.url ?? '' })) })
+      } catch (error) { return fail(String(error.message ?? error), 500) }
+    }
+    // Recent activity in the operator's own words: what was read, approved,
+    // written or refused, newest first. This is what the popup shows instead of
+    // an empty "nothing pending" panel.
+    if (url.pathname === '/api/plugin/activity' && request.method === 'GET') {
+      if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit')) || 30))
+      const skip = new Set(['admin.login', 'admin.oidc-login', 'admin.login-fail', 'vault.unlock', 'vault.lock'])
+      const activity = (state.audit ?? [])
+        .filter((entry) => !skip.has(String(entry.event ?? '')))
+        .slice(0, limit)
+        .map((entry) => ({
+          time: entry.time ?? '',
+          event: String(entry.event ?? ''),
+          agent: String(entry.agent ?? ''),
+          name: String(entry.name ?? ''),
+          ok: !String(entry.event ?? '').includes('deny') && !String(entry.event ?? '').includes('fail'),
+        }))
+      return json({ activity })
+    }
     if (url.pathname === '/api/plugin/decide' && request.method === 'POST') {
       if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
       const body = await request.json().catch(() => ({}))

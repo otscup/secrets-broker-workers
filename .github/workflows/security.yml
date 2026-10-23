@@ -127,6 +127,8 @@ jobs:
         run: npm run test:require-classification
       - name: Plugin usage and wait endpoints
         run: npm run test:plugin-endpoints
+      - name: Plugin operator endpoints
+        run: npm run test:plugin-operator
       - name: CSS integrity
         run: npm run test:css
       - name: HTML structure guard
