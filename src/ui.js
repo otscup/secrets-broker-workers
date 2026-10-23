@@ -412,6 +412,23 @@ button.ios-pill{border:0;cursor:pointer;min-width:0}
 .ios-actions .ios-chip:first-child{background:var(--blue);color:#fff}
 .ios-more{width:44px;height:44px;display:grid;place-items:center;background:transparent;color:var(--label-3);font-size:18px;padding:0;border-radius:var(--r-md)}
 .ios-more:hover{background:var(--fill-2);color:var(--label-2)}
+.page{position:fixed;inset:0;z-index:70;display:flex;flex-direction:column;background:var(--bg-grouped);transform:translateX(100%);transition:transform var(--dur-push) var(--ease);will-change:transform}
+.page.in{transform:translateX(0)}
+.page-nav{flex:0 0 auto;height:var(--nav-h);display:flex;align-items:center;gap:var(--sp-2);padding:0 var(--sp-3);background:var(--nav-bg);border-bottom:1px solid var(--separator);position:relative}
+.page-title{flex:1 1 auto;min-width:0;text-align:center;font-size:var(--text-headline);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.page-back,.page-action{display:flex;align-items:center;gap:2px;background:none;border:0;color:var(--blue);font-size:var(--text-body-lg);padding:0;min-height:44px;min-width:44px}
+.page-back svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.page-action{justify-content:flex-end}
+.page-body{flex:1 1 auto;min-height:0;overflow-y:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding:var(--sp-3)}
+.page-body>.card{max-width:680px;margin:0 auto}
+body.page-open{overflow:hidden}
+.kv{display:flex;align-items:baseline;gap:var(--sp-3);padding:11px 0;border-bottom:1px solid var(--separator);font-size:var(--text-body-lg)}
+.kv:last-child{border-bottom:0}
+.kv>span{color:var(--label-2);flex:0 0 auto}
+.kv>b{margin-left:auto;font-weight:400;text-align:right;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kv a{color:var(--blue);text-decoration:none}
+.card.edit-only{display:none}
+.page[data-editing="true"] .card.edit-only{display:block}
 .hdr-actions{margin-left:auto;display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;justify-content:flex-end}
 .hdr-actions .small{font-size:var(--text-sub);padding:6px 12px}
 .theme-cycle{width:36px;height:36px;display:grid;place-items:center;font-size:16px;background:transparent}
@@ -654,7 +671,7 @@ button.ios-pill{border:0;cursor:pointer;min-width:0}
 
 </div>
 <div id="toast" class="toast"></div>
-<div id="modal" class="modal hidden"><div class="card"><button class="modal-x" id="modal-close-x" title="关闭">×</button><h2 id="modal-title"></h2><div id="modal-body"></div><div style="margin-top:12px"><button id="modal-close">关闭</button></div></div></div>
+<section id="item-page" class="page hidden" aria-label="条目详情"><div class="page-nav"><button class="page-back" id="item-page-back" aria-label="返回"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"></path></svg>返回</button><div class="page-title" id="item-page-title"></div><button class="page-action" id="item-page-edit">编辑</button></div><div class="page-body" id="item-page-body"></div></section><div id="modal" class="modal hidden"><div class="card"><button class="modal-x" id="modal-close-x" title="关闭">×</button><h2 id="modal-title"></h2><div id="modal-body"></div><div style="margin-top:12px"><button id="modal-close">关闭</button></div></div></div>
 <script>
 const $ = (id) => document.getElementById(id)
 const enc = new TextEncoder()
@@ -2592,13 +2609,47 @@ function expiresField(item) {
   return '<label class="field">有效期（留空表示不过期）</label><input id="mi-expires" type="date" value="' + esc(stamp) + '">'
 }
 
+// A pushed page instead of a dialog: the item detail is a place you navigate
+// to and come back from, not a thing that floats over the list.
+function openItemPage(title, html) {
+  $('item-page-title').textContent = title
+  $('item-page-body').innerHTML = html
+  $('item-page-body').scrollTop = 0
+  const page = $('item-page')
+  page.dataset.editing = 'false'
+  $('item-page-edit').textContent = '编辑'
+  page.classList.remove('hidden')
+  document.body.classList.add('page-open')
+  requestAnimationFrame(() => page.classList.add('in'))
+}
+function closeItemPage() {
+  const page = $('item-page')
+  if (!page || page.classList.contains('hidden')) return
+  page.classList.remove('in')
+  document.body.classList.remove('page-open')
+  setTimeout(() => { if (!page.classList.contains('in')) page.classList.add('hidden') }, 360)
+}
+$('item-page-back').onclick = closeItemPage
+$('item-page-edit').onclick = () => {
+  const page = $('item-page')
+  const next = page.dataset.editing !== 'true'
+  page.dataset.editing = next ? 'true' : 'false'
+  $('item-page-edit').textContent = next ? '完成' : '编辑'
+  if (next) $('item-page-body').scrollTo({ top: $('item-page-body').scrollHeight, behavior: 'smooth' })
+}
+document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeItemPage() })
 function openItemMenu(name) {
   const item = app.items.find((entry) => entry.name === name); if (!item) return
   const agents = app.data.agents || []
-  openModal('条目「' + name + '」', itemInfoHtml(item) + fillEditorHtml(item) + '<label class="field">名称</label><input id="mi-name" value="' + esc(item.name) + '"><label class="field">用户名（留空不改）</label><input id="mi-username" value="' + esc(item.username || '') + '"><label class="field">TOTP Secret（留空不改）</label><input id="mi-totp" value="' + esc(item.totp || '') + '"><label class="field">分组</label><input id="mi-group" value="' + esc(item.group || '') + '" placeholder="例如 blog/prod"><label class="field">网址</label><input id="mi-url" value="' + esc(item.url || '') + '"><label class="field">备注（留空不改）</label><input id="mi-notes" placeholder="新的备注"><label class="field">新密钥值（留空不改）</label><input id="mi-value" type="password" placeholder="留空保留原值"><label class="chk" style="margin-top:8px"><input type="checkbox" id="mi-noapproval" ' + (item.noApproval ? 'checked' : '') + '> 免审批（自动读取，仍记录）</label><div class="row" style="margin-top:14px"><button class="primary" id="mi-save">保存修改</button><button id="mi-share">分享</button><button class="danger" id="mi-delete">删除</button></div><div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div class="hint">分享给 Agent（同账户直接授权；跨账户会先复制到目标账户文件夹，切回目标账户解锁后自动完成）</div><label class="field">Agent</label><select id="mi-share-agent" multiple size="3">' + agents.map((agent) => '<option value="' + esc(agent.name) + '">' + esc(agent.alias || agent.name) + '</option>').join('') + '</select><label class="field">跨账户目标文件夹（同账户可留空）</label><input id="mi-share-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="mi-share-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mi-share-reads" type="number" min="1"></div>' + expiresField(item) + '</div>')
-  $('mi-share-sync').onclick = () => { show('modal', false); selectedItems.clear(); selectedItems.add(item.name); openBulkShare() }
+  openItemPage(name, itemInfoHtml(item) + '<div class="card"><h2>凭据</h2>' +
+    '<div class="kv"><span>用户名</span><b>' + esc(item.username || '未设置') + '</b></div>' +
+    '<div class="kv"><span>网址</span><b>' + (item.url ? '<a href="' + esc(item.url) + '" target="_blank" rel="noreferrer">' + esc(item.url) + '</a>' : '未设置') + '</b></div>' +
+    '<div class="kv"><span>分组</span><b>' + esc(item.group || '未分组') + '</b></div>' +
+    '<div class="kv"><span>有效期</span><b>' + esc(expiryLabel(item)) + '</b></div></div>' +
+    fillEditorHtml(item) + '<div class="card edit-only"><label class="field">名称</label><input id="mi-name" value="' + esc(item.name) + '"><label class="field">用户名（留空不改）</label><input id="mi-username" value="' + esc(item.username || '') + '"><label class="field">TOTP Secret（留空不改）</label><input id="mi-totp" value="' + esc(item.totp || '') + '"><label class="field">分组</label><input id="mi-group" value="' + esc(item.group || '') + '" placeholder="例如 blog/prod"><label class="field">网址</label><input id="mi-url" value="' + esc(item.url || '') + '"><label class="field">备注（留空不改）</label><input id="mi-notes" placeholder="新的备注"><label class="field">新密钥值（留空不改）</label><input id="mi-value" type="password" placeholder="留空保留原值"><label class="chk" style="margin-top:8px"><input type="checkbox" id="mi-noapproval" ' + (item.noApproval ? 'checked' : '') + '> 免审批（自动读取，仍记录）</label><div class="row" style="margin-top:14px"><button class="primary" id="mi-save">保存修改</button><button id="mi-share">分享</button><button class="danger" id="mi-delete">删除</button></div><div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div class="hint">分享给 Agent（同账户直接授权；跨账户会先复制到目标账户文件夹，切回目标账户解锁后自动完成）</div><label class="field">Agent</label><select id="mi-share-agent" multiple size="3">' + agents.map((agent) => '<option value="' + esc(agent.name) + '">' + esc(agent.alias || agent.name) + '</option>').join('') + '</select><label class="field">跨账户目标文件夹（同账户可留空）</label><input id="mi-share-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="mi-share-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mi-share-reads" type="number" min="1"></div>' + expiresField(item) + '</div>')
+  $('mi-share-sync').onclick = () => { closeItemPage(); selectedItems.clear(); selectedItems.add(item.name); openBulkShare() }
   $('mi-save').onclick = async () => { try { await api('/api/items/update', { method: 'POST', body: JSON.stringify({ name: item.name, newName: $('mi-name').value.trim(), username: $('mi-username').value, totp: $('mi-totp').value, group: $('mi-group').value.trim(), url: $('mi-url').value.trim(), notes: $('mi-notes').value.trim() ? $('mi-notes').value : undefined, value: $('mi-value').value, noApproval: $('mi-noapproval').checked, expiresAt: $('mi-expires').value }) }); show('modal', false); await Promise.all([loadItems(), loadState()]); toast('已保存') } catch (error) { toast(error.message, true) } }
-  $('mi-delete').onclick = async () => { if (!confirm('删除条目「' + item.name + '」？')) return; try { await api('/api/items/delete', { method: 'POST', body: JSON.stringify({ name: item.name }) }); show('modal', false); await Promise.all([loadItems(), loadState()]); toast('已删除') } catch (error) { toast(error.message, true) } }
+  $('mi-delete').onclick = async () => { if (!confirm('删除条目「' + item.name + '」？')) return; try { await api('/api/items/delete', { method: 'POST', body: JSON.stringify({ name: item.name }) }); closeItemPage(); await Promise.all([loadItems(), loadState()]); toast('已删除') } catch (error) { toast(error.message, true) } }
   wireFillEditor(item)
   $('mi-share').onclick = async () => { const agents = [...$('mi-share-agent').selectedOptions].map((option) => option.value); if (!agents.length) return toast('至少选择一个 Agent', true); try { const result = await api('/api/grants/share', { method: 'POST', body: JSON.stringify({ name: $('mi-name').value.trim() || item.name, agents, seconds: Number($('mi-share-seconds').value), maxReads: $('mi-share-reads').value || null, targetFolder: $('mi-share-folder').value.trim() }) }); show('modal', false); await loadState(); if (result.queued?.length) toast('已加入跨账户复制队列，切回目标账户并解锁后自动复制'); else toast('已分享') } catch (error) { toast(error.message, true) } }
 }
