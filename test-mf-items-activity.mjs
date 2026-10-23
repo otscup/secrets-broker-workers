@@ -41,13 +41,15 @@ const items = await mf.dispatchFetch('https://broker.test/api/items', { headers:
   if (ok) pass('I2 username/group/url still returned for the detail view')
   else fail('I2', JSON.stringify(item && { u: item.username, g: item.group, url: item.url }))
 }
-// I3: served UI no longer renders those as columns
+// I3: the served UI renders the list as grouped rows, not a table, and the
+// detail-only fields (username, group, url) never became columns again.
 {
   const html = await mf.dispatchFetch('https://broker.test/', { headers: { cookie } }).then((r) => r.text())
   const hasCols = /<th>用户名<\/th>/.test(html) || /<th>分组<\/th>/.test(html) || /<th>网址<\/th>/.test(html)
-  const hasNew = /<th>最后活动<\/th>/.test(html) && /<th>最后操作<\/th>/.test(html)
-  if (!hasCols && hasNew) pass('I3 columns replaced in the items table')
-  else fail('I3', JSON.stringify({ hasCols, hasNew }))
+  const grouped = /class="ios-row/.test(html) && /ios-check/.test(html)
+  const showsActivity = /lastActivityAt/.test(html) && /lastActor/.test(html)
+  if (!hasCols && grouped && showsActivity) pass('I3 grouped rows carry activity, no detail columns')
+  else fail('I3', JSON.stringify({ hasCols, grouped, showsActivity }))
 }
 // I4: items with no audit history get an explicit empty marker, not a fake time
 {
