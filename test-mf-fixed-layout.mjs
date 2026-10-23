@@ -10,10 +10,10 @@ const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
 
 // S1: the overview reads headline, widgets, work, trend, ranking, share, globe, activity
 {
-  const order = ['id="ov-sub"', 'id="kpis"', 'id="ov-actions"', 'id="chart-box"', 'id="top-box"', 'id="donut-box"', 'id="globe-card"', 'id="recent-box"']
+  const order = ['id="ov-sub"', 'id="kpis"', 'id="chart-box"', 'id="top-box"', 'id="ov-actions"', 'id="donut-box"', 'id="globe-card"', 'id="recent-box"']
   const idx = order.map((id) => ui.indexOf(id))
   const inOrder = idx.every((v, i) => v >= 0 && (i === 0 || v > idx[i - 1]))
-  if (inOrder) pass('S1 overview ordered: headline, widgets, work, trend, ranking, share, globe, activity')
+  if (inOrder) pass('S1 overview ordered: headline, widgets, trend, ranking, work, share, globe, activity')
   else fail('S1', JSON.stringify(idx))
 }
 // S2: every panel is a fixed-height grid child

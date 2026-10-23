@@ -39,10 +39,11 @@ const ui = fs.readFileSync('src/ui.js', 'utf8')
 // X4: the trend spans the row, ranking and share sit side by side
 {
   const widgets = /\.kpis\{display:grid;grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/.test(ui)
-  const pair = /<div class="grid2 ov-pair">[\s\S]{0,900}?id="donut-box"/.test(html)
-  const full = /<div class="card"><h2>读取趋势<\/h2>[\s\S]{0,200}?id="chart-box"/.test(html)
-  if (widgets && pair && full) pass('X4 trend full width, ranking and share paired')
-  else fail('X4', JSON.stringify({ widgets, pair, full }))
+  const dash = /\.dash\{display:grid;grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/.test(ui)
+  const wide = /<div class="card span2"><h2>读取趋势<\/h2>[\s\S]{0,200}?id="chart-box"/.test(html)
+  const inline = /id="chart-box"[\s\S]{0,400}?id="top-box"[\s\S]{0,400}?id="donut-box"/.test(html)
+  if (widgets && dash && wide && inline) pass('X4 dense dashboard: widgets, wide trend, ranking and share on the first screen')
+  else fail('X4', JSON.stringify({ widgets, dash, wide, inline }))
 }
 // X5: agent stat cards stay horizontal and match the overview KPI look
 {

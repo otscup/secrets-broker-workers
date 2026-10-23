@@ -516,7 +516,17 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 .ov-actions{margin-bottom:var(--sp-3)}
 .ov-actions:empty{display:none}
 .ov-action{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3)}
+.ov-action>div{min-width:0}
+.ov-action button{flex:0 0 auto;white-space:nowrap}
 .ov-pair{margin-bottom:var(--sp-3)}
+.dash{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3);align-items:stretch;margin-bottom:var(--sp-3)}
+.dash>.card,.dash>.ov-actions{margin:0}
+.dash .span2{grid-column:span 2}
+.dash .span3{grid-column:span 3}
+.dash .trend-box{height:auto}
+.dash .rank-box{max-height:196px;overflow:auto}
+.dash #recent-box{max-height:260px;overflow-y:auto}
+@media(max-width:900px){.dash{grid-template-columns:1fr}.dash .span2,.dash .span3{grid-column:auto}}
 /* Restored: dbdacd6 dropped this rule but three wrappers still use the class,
    so the settings pairs and the overview pair silently stacked. */
 .grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:stretch}
@@ -567,12 +577,11 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
     <div id="global-search-results" class="gs-box hidden"></div>
     <div id="notice-bar" class="notice-bar hidden" role="button" tabindex="0" title="点击查看全部通知"></div>
     <div id="kpis" class="kpis"></div>
-    <div id="ov-actions" class="ov-actions"></div>
-    <div class="card"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
-    <div class="grid2 ov-pair">
+    <div class="dash">
+      <div class="card span2"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
       <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="rank-box"></div></div>
+      <div id="ov-actions" class="ov-actions"></div>
       <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
-    </div>
       <div class="card" id="globe-card">
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
           <h2 style="margin:0">Agent Live Globe</h2>
@@ -587,8 +596,9 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
         </div>
         <div class="hint" id="globe-status" style="margin-top:4px"></div>
       </div>
+      <div class="card span3"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>
     <div id="chart-tip" class="chart-tip"></div>
-    <div class="card"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>
+    </div>
   </section>
 
   <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读）。点条目打开详情，可改类型、明文读取、免审批和分享；勾选多条可批量操作。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="items-select">选择</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
