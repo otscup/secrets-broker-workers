@@ -22,7 +22,7 @@ const html = await r.text()
   // Elements whose binding is explicitly null-guarded are allowed to be absent.
   // Elements created at runtime (the enlarged-globe overlay) are never in the
   // served markup, so they are expected to be missing here.
-  const guarded = new Set(['copy-token', 'globe-overlay', 'globe-big-box', 'globe-danmu', 'globe-big-close'])
+  const guarded = new Set(['copy-token', 'globe-overlay', 'globe-big-box', 'globe-danmu', 'globe-big-close', 'ai-panel', 'ai-chat', 'ai-question', 'ai-ask', 'ai-insights', 'ai-chat-status', 'ai-panel-close', 'ai-clear'])
   const missing = [...new Set(used)].filter((id) => !defined.has(id) && !guarded.has(id))
   if (missing.length === 0) pass('U1 all ' + new Set(used).size + ' bound element ids exist or are guarded')
   else fail('U1', 'missing: ' + missing.join(','))

@@ -5623,7 +5623,11 @@ export default {
         value: { clientId, clientName, redirectUris, createdAt: nowIso() },
       }])
       if (!written?.ok) return fail('could not persist client registration', 500)
-      await addAudit(env, { event: 'oauth.client-register', clientId, clientName: body.client_name ?? '' })
+      // Registration is open (that is what makes standard MCP clients work) but it
+      // grants nothing: a client still needs the operator to approve it on the
+      // consent page, which mints the only token-issuing code. Recorded so a
+      // registration nobody recognises is visible rather than silent.
+      await addAudit(env, { event: 'oauth.client-register', clientId, clientName: body.client_name ?? '', source: 'registration' })
       return json({ client_id: clientId, client_name: body.client_name ?? 'MCP client', redirect_uris: redirectUris, token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }, 201)
     }
     if (url.pathname === '/oauth/authorize') {
@@ -5714,7 +5718,7 @@ export default {
           next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', scope: String(params.get('scope') ?? 'secrets.read'), account, createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000, grantItems, grantGroups, grantAll, grantPlaintext, grantHours }
           return next
         })
-        await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId, items: grantItems.length, groups: grantGroups.length, all: grantAll, plaintext: grantPlaintext, hours: grantPlaintext ? grantHours : 0 })
+        await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId, items: grantItems.length, groups: grantGroups.length, all: grantAll, plaintext: grantPlaintext, hours: grantPlaintext ? grantHours : 0, source: 'console' })
         const target = new URL(redirectUri); target.searchParams.set('code', code); if (params.get('state')) target.searchParams.set('state', params.get('state'))
         return Response.redirect(target.toString(), 302)
       }

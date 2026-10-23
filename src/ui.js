@@ -216,9 +216,10 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
 </style></head><body><div class="wrap">
 <header><img id="site-logo" src="/logo.png" alt="" style="width:30px;height:30px;border-radius:8px;object-fit:cover;cursor:pointer"><h1 id="site-title" style="cursor:pointer">Secrets Broker</h1><span class="badge">Cloudflare Workers</span>
 <button id="theme-cycle" class="theme-cycle" title="切换主题：浅色 / 深色 / 跟随系统">☀️</button>
-<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button><a class="icon-btn" href="https://github.com/otscup/secrets-broker-workers" target="_blank" rel="noreferrer" title="GitHub"><svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a></nav>
-<button id="page-refresh" class="small" title="刷新当前页面">刷新</button>
+<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button></nav>
 <button id="ai-help" class="small" title="用 AI 解释当前状态">问 AI</button>
+<a class="icon-btn" href="https://github.com/otscup/secrets-broker-workers" target="_blank" rel="noreferrer" title="GitHub"><svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+<button id="page-refresh" class="small" title="刷新当前页面">刷新</button>
 <div class="user-wrap"><span class="user"><span class="who-name" id="who"></span><button id="avatar" class="avatar" title="账户">SB</button></span>
 <div id="account-menu" class="account-menu hidden"><button data-view="profile">个人资料</button><button data-view="settings">系统设置</button><button id="account-logout">退出登录</button><button id="lock" class="danger">锁定</button></div></div>
 </header>
@@ -304,7 +305,17 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div class="card"><h2>OAuth 客户端</h2><div class="hint">每个连接（Muse、Codex、ChatGPT 等）在首次授权时会注册一个客户端。重复或失效的注册可以逐个撤销，撤销会同时清除它的 token。</div><div id="oauth-clients-box" class="table-wrap" style="margin-top:10px"></div></div>
   </section>
 
-  <section id="view-logs" class="view hidden"><div class="card"><h2>审计日志</h2><div class="hint">最近 500 条，数据在 Durable Object 中。</div><div id="logs-box" class="table-wrap scroll-list" style="margin-top:10px"></div></div></section>
+  <section id="view-logs" class="view hidden"><div class="card"><h2>审计日志</h2><div class="hint">最近 500 条，数据在 Durable Object 中。</div>
+    <div class="row" style="margin-top:12px;gap:8px">
+      <select id="logs-item-filter" style="flex:0 0 auto"><option value="">全部条目</option></select>
+      <select id="logs-agent-filter" style="flex:0 0 auto"><option value="">全部 Agent</option></select>
+      <select id="logs-event-filter" style="flex:0 0 auto"><option value="">全部事件类型</option></select>
+      <input id="logs-search" placeholder="搜索事件、Agent、条目、原因…" style="flex:1;min-width:180px">
+      <button id="logs-reset" style="flex:0 0 auto">清空筛选</button>
+    </div>
+    <div class="hint" id="logs-count" style="margin-top:8px"></div>
+    <div id="logs-box" class="table-wrap scroll-list" style="margin-top:10px"></div>
+  </div></section>
 
   <section id="view-profile" class="view hidden">
     <div class="card"><h2>个人资料</h2><div class="hint">用于页面显示；OIDC 登录会同步姓名/邮箱/头像。</div>
@@ -639,6 +650,12 @@ $('agent-new').onclick = openAgentCreate
 $('agent-search').oninput = renderAgents
 $('agent-type-filter').onchange = renderAgents
 $('agent-sort').onchange = renderAgents
+// Filters only re-render the log view; the rows are already in app.data.
+$('logs-item-filter').onchange = renderLogs
+$('logs-agent-filter').onchange = renderLogs
+$('logs-event-filter').onchange = renderLogs
+$('logs-search').oninput = renderLogs
+$('logs-reset').onclick = () => { for (const id of ['logs-item-filter', 'logs-agent-filter', 'logs-event-filter', 'logs-search']) { const el = $(id); if (el) el.value = '' } renderLogs() }
 // A checkbox list of what actually exists, so the operator picks from real
 // item and group names instead of guessing at comma-separated text. Rendered as
 // a scrollable box that matches the modal's other fields.
@@ -1080,16 +1097,55 @@ async function fetchCustomModels() {
 }
 // The one place the console talks to the model. Read-only by construction: the
 // broker only exposes /api/ai/ask, which answers questions and changes nothing.
+// The assistant as a side panel, not a modal: you keep working behind it, which
+// is the whole point of asking "why did that fail" while fixing it.
+//
+// Memory has two modes and the operator picks. Session mode keeps the thread in
+// sessionStorage, so it survives a page reload but not a new login; durable mode
+// asks the server to keep it. The panel never closes itself — not on a page
+// action, not on a poll — so a half-written question is never lost.
+const AI_THREAD_KEY = 'sb-ai-thread'
+const AI_THREAD_PERSIST_KEY = 'sb-ai-thread-persist'
+
+function aiThreadLoad() {
+  try {
+    const raw = sessionStorage.getItem(AI_THREAD_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch { return [] }
+}
+function aiThreadSave(history) {
+  try { sessionStorage.setItem(AI_THREAD_KEY, JSON.stringify(history.slice(-20))) } catch {}
+}
+function aiThreadClear() {
+  try { sessionStorage.removeItem(AI_THREAD_KEY) } catch {}
+}
+
 function openAiHelp(preset) {
-  openModal('问 AI', '<div class="hint">它会读取当前状态（Agent、条目名、授权、日志），但拿不到任何密钥值，也不能修改东西。</div>'
-    + '<div id="ai-chat" style="max-height:300px;overflow:auto;scrollbar-width:none;margin:10px 0"></div>'
-    + '<label class="field">你的问题</label>'
+  // Reuse the panel if it is already open, so clicking 问 AI again does not
+  // discard the conversation.
+  const existing = $('ai-panel')
+  if (existing) {
+    if (preset) { $('ai-question').value = preset; $('ai-question').focus() }
+    return
+  }
+  const panel = document.createElement('aside')
+  panel.id = 'ai-panel'
+  panel.style.cssText = 'position:fixed;top:0;right:0;bottom:0;width:min(420px,100vw);z-index:40;background:var(--card,#fff);border-left:1px solid var(--line);box-shadow:-8px 0 30px rgba(15,23,42,.12);display:flex;flex-direction:column;padding:14px'
+  panel.innerHTML = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+    + '<b style="flex:1;font-size:13.5px">问 AI</b>'
+    + '<button class="small" id="ai-clear" title="清空对话">清空</button>'
+    + '<button class="small" id="ai-panel-close" title="收起（对话会保留）">收起</button>'
+    + '</div>'
+    + '<div class="hint" style="margin-bottom:8px">只读：能看到 Agent、条目名、授权和日志，拿不到密钥值，也不能修改东西。可以在后面继续操作网页，面板不会自己收起。</div>'
+    + '<div id="ai-chat" class="scroll-list" style="flex:1;min-height:0;overflow:auto;scrollbar-width:none;margin-bottom:8px"></div>'
     + '<input id="ai-question" placeholder="例如：为什么 Muse 读不到 tavily-api-key？" value="' + esc(preset || '') + '">'
-    + '<div class="row" style="margin-top:10px"><button class="primary" id="ai-ask">发送</button><button id="ai-insights">只看待处理项</button></div>'
-    + '<div class="status" id="ai-chat-status"></div>')
+    + '<div class="row" style="margin-top:8px;gap:6px"><button class="primary" id="ai-ask" style="flex:1">发送</button><button id="ai-insights">待处理项</button></div>'
+    + '<div class="hint" id="ai-chat-status" style="min-height:16px;margin-top:6px"></div>'
+  document.body.appendChild(panel)
   const chat = $('ai-chat')
-  const history = []
-  const append = (role, text) => {
+  let history = aiThreadLoad()
+
+  const bubble = (role, text) => {
     const node = document.createElement('div')
     node.style.cssText = 'border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:6px 0;font-size:12.5px;white-space:pre-wrap'
     node.style.background = role === 'user' ? 'var(--btn)' : 'transparent'
@@ -1097,6 +1153,10 @@ function openAiHelp(preset) {
     chat.appendChild(node)
     chat.scrollTop = chat.scrollHeight
   }
+  // Redraw what was remembered, so reopening or reloading does not lose it.
+  for (const turn of history) if (turn.content) bubble(turn.role === 'user' ? 'user' : 'ai', turn.content)
+  if (!history.length) bubble('ai', '可以问我：哪条授权过期了、为什么某个 Agent 读不到、需要先修什么。')
+
   const renderInsights = (insights) => {
     if (!insights || !insights.length) return
     for (const item of insights) {
@@ -1105,7 +1165,11 @@ function openAiHelp(preset) {
       node.textContent = item.text
       chat.appendChild(node)
     }
+    chat.scrollTop = chat.scrollHeight
   }
+
+  $('ai-panel-close').onclick = () => { panel.remove() }
+  $('ai-clear').onclick = () => { history = []; aiThreadClear(); chat.innerHTML = ''; bubble('ai', '已清空。') }
   $('ai-insights').onclick = async () => {
     try {
       const data = await api('/api/ai/insights')
@@ -1114,26 +1178,29 @@ function openAiHelp(preset) {
       if (!(data.insights || []).length) chat.textContent = '没有发现需要处理的项。'
     } catch (error) { status('ai-chat-status', error.message, 'error') }
   }
-  $('ai-ask').onclick = async () => {
+  const ask = async () => {
     const question = $('ai-question').value.trim()
     if (!question) return status('ai-chat-status', '先写一个问题', 'error')
-    append('user', question)
+    bubble('user', question)
     $('ai-question').value = ''
     status('ai-chat-status', '思考中…')
     try {
       const data = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question, history: history.slice(-6) }) })
       if (!data.ok) {
-        append('ai', '暂时回答不了：' + (data.error || '未知原因'))
+        bubble('ai', '暂时回答不了：' + (data.error || '未知原因'))
         status('ai-chat-status', '')
         renderInsights(data.insights)
         return
       }
-      append('ai', data.text)
+      bubble('ai', data.text)
       history.push({ role: 'user', content: question }, { role: 'assistant', content: data.text })
+      aiThreadSave(history)
       status('ai-chat-status', '由 ' + (data.provider === 'workers-ai' ? 'Workers AI' : '自建 API') + ' 回答')
     } catch (error) { status('ai-chat-status', error.message, 'error') }
   }
-  $('ai-question').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('ai-ask').click() })
+  $('ai-ask').onclick = ask
+  $('ai-question').addEventListener('keydown', (event) => { if (event.key === 'Enter') ask() })
+  $('ai-question').focus()
 }
 // A separate control, so changing it does not rewrite every notification
 // channel's empty token field.
@@ -2065,13 +2132,56 @@ function renderRecent() { $('recent-box').innerHTML = (app.data.audit || []).sli
 // read skipped every check, and a denial shows what was refused. Everything
 // else stays neutral so the red still means something.
 const RED_LOG_EVENTS = new Set(['secret.read-noapproval', 'access.denied', 'secret.read-deny', 'secret.write-deny', 'grant.revoke', 'fill.redeem-deny', 'credential.cancel', 'policy.shadow-mismatch', 'admin.login-fail'])
+// Event names are dozens and change; the operator thinks in groups. A trailing
+// .* matches a prefix (telegram.*, oauth.*, fill.*). 仅风险事件 reuses
+// RED_LOG_EVENTS so red stays the one definition of "risk".
+const LOG_EVENT_GROUPS = [
+  { key: 'read', label: '读取与拒绝', match: ['secret.read', 'secret.read-deny', 'secret.read-noapproval'] },
+  { key: 'blocked', label: '被拦下的请求', match: ['access.denied'] },
+  { key: 'grant', label: '授权变更', match: ['grant.share', 'grant.revoke', 'grant.extend', 'request.approve', 'request.deny', 'request.auto-approve', 'request.create'] },
+  { key: 'ai', label: 'AI 与 Telegram', match: ['ai.ask', 'telegram.*'] },
+  { key: 'login', label: '登录与解锁', match: ['admin.login', 'admin.login-fail', 'admin.oidc-login', 'admin.origin-mismatch', 'vault.unlock', 'vault.lock'] },
+  { key: 'item', label: '条目与分类', match: ['item.create', 'item.update', 'item.delete', 'fill-policy.update', 'use-policy.update', 'plaintext-read-policy.update'] },
+  { key: 'oauth', label: 'OAuth 与填充', match: ['oauth.*', 'fill.*'] },
+  { key: 'risk', label: '仅风险事件', red: true, match: [] },
+]
+function logEventInGroup(group, event) {
+  if (group.red) return RED_LOG_EVENTS.has(event)
+  return (group.match || []).some((kind) => (kind.endsWith('.*') ? event.startsWith(kind.slice(0, -1)) : event === kind))
+}
+// Options are rebuilt from the audit rows on every render (the data can change
+// under a refresh); the current choice is carried over by value.
+function fillLogSelect(id, options, allLabel) {
+  const select = $(id); if (!select) return
+  const current = select.value
+  select.innerHTML = '<option value="">' + esc(allLabel) + '</option>' + options.map((option) => '<option value="' + esc(option.value) + '"' + (option.value === current ? ' selected' : '') + '>' + esc(option.label) + '</option>').join('')
+}
 function renderLogs() {
-  const rows = app.data.audit || []
-  $('logs-box').innerHTML = rows.length ? '<table><tr><th>时间</th><th>描述</th><th>Agent</th><th>条目</th></tr>' + rows.slice(0, 200).map((entry) => {
+  const all = app.data.audit || []
+  const names = [...new Set(all.map((entry) => entry.name).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)))
+  const agents = [...new Set(all.map((entry) => entry.agent).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)))
+  fillLogSelect('logs-item-filter', names.map((name) => ({ value: name, label: name })), '全部条目')
+  fillLogSelect('logs-agent-filter', agents.map((name) => ({ value: name, label: agentLabel(name) })), '全部 Agent')
+  fillLogSelect('logs-event-filter', LOG_EVENT_GROUPS.map((group) => ({ value: group.key, label: group.label })), '全部事件类型')
+  const item = ($('logs-item-filter') || {}).value || ''
+  const agent = ($('logs-agent-filter') || {}).value || ''
+  const group = LOG_EVENT_GROUPS.find((entry) => entry.key === (($('logs-event-filter') || {}).value || ''))
+  const query = String((($('logs-search') || {}).value || '') || '').trim().toLowerCase()
+  const rows = all.filter((entry) => {
+    if (item && entry.name !== item) return false
+    if (agent && entry.agent !== agent) return false
+    if (group && !logEventInGroup(group, String(entry.event || ''))) return false
+    if (query && !['event', 'agent', 'name', 'reason'].some((key) => String(entry[key] ?? '').toLowerCase().includes(query))) return false
+    return true
+  })
+  // The table stays capped at 200 rows, so the count reports what is actually drawn.
+  const shown = rows.slice(0, 200)
+  const count = $('logs-count'); if (count) count.textContent = '显示 ' + shown.length + ' / 共 ' + all.length + ' 条'
+  $('logs-box').innerHTML = shown.length ? '<table><tr><th>时间</th><th>描述</th><th>Agent</th><th>条目</th></tr>' + shown.map((entry) => {
     const red = RED_LOG_EVENTS.has(String(entry.event || ''))
     const cell = red ? ' style="color:var(--danger)"' : ''
     return '<tr><td' + cell + '>' + esc(new Date(entry.time).toLocaleString('zh-CN', { hour12: false })) + '</td><td' + cell + '>' + esc(describe(entry)) + '</td><td' + cell + '>' + esc(entry.agent || '') + '</td><td' + cell + '>' + esc(entry.name || '') + '</td></tr>'
-  }).join('') + '</table>' : '<div class="hint">暂无日志</div>'
+  }).join('') + '</table>' : '<div class="hint">' + (all.length ? '没有符合筛选条件的日志' : '暂无日志') + '</div>'
 }
 async function reveal(name) { try { const data = await api('/secret?name=' + encodeURIComponent(name)); $('modal-title').textContent = '读取 ' + name; $('modal-body').innerHTML = '<div class="hint">仅用于人工查看；Agent 应通过 /secret 或 MCP 获取。</div>' + (data.username ? '<label class="field">用户名</label><div class="secret">' + esc(data.username) + '</div>' : '') + '<label class="field">密钥</label><div class="secret">' + esc(data.value || '(空)') + '</div>' + (data.totp ? '<label class="field">TOTP Secret</label><div class="secret">' + esc(data.totp) + '</div>' : ''); show('modal', true) } catch (error) { toast(error.message, true) } }
 function createItemMenu() {
