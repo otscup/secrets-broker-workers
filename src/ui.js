@@ -520,13 +520,17 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 .ov-action button{flex:0 0 auto;white-space:nowrap}
 .ov-pair{margin-bottom:var(--sp-3)}
 @media(min-width:1280px){.wrap{max-width:1240px}}
-#globe-card .globe-box{max-height:240px}
+/* Both dashboard rows have to clear the fold on a laptop, which is what this
+   grid exists to prevent: at 150px/196px the second row ended 6px low at
+   1536x864. Measured in Chrome, not estimated. */
+#globe-card .globe-box{height:150px}
+.dash .trend-box svg{height:130px}
 .dash{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3);align-items:stretch;margin-bottom:var(--sp-3)}
 .dash>.card,.dash>.ov-actions{margin:0}
 .dash .span2{grid-column:span 2}
 .dash .span3{grid-column:span 3}
 .dash .trend-box{height:auto}
-.dash .rank-box{max-height:196px;overflow:auto}
+.dash .rank-box{max-height:160px;overflow:auto}
 .dash #recent-box{max-height:260px;overflow-y:auto}
 @media(max-width:900px){.dash{grid-template-columns:1fr}.dash .span2,.dash .span3{grid-column:auto}}
 /* Restored: dbdacd6 dropped this rule but three wrappers still use the class,

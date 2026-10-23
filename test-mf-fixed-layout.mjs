@@ -102,6 +102,46 @@ const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe'
   if (open === close) pass('S6 style block braces balanced (' + open + ')')
   else fail('S6', 'open=' + open + ' close=' + close)
 }
+// S7: the dashboard really fits a 1280x900 laptop - measured, not grepped.
+// Commit 1aef72f claimed this in its message while both rows sat 68px below the
+// fold, so the claim is checked against real geometry from the served CSS.
+{
+  const style = /<style>([\s\S]*?)<\/style>/.exec(ui)
+  const bodyAt = ui.indexOf('<body>')
+  const s0 = ui.indexOf('<section id="view-overview"')
+  const s1 = ui.indexOf('<section id="view-items"')
+  if (!style || bodyAt < 0 || s0 < 0 || s1 < 0) fail('S7', 'cannot slice the shell out of src/ui.js')
+  else {
+    const fixture = '<!doctype html><html><head><meta charset="utf-8"><style>' + style[1] + '</style></head><body>'
+      + ui.slice(bodyAt + 6, s0) + ui.slice(s0, s1) + '</div>'
+      + `<script>
+(function(){
+  ['dashboard','login-card','unlock-card'].forEach(function(id){ var el=document.getElementById(id); if(el){ if(id==='dashboard') el.classList.remove('hidden'); else el.classList.add('hidden') } });
+  document.querySelectorAll('.view').forEach(function(s){ s.classList.toggle('hidden', s.id !== 'view-overview') });
+  var box=document.getElementById('recent-box'); if(box) box.innerHTML=Array(12).join('<div class="feed-row">line</div>');
+  var top=document.getElementById('top-box'); if(top) top.innerHTML=Array(20).join('<div class="rank__row"><div class="rank__head"><span class="rank__name">1. name</span><span class="rank__count">9 次</span></div><div class="rank__track"><div class="rank__fill" style="width:40%"></div></div></div>');
+  var kp=document.getElementById('kpis'); if(kp) kp.innerHTML=Array(5).join('<div class="kpi"><div class="label">l</div><div class="value">1</div><div class="sub">s</div></div>');
+  var oa=document.getElementById('ov-actions'); if(oa) oa.innerHTML='<div class="ov-action"><div>有 3 条请求等待</div><button class="small">去处理</button></div>';
+  var chart=document.getElementById('chart-box'); if(chart) chart.innerHTML='<svg viewBox="0 0 600 180"><rect x="40" y="40" width="20" height="120" fill="#5b6cff"/></svg>';
+  function bottom(sel){ var el=document.querySelector(sel); return el ? Math.round(el.getBoundingClientRect().bottom) : 0 }
+  var o={ fold: innerHeight, trend: bottom('.dash>.span2'), row2: Math.max(bottom('#globe-card'), bottom('#ov-actions')) };
+  var pre=document.createElement('pre'); pre.id='M'; pre.textContent=JSON.stringify(o); document.body.appendChild(pre);
+})();
+</script></body></html>`
+    const file = path.join(os.tmpdir(), 'dsh-dash-fold-' + process.pid + '.html')
+    fs.writeFileSync(file, fixture, 'utf8')
+    const out = spawnSync(CHROME, ['--headless=new','--disable-gpu','--no-sandbox','--virtual-time-budget=4000',
+      '--window-size=1280,900','--dump-dom','file:///' + file.replace(/\\/g, '/')],
+    { encoding: 'utf8', maxBuffer: 67108864 })
+    const m = /<pre id="M">([\s\S]*?)<\/pre>/.exec(String(out.stdout || ''))
+    if (!m) fail('S7', 'chrome produced no measurement (status ' + out.status + ')')
+    else {
+      const d = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'))
+      if (d.trend > 0 && d.row2 <= d.fold) pass('S7 1280x900: both dashboard rows above the fold (row2 bottom ' + d.row2 + ' of ' + d.fold + ')')
+      else fail('S7', JSON.stringify(d))
+    }
+  }
+}
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== fixed layout ' + passed + '/' + results.length + ' passed ====')
 if (passed !== results.length) process.exit(1)
