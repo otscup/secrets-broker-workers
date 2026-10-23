@@ -63,12 +63,14 @@ window.__ModuleLoader__.load({
         setState((current) => ({ ...current, status: "loading" }));
         Promise.allSettled([
           fetch("/api/secrets-broker/pending").then((response) => response.json()),
-          fetch("/api/secrets-broker/credential-requests").then((response) => response.json())
-        ]).then(([pendingResult, requestResult]) => {
+          fetch("/api/secrets-broker/credential-requests").then((response) => response.json()),
+          fetch("/api/secrets-broker/usage?hours=24").then((response) => response.json()).catch(() => ({}))
+        ]).then(([pendingResult, requestResult, usageResult]) => {
           const pendingPayload = pendingResult.status === "fulfilled" ? pendingResult.value : null;
           if (!pendingPayload || pendingPayload.ok === false) throw new Error((pendingPayload && pendingPayload.error) || "broker error");
           const requestPayload = requestResult.status === "fulfilled" ? requestResult.value : null;
-          setState({ status: "ready", pending: Array.isArray(pendingPayload.pending) ? pendingPayload.pending : [], requests: Array.isArray(requestPayload?.requests) ? requestPayload.requests : [] });
+          const usagePayload = usageResult.status === "fulfilled" ? usageResult.value : {};
+          setState({ status: "ready", pending: Array.isArray(pendingPayload.pending) ? pendingPayload.pending : [], requests: Array.isArray(requestPayload?.requests) ? requestPayload.requests : [], usage: usagePayload && usagePayload.ok === false ? null : usagePayload });
         }).catch((error) => setState({ status: "error", error: String(error.message || error), pending: [], requests: [] }));
       };
       react.useEffect(() => {
@@ -113,74 +115,329 @@ window.__ModuleLoader__.load({
           )
         ));
       }
+      const usage = state.usage;
+      if (usage && usage.ok !== false) {
+        const agents = Array.isArray(usage.agents) ? usage.agents : [];
+        const caps = Array.isArray(usage.capabilities) ? usage.capabilities : [];
+        children.push(react.createElement("p", { style: s.title }, "谁在用我的密钥（最近 " + (usage.windowHours || 24) + " 小时）"));
+        if (usage.requireClassification === true) {
+          children.push(react.createElement("p", { style: s.meta }, "未分类的凭据已禁止 Agent 读取明文。"));
+        }
+        if (agents.length === 0) {
+          children.push(react.createElement("p", { style: s.intro }, "这段时间没有读取记录。"));
+        } else {
+          const rows = agents.map((agent) => react.createElement("div", { key: agent.agent, style: s.card },
+            react.createElement("p", { style: s.title }, agent.agent + " · " + agent.reads + " 次读取" + (agent.denied ? " · " + agent.denied + " 次被拒" : "")),
+            react.createElement("p", { style: s.meta }, Object.entries(agent.items || {}).map(([name, count]) => name + " ×" + count).join("，") + (agent.lastAt ? " · 最近 " + new Date(agent.lastAt).toLocaleString() : ""))
+          ));
+          children.push(...rows);
+        }
+        if (caps.length) {
+          const list = caps.map((cap) => react.createElement("p", { key: cap.agent + cap.name + cap.action, style: s.meta },
+            cap.agent + " → " + cap.name + " · " + cap.action + (cap.usesLeft == null ? " · 不限次数" : " · 剩余 " + cap.usesLeft + "/" + cap.maxUses) + (cap.expiresAt ? " · 到期 " + new Date(cap.expiresAt).toLocaleString() : " · 永久")));
+          children.push(react.createElement("p", { style: s.title }, "当前有效授权"), ...list);
+        }
+      }
       return react.createElement("div", { style: s.wrap }, ...children);
     }
 
     function startPopup(ctx) {
+      // One short label per audit event, so the activity list reads as sentences
+      // instead of dotted identifiers.
+      const eventLabel = (event) => ({
+        'secret.read': '读取', 'secret.read-deny': '拒读', 'secret.write': '写入', 'secret.write-deny': '拒写',
+        'grant.share': '授权', 'grant.revoke': '撤销', 'grant.adjust': '改授权', 'grant.delete': '删授权',
+        'request.create': '申请', 'request.approve': '批准', 'request.deny': '拒绝',
+        'credential.request': '求密钥', 'credential.connect': '已补密钥', 'credential.cancel': '取消求密钥',
+        'item.create': '建条目', 'item.update': '改条目', 'item.delete': '删条目',
+      })[event] || String(event || '').replace(/^[a-z]+\./, '');
       const dismissed = new Set();
       const drafts = new Map();
       let overlay = null;
       let busy = false;
+      let queued = false;
+      let firstLoad = true;
+      let showEmpty = false;
+      // Tabs, so the popup is useful when nothing is waiting: the queue is one
+      // tab, "recent activity" and "add a key" are the others.
+      let tab = 'queue';
       const styleButton = "border:1px solid #d8e0ec;background:#fff;color:#152033;border-radius:6px;padding:5px 8px;font:12px system-ui;cursor:pointer";
       const stylePrimary = "border:0;background:#0f9d8a;color:#fff;border-radius:6px;padding:6px 9px;font:12px system-ui;cursor:pointer";
       const styleDanger = "border:1px solid #e3b4b0;background:#fff;color:#c0392b;border-radius:6px;padding:5px 8px;font:12px system-ui;cursor:pointer";
+      const styleInput = "width:100%;box-sizing:border-box;border:1px solid #d8e0ec;border-radius:6px;padding:6px;margin:3px 0;font:12px system-ui";
       const mk = (tag, text, style) => { const el = document.createElement(tag); if (text) el.textContent = text; if (style) el.style.cssText = style; return el; };
       const remove = () => { if (overlay) { overlay.remove(); overlay = null } };
-      const load = async () => {
-        if (busy) return;
-        // Never rerender while the user is typing in the popup.
-        if (overlay && overlay.contains(document.activeElement)) return;
-        busy = true;
+      // The launcher carries a badge so a wait is visible without opening it.
+      const ensureLauncher = () => {
+        if (document.getElementById('secrets-broker-launcher')) return;
+        const launcher = document.createElement('button');
+        launcher.id = 'secrets-broker-launcher';
+        launcher.type = 'button';
+        launcher.title = 'Secrets Broker';
+        launcher.textContent = '🔐';
+        launcher.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147482999;width:40px;height:40px;border-radius:13px;border:1px solid #d8e0ec;background:#fff;color:#152033;font-size:18px;cursor:pointer;box-shadow:0 8px 22px rgba(15,23,42,.12);transition:transform .18s ease,box-shadow .18s ease';
+        launcher.onmouseenter = () => { launcher.style.transform = 'translateY(-2px) scale(1.04)'; launcher.style.boxShadow = '0 12px 28px rgba(15,23,42,.2)' };
+        launcher.onmouseleave = () => { launcher.style.transform = ''; launcher.style.boxShadow = '0 8px 22px rgba(15,23,42,.12)' };
+        launcher.onclick = () => {
+          if (overlay) { remove(); return }
+          showEmpty = true;
+          tab = 'queue';
+          // Paint from the last payload at once, then refresh behind it. On the
+          // very first open there is nothing cached, so only the refresh runs.
+          if (last) load(true);
+          load();
+        };
+        document.body.appendChild(launcher);
+      };
+      const badge = (count) => {
+        const launcher = document.getElementById('secrets-broker-launcher');
+        if (!launcher) return;
+        const dot = document.getElementById('secrets-broker-badge');
+        if (!count) { if (dot) dot.remove(); return }
+        if (dot) { dot.textContent = String(count); return }
+        const pill = document.createElement('span');
+        pill.id = 'secrets-broker-badge';
+        pill.textContent = String(count);
+        pill.style.cssText = 'position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;border-radius:9px;background:#e05252;color:#fff;font:10px/16px system-ui;text-align:center;padding:0 4px';
+        launcher.style.position = 'fixed';
+        launcher.appendChild(pill);
+      };
+      // Last payload, so a tab click paints at once instead of waiting on the
+      // network. Every tab used to refetch all five endpoints, ~1.2s per click.
+      let last = null;
+      const load = async (fromCache) => {
+        if (fromCache && !last) return;
+        if (!fromCache) {
+          // A second click while a load is in flight used to be dropped silently;
+          // remember it and run once more, so tabs respond to every click.
+          if (busy) { queued = true; return }
+          // Never rerender while the user is typing. Buttons also take focus, so
+          // testing the tag — not merely "inside the popup" — is what keeps a tab
+          // click from being swallowed until the next poll.
+          const active = document.activeElement;
+          if (overlay && active && overlay.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return;
+          busy = true;
+        }
         try {
-          const [pendingResponse, requestResponse] = await Promise.all([
-            fetch('/api/secrets-broker/pending').then((r) => r.json()).catch(() => ({ pending: [] })),
-            fetch('/api/secrets-broker/credential-requests').then((r) => r.json()).catch(() => ({ requests: [] }))
-          ]);
+          let pendingResponse, requestResponse, usageResponse, activityResponse, itemsResponse;
+          if (fromCache && last) {
+            ({ pendingResponse, requestResponse, usageResponse, activityResponse, itemsResponse } = last);
+          } else {
+            [pendingResponse, requestResponse, usageResponse, activityResponse, itemsResponse] = await Promise.all([
+              fetch('/api/secrets-broker/pending').then((r) => r.json()).catch(() => ({ pending: [] })),
+              fetch('/api/secrets-broker/credential-requests').then((r) => r.json()).catch(() => ({ requests: [] })),
+              fetch('/api/secrets-broker/usage?hours=1').then((r) => r.json()).catch(() => ({})),
+              fetch('/api/secrets-broker/activity?limit=12').then((r) => r.json()).catch(() => ({ activity: [] })),
+              fetch('/api/secrets-broker/items').then((r) => r.json()).catch(() => ({})),
+            ]);
+            last = { pendingResponse, requestResponse, usageResponse, activityResponse, itemsResponse };
+          }
           const pending = (pendingResponse.pending || []).filter((entry) => !dismissed.has(entry.id));
           const requests = (requestResponse.requests || []).filter((entry) => !dismissed.has(entry.id));
-          if (pending.length === 0 && requests.length === 0) { remove(); return }
+          const activity = Array.isArray(activityResponse.activity) ? activityResponse.activity : [];
+          badge(pending.length + requests.length);
+          const empty = pending.length === 0 && requests.length === 0;
+          // A request the operator ignored before a restart must not reopen the
+          // panel on every load. First pass only badges; the panel opens when
+          // the operator clicks, or when something new arrives later.
+          if (firstLoad) { firstLoad = false; if (!showEmpty) return }
+          if (empty && !showEmpty) { remove(); return }
           if (!overlay) {
             overlay = document.createElement('div');
-            overlay.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483000;width:min(380px,calc(100vw - 24px));max-height:70vh;overflow:auto;background:#fff;color:#152033;border:1px solid #d8e0ec;border-radius:14px;box-shadow:0 16px 50px rgba(15,23,42,.25);padding:14px;font:13px/1.5 system-ui';
+            overlay.style.cssText = 'position:fixed;right:18px;bottom:68px;z-index:2147483000;width:min(390px,calc(100vw - 24px));max-height:min(74vh,640px);overflow:auto;background:#fff;color:#152033;border:1px solid #d8e0ec;border-radius:14px;box-shadow:0 16px 50px rgba(15,23,42,.25);padding:14px;font:13px/1.5 system-ui;animation:sb-in .16s ease-out';
             document.body.appendChild(overlay);
+            // A one-line entrance, so the panel does not just snap into place.
+            const style = document.createElement('style');
+            style.textContent = '@keyframes sb-in{from{opacity:0;transform:translateY(6px) scale(.99)}to{opacity:1;transform:none}}@keyframes sb-flash{0%{background:#e8f7f4}100%{background:transparent}}';
+            overlay.appendChild(style);
           }
-          overlay.innerHTML = '';
-          const head = mk('div', '', 'display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px');
-          head.appendChild(mk('b', 'Secrets Broker', 'font-size:14px'));
+          // Collect the nodes, then append them in one pass. No fragment, no
+          // repeated reflow, and a minimal DOM stub can drive this too.
+          const out = [];
+
+          const head = mk('div', '', 'display:flex;align-items:center;gap:8px;margin-bottom:8px');
+          head.appendChild(mk('b', 'Secrets Broker', 'font-size:14px;flex:1'));
+          for (const [id, label] of [['queue', '待办'], ['activity', '动态'], ['add', '添加']]) {
+            const chip = mk('button', label, 'border:1px solid ' + (tab === id ? '#0f9d8a' : '#d8e0ec') + ';background:' + (tab === id ? '#e8f7f4' : '#fff') + ';color:' + (tab === id ? '#0b7d6d' : '#6b7890') + ';border-radius:999px;padding:3px 9px;font:11.5px system-ui;cursor:pointer');
+            chip.onclick = () => { tab = id; showEmpty = true; load(true) };
+            head.appendChild(chip);
+          }
           const close = mk('button', '×', 'border:0;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:#6b7890');
-          close.onclick = () => { for (const entry of pending) dismissed.add(entry.id); for (const entry of requests) dismissed.add(entry.id); remove() };
-          head.appendChild(close); overlay.appendChild(head);
-          for (const entry of pending) {
-            const card = mk('div', '', 'border:1px solid #e3e9f2;border-radius:10px;padding:9px;margin:8px 0');
-            card.appendChild(mk('div', (entry.agent || 'Agent') + ' → ' + (entry.name || ''), 'font-weight:600;margin-bottom:6px'));
-            const row = mk('div', '', 'display:flex;gap:6px;flex-wrap:wrap');
-            for (const [decision, label, style] of [['once', '本次', stylePrimary], ['24h', '24h', styleButton], ['always', '永久', styleButton], ['deny', '拒绝', styleDanger]]) {
-              const button = mk('button', label, style);
-              button.onclick = async () => { button.disabled = true; try { await fetch('/api/secrets-broker/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, decision }) }); load() } catch {} };
-              row.appendChild(button);
+          close.onclick = () => { for (const entry of pending) dismissed.add(entry.id); for (const entry of requests) dismissed.add(entry.id); showEmpty = false; remove() };
+          head.appendChild(close);
+          out.push(head);
+
+          if (tab === 'queue') {
+            if (empty) out.push(mk('div', '没有待审批或待补充的请求。', 'font-size:12px;color:#6b7890;padding:6px 0'));
+            for (const entry of pending) {
+              const card = mk('div', '', 'border:1px solid #e3e9f2;border-radius:10px;padding:9px;margin:8px 0');
+              card.appendChild(mk('div', (entry.agent || 'Agent') + ' → ' + (entry.name || ''), 'font-weight:600;margin-bottom:6px'));
+              const row = mk('div', '', 'display:flex;gap:6px;flex-wrap:wrap');
+              for (const [decision, label, style] of [['once', '本次', stylePrimary], ['24h', '24h', styleButton], ['always', '永久', styleButton], ['deny', '拒绝', styleDanger]]) {
+                const button = mk('button', label, style);
+                button.onclick = async () => {
+                  button.disabled = true;
+                  try {
+                    await fetch('/api/secrets-broker/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, decision }) });
+                    card.style.animation = 'sb-flash .5s ease';
+                    setTimeout(load, 350);
+                  } catch { button.disabled = false }
+                };
+                row.appendChild(button);
+              }
+              card.appendChild(row);
+              out.push(card);
             }
-            card.appendChild(row); overlay.appendChild(card);
+            for (const entry of requests) {
+              const draft = drafts.get(entry.id) || {};
+              const card = mk('div', '', 'border:1px solid #cfe8e2;background:#f5fbf9;border-radius:10px;padding:9px;margin:8px 0');
+              card.appendChild(mk('div', '需要补充：' + (entry.name || ''), 'font-weight:600;margin-bottom:6px'));
+              if (entry.description) card.appendChild(mk('div', entry.description, 'font-size:11px;color:#6b7890;margin-bottom:6px'));
+              const nameInput = mk('input'); nameInput.value = draft.name ?? entry.name ?? ''; nameInput.placeholder = '名称'; nameInput.style.cssText = styleInput;
+              const userInput = mk('input'); userInput.value = draft.username ?? ''; userInput.placeholder = '用户名（可选）'; userInput.style.cssText = styleInput;
+              const valueInput = mk('input'); valueInput.value = draft.value ?? ''; valueInput.type = 'password'; valueInput.placeholder = '密钥'; valueInput.style.cssText = styleInput;
+              const updateDraft = () => drafts.set(entry.id, { name: nameInput.value, username: userInput.value, value: valueInput.value });
+              nameInput.oninput = updateDraft; userInput.oninput = updateDraft; valueInput.oninput = updateDraft;
+              const save = mk('button', '保存并授权', stylePrimary); save.style.width = '100%'; save.style.marginTop = '4px';
+              save.onclick = async () => {
+                if (!valueInput.value) return;
+                save.disabled = true;
+                try {
+                  const response = await fetch('/api/secrets-broker/connect/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, name: nameInput.value, username: userInput.value, value: valueInput.value, group: '' }) });
+                  const payload = await response.json().catch(() => ({}));
+                  if (!response.ok || payload.ok === false) throw new Error(payload.error || 'save failed');
+                  drafts.delete(entry.id);
+                  load();
+                } catch (error) { save.disabled = false; save.textContent = String(error.message || error) }
+              };
+              card.append(nameInput, userInput, valueInput, save);
+              // Optional: the operator may not have this key at all. Cancelling
+              // removes the request, so the prompt stops coming back.
+              const skip = mk('button', '取消（不填了）', styleButton); skip.style.width = '100%'; skip.style.marginTop = '4px';
+              skip.onclick = async () => {
+                skip.disabled = true;
+                try {
+                  const response = await fetch('/api/secrets-broker/credential-requests/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id }) });
+                  const payload = await response.json().catch(() => ({}));
+                  if (!response.ok || payload.ok === false) throw new Error(payload.error || 'cancel failed');
+                  drafts.delete(entry.id);
+                  dismissed.add(entry.id);
+                  load();
+                } catch (error) { skip.disabled = false; skip.textContent = String(error.message || error) }
+              };
+              card.appendChild(skip);
+              out.push(card);
+            }
+            const caps = Array.isArray(usageResponse && usageResponse.capabilities) ? usageResponse.capabilities : [];
+            if (caps.length) {
+              const card = mk('div', '', 'border:1px solid #e3e9f2;background:#fbfcfe;border-radius:10px;padding:9px;margin:8px 0');
+              card.appendChild(mk('div', 'Agent 权限（只读）', 'font-weight:600;margin-bottom:4px'));
+              const byAgent = new Map();
+              for (const cap of caps) { const list = byAgent.get(cap.agent) || []; list.push(cap); byAgent.set(cap.agent, list) }
+              for (const [agent, list] of byAgent) {
+                card.appendChild(mk('div', agent, 'font-size:12px;font-weight:600;margin-top:5px'));
+                for (const cap of list) {
+                  const left = cap.usesLeft == null ? '不限次数' : '剩余 ' + cap.usesLeft + '/' + cap.maxUses;
+                  const until = cap.expiresAt ? '到期 ' + new Date(cap.expiresAt).toLocaleString() : '永久';
+                  card.appendChild(mk('div', '· ' + (cap.name || '') + ' · ' + (cap.action || '') + ' · ' + left + ' · ' + until, 'font-size:11px;color:#6b7890'));
+                }
+              }
+              out.push(card);
+            }
           }
-          for (const entry of requests) {
-            const draft = drafts.get(entry.id) || {};
-            const card = mk('div', '', 'border:1px solid #cfe8e2;background:#f5fbf9;border-radius:10px;padding:9px;margin:8px 0');
-            card.appendChild(mk('div', '需要补充：' + (entry.name || ''), 'font-weight:600;margin-bottom:6px'));
-            if (entry.description) card.appendChild(mk('div', entry.description, 'font-size:11px;color:#6b7890;margin-bottom:6px'));
-            const nameInput = mk('input'); nameInput.value = draft.name ?? entry.name ?? ''; nameInput.placeholder = '名称'; nameInput.style.cssText = 'width:100%;box-sizing:border-box;border:1px solid #d8e0ec;border-radius:6px;padding:6px;margin:3px 0;font:12px system-ui';
-            const userInput = mk('input'); userInput.value = draft.username ?? ''; userInput.placeholder = '用户名（可选）'; userInput.style.cssText = nameInput.style.cssText;
-            const valueInput = mk('input'); valueInput.value = draft.value ?? ''; valueInput.type = 'password'; valueInput.placeholder = '密钥'; valueInput.style.cssText = nameInput.style.cssText;
-            const updateDraft = () => drafts.set(entry.id, { name: nameInput.value, username: userInput.value, value: valueInput.value });
-            nameInput.oninput = updateDraft; userInput.oninput = updateDraft; valueInput.oninput = updateDraft;
-            const save = mk('button', '保存并授权', stylePrimary); save.style.width = '100%'; save.style.marginTop = '4px';
-            save.onclick = async () => { if (!valueInput.value) return; save.disabled = true; try { const response = await fetch('/api/secrets-broker/connect/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, name: nameInput.value, username: userInput.value, value: valueInput.value, group: '' }) }); const payload = await response.json().catch(() => ({})); if (!response.ok || payload.ok === false) throw new Error(payload.error || 'save failed'); drafts.delete(entry.id); load() } catch (error) { save.disabled = false; save.textContent = String(error.message || error) } };
-            card.append(nameInput, userInput, valueInput, save); overlay.appendChild(card);
+
+          if (tab === 'activity') {
+            const items = Array.isArray(activityResponse.activity) ? activityResponse.activity : [];
+            if (!items.length) out.push(mk('div', '还没有活动记录。', 'font-size:12px;color:#6b7890;padding:6px 0'));
+            for (const entry of items) {
+              const at = entry.time ? new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+              const who = entry.agent || '系统';
+              const what = entry.name ? '「' + entry.name + '」' : '';
+              const row = mk('div', '', 'display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid #f0f3f8;font-size:12px');
+              row.appendChild(mk('span', at, 'color:#9aa6b8;font:11px/1.4 ui-monospace,monospace;flex:0 0 auto'));
+              row.appendChild(mk('span', eventLabel(entry.event), 'color:' + (entry.ok ? '#0b7d6d' : '#c0392b') + ';flex:0 0 auto'));
+              row.appendChild(mk('span', who + ' ' + what, 'color:#6b7890;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
+              out.push(row);
+            }
           }
-        } finally { busy = false }
+
+          if (tab === 'add') {
+            out.push(mk('div', '存一个密钥，Agent 下次就能直接取。名称必填，值只在你和 broker 之间。', 'font-size:11.5px;color:#6b7890;margin-bottom:6px'));
+            const nameInput = mk('input'); nameInput.placeholder = '名称，例如 tavily-api-key'; nameInput.style.cssText = styleInput;
+            const userInput = mk('input'); userInput.placeholder = '用户名（可选）'; userInput.style.cssText = styleInput;
+            const valueInput = mk('input'); valueInput.placeholder = '密钥值'; valueInput.type = 'password'; valueInput.style.cssText = styleInput;
+            const urlInput = mk('input'); urlInput.placeholder = '网址（可选）'; urlInput.style.cssText = styleInput;
+            const noteInput = mk('input'); noteInput.placeholder = '备注（可选）'; noteInput.style.cssText = styleInput;
+            const hint = mk('div', '', 'font-size:11px;min-height:16px;margin-top:4px');
+            const save = mk('button', '保存到 vault', stylePrimary); save.style.width = '100%'; save.style.marginTop = '6px';
+            save.onclick = async () => {
+              if (!nameInput.value.trim()) { hint.textContent = '名称必填'; hint.style.color = '#c0392b'; return }
+              if (!valueInput.value) { hint.textContent = '密钥值必填'; hint.style.color = '#c0392b'; return }
+              save.disabled = true;
+              hint.textContent = '保存中…'; hint.style.color = '#6b7890';
+              try {
+                const response = await fetch('/api/secrets-broker/items/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: nameInput.value.trim(), username: userInput.value, value: valueInput.value, url: urlInput.value.trim(), notes: noteInput.value }) });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok || payload.ok === false) throw new Error(payload.error || 'save failed');
+                valueInput.value = '';
+                hint.textContent = payload.updated ? '已更新 ' + payload.name : '已保存 ' + payload.name;
+                hint.style.color = '#0b7d6d';
+                save.disabled = false;
+              } catch (error) {
+                hint.textContent = String(error.message || error);
+                hint.style.color = '#c0392b';
+                save.disabled = false;
+              }
+            };
+            out.push(nameInput, userInput, valueInput, urlInput, noteInput, save, hint);
+            // A key stored by mistake is removed by clicking it, not by typing its
+            // name back in — the operator may not remember the spelling.
+            const stored = Array.isArray(itemsResponse && itemsResponse.items) ? itemsResponse.items : [];
+            const list = mk('div', '', 'max-height:170px;overflow:auto;margin-top:10px;border-top:1px solid #eef1f6;padding-top:6px');
+            list.appendChild(mk('div', '已存 ' + stored.length + ' 个，点名称右边的 × 删除', 'font-size:11px;color:#9aa6b8;margin-bottom:4px'));
+            for (const item of stored) {
+              const row = mk('div', '', 'display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px');
+              const label = mk('span', (item.name || '') + (item.group ? ' · ' + item.group : ''), 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
+              // Clicking the name fills the form, so an update needs no retyping.
+              label.style.cursor = 'pointer';
+              label.onclick = () => { nameInput.value = item.name || ''; urlInput.value = item.url || ''; nameInput.focus() };
+              const kill = mk('button', '×', styleDanger);
+              kill.title = '从 vault 删除 ' + (item.name || '');
+              kill.onclick = async () => {
+                if (!confirm('从 vault 删除「' + (item.name || '') + '」？')) return;
+                kill.disabled = true;
+                try {
+                  const response = await fetch('/api/secrets-broker/items/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: item.name }) });
+                  const payload = await response.json().catch(() => ({}));
+                  if (!response.ok || payload.ok === false) throw new Error(payload.error || 'delete failed');
+                  row.remove();
+                  hint.textContent = '已删除 ' + (item.name || '');
+                  hint.style.color = '#0b7d6d';
+                } catch (error) { kill.disabled = false; hint.textContent = String(error.message || error); hint.style.color = '#c0392b' }
+              };
+              row.append(label, kill);
+              list.appendChild(row);
+            }
+            out.push(list);
+          }
+
+          overlay.innerHTML = '';
+          for (const node of out) overlay.appendChild(node);
+        } finally {
+          // A cache paint must not clear a real load's in-flight flag.
+          if (!fromCache) {
+            busy = false;
+            // A click that landed mid-load runs now instead of being lost.
+            if (queued) { queued = false; load() }
+          }
+        }
       };
       const timer = setInterval(load, 15000);
+      ensureLauncher();
       load();
-      return () => { clearInterval(timer); remove() };
+      return () => { clearInterval(timer); remove(); const launcher = document.getElementById('secrets-broker-launcher'); if (launcher) launcher.remove() };
     }
+
 
     const NS = "secretsBroker";
     const inject = ["slots", "locale"];

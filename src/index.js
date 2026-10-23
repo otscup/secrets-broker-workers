@@ -3025,6 +3025,17 @@ export default {
       const state = await loadState(env)
       return json({ requests: Object.values(state.credentialRequests ?? {}).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, description: entry.description ?? '', createdAt: entry.createdAt })) })
     }
+    // The operator declining a request, so a prompt for a key they will never
+    // enter stops appearing. Same effect as the browser cancel button.
+    if (url.pathname === '/api/plugin/credential-requests/cancel' && request.method === 'POST') {
+      if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const id = String(body.id ?? '')
+      if (!id) return fail('id required', 400)
+      await updateState(env, (state) => { if (state.credentialRequests?.[id]) delete state.credentialRequests[id]; return state })
+      await addAudit(env, { event: 'credential.cancel', id, source: 'dsh-plugin' })
+      return json({ ok: true })
+    }
     // The operator typing a credential in the plugin, with no Agent behind the
     // request. Separate from connect/save: there is no request id and no Agent to
     // grant to, so this only stores the item in the vault.

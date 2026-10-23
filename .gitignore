@@ -79,3 +79,5 @@ attach-route.mjs
 !test-mf-require-classification.mjs
 !test-mf-plugin-endpoints.mjs
 !test-plugin-endpoints.mjs
+!dsh-plugin/test-popup.mjs
+!dsh-plugin/test-popup-actions.mjs

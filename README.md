@@ -1,21 +1,6 @@
 # Secrets Broker — Cloudflare Workers
 
-[English](#english) | [简体中文](#中文说明)
-
-## 中文说明
-
-这是 Secrets Broker 的 **Cloudflare Workers 原生版本**：直接读取 NodeWarden
-的 D1 密文，浏览器端完成主密码 KDF，Durable Object 保存会话，Agent 通过
-MCP/OAuth 或 Agent token 读取密钥。
-
-相关仓库：
-
-- **在线 demo（无需自建，数据全部虚拟）**：<https://demo.otscup.com>
-- Docker / Node 参考实现：<https://github.com/otscup/secrets-broker>
-- Agent Skill（MCP + stdio 桥接器）：<https://github.com/otscup/secrets-broker-skill>
-- DSH 插件（设置页内处理待审批）：[`dsh-plugin/`](dsh-plugin/)
-
-## English
+[English](README.md) | [简体中文](README.zh-CN.md)
 
 **Try it without setting anything up:** <https://demo.otscup.com> — the real UI
 against a virtual vault. No NodeWarden, no real credentials, and its own OIDC
@@ -31,6 +16,9 @@ separate, Workers-only port so NodeWarden upgrades don't affect it.
 
 See [docs/parity.md](docs/parity.md) for the feature-by-feature comparison with
 the Docker version.
+
+DSH plugin (handles pending approvals inside the settings page):
+[`dsh-plugin/`](dsh-plugin/).
 
 ## Current status (working PoC)
 
@@ -98,7 +86,7 @@ headers = { Authorization = "Bearer <agent token>" }
 ```
 
 For agents that need a human approval first, call `request_access`, approve in the
-browser, then call `get_secret`. Set an item to **免审批** to skip the approval step.
+browser, then call `get_secret`. Set an item to **no-approval** to skip the approval step.
 
 ## Why browser KDF
 
@@ -185,7 +173,7 @@ curl -H "Authorization: Bearer $AGENT_TOKEN" \
 ```
 
 Agents are created in the **Agents** tab; the token is shown only once.
-The item's **免审批** toggle in the **密钥** tab makes reads immediate while still
+The item's **no-approval** toggle in the **Items** tab makes reads immediate while still
 recording audit events.
 
 ## OIDC (xid) login

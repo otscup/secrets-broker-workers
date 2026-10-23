@@ -40,7 +40,8 @@ await stub.fetch('https://do/state', {
       { time: new Date().toISOString(), event: 'secret.read-deny', agent: 'codex', name: 'existing-key' },
       { time: new Date().toISOString(), event: 'admin.login', ip: '1.2.3.4' },
     ],
-    settings: { vaultEmail: ACCT, notifications: {} }, profile: {}, credentialRequests: {},
+    settings: { vaultEmail: ACCT, notifications: {} }, profile: {},
+    credentialRequests: { 'req-1': { id: 'req-1', agent: 'muse', name: 'cloudflare-token', description: 'needs a Cloudflare token', createdAt: new Date().toISOString() } },
     security: { passwordHash: '', passwordSalt: '', totpSecretWrapped: '', totpEnabled: false, totpPendingWrapped: '' },
   }),
 })
@@ -143,6 +144,35 @@ const call = (path, options = {}) => mf.dispatchFetch('https://broker.test' + pa
   const res = await call('/api/plugin/items/delete', { method: 'POST', body: JSON.stringify({ name: 'never-existed' }) })
   if (res.status === 404) pass('P10 deleting a missing item reports not-found')
   else fail('P10', String(res.status))
+}
+
+// P11: the operator can decline a key request from the plugin, so a prompt for
+// a key they will never enter stops appearing. There is no other way out of it.
+{
+  const listBefore = await (await call('/api/plugin/credential-requests')).json()
+  const had = (listBefore.requests || []).some((entry) => entry.id === 'req-1')
+  const res = await call('/api/plugin/credential-requests/cancel', { method: 'POST', body: JSON.stringify({ id: 'req-1' }) })
+  const body = await res.json().catch(() => ({}))
+  const listAfter = await (await call('/api/plugin/credential-requests')).json()
+  const gone = !(listAfter.requests || []).some((entry) => entry.id === 'req-1')
+  if (had && res.ok && body.ok === true && gone) pass('P11 a key request can be cancelled from the plugin')
+  else fail('P11', JSON.stringify({ had, status: res.status, body, gone }))
+}
+
+// P12: cancelling needs an id, and needs the plugin token.
+{
+  const noId = await call('/api/plugin/credential-requests/cancel', { method: 'POST', body: '{}' })
+  const noToken = await mf.dispatchFetch('https://broker.test/api/plugin/credential-requests/cancel', { method: 'POST', body: JSON.stringify({ id: 'req-1' }) })
+  if (noId.status === 400 && noToken.status === 401) pass('P12 cancel requires an id and the plugin token')
+  else fail('P12', JSON.stringify({ noId: noId.status, noToken: noToken.status }))
+}
+
+// P13: a cancelled request leaves an audit entry, so the activity tab shows it.
+{
+  const body = await (await call('/api/plugin/activity?limit=20')).json()
+  const cancelled = (body.activity || []).find((entry) => entry.event === 'credential.cancel')
+  if (cancelled) pass('P13 cancelling is recorded in the activity feed')
+  else fail('P13', JSON.stringify((body.activity || []).map((e) => e.event)))
 }
 
 await mf.dispose()
