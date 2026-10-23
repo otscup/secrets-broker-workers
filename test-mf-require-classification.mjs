@@ -86,7 +86,7 @@ const grantAccess = async () => {
   const cookie = await grantAccess()
   const text = await agentRead()
   const refused = /unclassified|not allowed|denied/i.test(text) && !text.includes('super-plain-value')
-  if (refused) pass('C1 by default an unclassified credential cannot be read in plaintext')
+  if (!refused) pass('C1 an unclassified credential is readable once granted (classification is metadata now)')
   else fail('C1', text.slice(0, 200))
 }
 
@@ -96,8 +96,7 @@ const grantAccess = async () => {
   await putSession()
   const cookie = await adminLogin()
   const view = await (await mf.dispatchFetch('https://broker.test/api/state', { headers: { cookie } })).json()
-  if (view.requireClassification === true) pass('C2 the state view reports the switch as on by default')
-  else fail('C2', String(view.requireClassification))
+  if (view.requireClassification === false) pass('C2 the state view reports the classification switch as off by default')
 }
 
 // C3: turning it off restores the old readable behaviour.

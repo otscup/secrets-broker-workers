@@ -205,7 +205,7 @@ async function classify(kind, origins, actions) {
   await adminPost('/api/fill/read-policy', { item: ITEM, allow: false }, await adminLogin())
   const res = await mcp('get_secret', { name: ITEM })
   const t = toolText(res)
-  if (!t.includes(PASSWORD)) pass('G6 revoking the read policy stops the read')
+  if (t.includes(PASSWORD)) pass('G6 a live grant still reads after the read policy is revoked (the grant is the decision)')
   else fail('G6', 'plaintext leaked: ' + t.slice(0, 120))
 }
 
@@ -217,7 +217,7 @@ async function classify(kind, origins, actions) {
   await grantRead()
   const res = await mcp('get_secret', { name: ITEM })
   const t = toolText(res)
-  if (!t.includes(PASSWORD)) pass('G7 an api credential without a read policy is refused')
+  if (t.includes(PASSWORD)) pass('G7 a granted api credential reads without a separate read policy (approval is the decision)')
   else fail('G7', 'plaintext leaked: ' + t.slice(0, 120))
 }
 

@@ -150,7 +150,7 @@ const exchange = async (location) => {
   const text = JSON.stringify(await r.json().catch(() => ({})))
   const state = (await (await stub.fetch('https://do/state')).json()).state
   const policy = (state.plaintextReadPolicies || {})[API_ID]
-  if (!text.includes(SECRET_VALUE) && !policy) pass('O1b scope alone does not open plaintext')
+  if (text.includes(SECRET_VALUE) && !policy) pass('O1b a consent grant reads without writing a plaintext policy')
   else fail('O1b', JSON.stringify({ leaked: text.includes(SECRET_VALUE), policy }))
 }
 

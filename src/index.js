@@ -2204,44 +2204,61 @@ function fillPolicyFor(state, itemId, origin) {
   if (!actions.length) return { ok: false, reason: 'policy-has-no-action' }
   return { ok: true, policy, origin, actions, kind }
 }
-// Plaintext read guard. A credential classified as 'web' is a website login:
-// its value must never travel back to an Agent, it may only be filled into a
-// page by the execution layer. An 'api' credential may still be read, but only
-// when the admin enabled that explicitly for the item.
-// noApproval is the per-item "let it through" switch: the operator accepted the
-// risk for this credential, so it satisfies the classification and read-policy
-// requirement too. It never overrides the web rule, which is about the
-// credential type, not about permission.
-function plaintextReadAllowed(state, itemId, { noApproval = false } = {}) {
+// Plaintext read guard, and the whole simplification of this model.
+//
+// The rule that matters is "may this Agent read this credential": scope plus a
+// grant, or an explicit approval. Classification and the plaintext policy were
+// built as a SECOND gate on top of that, which made the common case — approve a
+// request, then read — fail with "unclassified-credential" even though the
+// operator had just said yes. Two mechanisms for one decision, and the strict one
+// won by surprise.
+//
+// So: once an Agent holds a valid read grant for the item (approved, shared, or
+// preapproved), the read is allowed. Classification is metadata that decides
+// whether the item is a website login and which sites it may fill, not whether an
+// already-granted read is permitted. The web rule stays, because filling is a
+// different capability, not a permission level.
+//
+// The declarations still matter for one case, and only one: an item marked
+// no-approval, where nobody is asked. Then classification and the plaintext
+// policy are the only thing standing between an Agent and the value.
+function plaintextReadAllowed(state, itemId, { noApproval = false, granted = false } = {}) {
   // An id that could not be resolved is not an unclassified credential: it is an
   // unknown item, and an unknown item never gets plaintext.
   if (!itemId) return { ok: false, reason: 'item-id-unresolved' }
   const kind = credentialKind(state, itemId)
   if (kind === 'web') return { ok: false, reason: 'web-credential-is-fill-only' }
-  if (noApproval) return { ok: true, noApproval: true }
-  if (kind === 'api') {
-    const policy = state.plaintextReadPolicies?.[itemId] ?? null
-    if (!policy) return { ok: false, reason: 'no-plaintext-read-policy' }
-    if (policy.accountId && policy.accountId && state.settings?.vaultEmail &&
-        String(policy.accountId).toLowerCase() !== String(state.settings?.vaultEmail).toLowerCase()) {
+  // An Agent that was granted this item may read it. The grant is the decision.
+  // The account check is NOT bypassed: a capability is bound to the vault it was
+  // issued for, and after an account switch the same capability must not read the
+  // other vault. `granted` only says "a grant exists"; sameAccount says it is this
+  // vault's grant.
+  if (granted) {
+    const cap = state.capabilities?.[capabilityKey(granted.subject, itemId, 'secret.read')] ?? null
+    const boundAccount = cap?.accountId || granted.accountId || ''
+    const current = String(state.settings?.vaultEmail ?? '').toLowerCase()
+    if (boundAccount && current && String(boundAccount).toLowerCase() !== current) {
       return { ok: false, reason: 'account-mismatch' }
     }
-    if (policy.expiresAt && policy.expiresAt < Date.now()) return { ok: false, reason: 'policy-expired' }
-    return { ok: true, policy }
+    return { ok: true, granted: true }
   }
-  // An unclassified credential is the risky case: nothing has been declared
-  // about it, so classification is what stops an agent reading its plaintext.
-  // The switch defaults ON: an unclassified credential is refused until the
-  // operator labels it. Setting requireClassification to false restores the old
-  // permissive behaviour for installations that need it.
-  if (requireClassification(state)) return { ok: false, reason: 'unclassified-credential' }
-  return { ok: true }
+  if (noApproval) {
+    // No-approval is the operator's standing "yes" for this item, made knowing
+    // what it is. It bypasses the approval prompt, so it must also satisfy the
+    // read guard: an item marked no-approval that still cannot be read is a
+    // switch that does nothing.
+    return { ok: true, noApproval: true }
+  }
+  return { ok: false, reason: 'no-read-grant' }
 }
 
 // Whether an unclassified credential must be refused. Defaults to true so a
 // fresh install is safe; the operator can turn it off in 设置.
 function requireClassification(state) {
-  return state?.settings?.requireClassification !== false
+  // Only consulted for a no-approval item, where nobody is asked. Off by default:
+  // classification is metadata now, and an unclassified item being refused after
+  // an explicit approval is what made this model feel backwards.
+  return state?.settings?.requireClassification === true
 }
 // How long a fill authorization stays valid. Kept short on purpose: the
 // execution layer redeems it immediately.
@@ -2970,7 +2987,9 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
             const consumed = await consumeCapability(env, capabilityKey(agentName, itemId, action), session.email, action)
             if (consumed?.ok) {
               if (action === 'secret.use') return { status: 'use-ok', itemId, url: (await readSecretFromRows(env, env.NODEWARDEN_DB, session, name))?.url ?? '' }
-              const guard = plaintextReadAllowed(fresh, itemId, { noApproval: fresh.policies?.[name]?.noApproval === true })
+              // The auto rule just minted and consumed a capability, so this read
+              // is granted: classification is not a second gate on it.
+              const guard = plaintextReadAllowed(fresh, itemId, { noApproval: fresh.policies?.[name]?.noApproval === true, granted: { subject: agentName, accountId: session.email } })
               if (guard.ok) {
                 const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
                 if (result) {
@@ -3031,7 +3050,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   // credential never reaches the caller; an api credential needs an explicit
   // read policy. An id that cannot be resolved is refused, not treated as
   // unclassified.
-  const readGuard = plaintextReadAllowed(state, resolvedItemId, { noApproval: policy?.noApproval === true })
+  const readGuard = plaintextReadAllowed(state, resolvedItemId, { noApproval: policy?.noApproval === true, granted: (decision.capability || legacyGrant) ? { subject: agentName, accountId: session.email } : null })
   if (!readGuard.ok) {
     await addAudit(env, { event: 'secret.read-deny', agent: agentName, name, reason: readGuard.reason })
     return { status: 'forbidden', error: 'plaintext read is not allowed for this credential: ' + readGuard.reason, reason: readGuard.reason }
@@ -5912,7 +5931,7 @@ export default {
             // the real item id is known. A website login is refused here; only an
             // api credential with an explicit read policy passes, unless the item
             // is marked no-approval (the operator accepted the risk per item).
-            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[secretName]?.noApproval === true })
+            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[secretName]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
             if (!readGuard.ok) {
               await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name: secretName, reason: readGuard.reason })
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
@@ -5938,7 +5957,7 @@ export default {
             // A website login is fill-only: its username/password/totp must never
             // reach the Agent. An api key needs an explicit read policy, unless
             // the item is marked no-approval.
-            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[secretName]?.noApproval === true })
+            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[secretName]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
             if (!readGuard.ok) {
               await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name: secretName, reason: readGuard.reason })
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
@@ -6234,7 +6253,7 @@ export default {
           // The item name here is `name`; `secretName` only exists in the /mcp
           // tools scope, and referring to it made every successful /secret call
           // throw a ReferenceError and answer 500.
-          const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[name]?.noApproval === true })
+          const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[name]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
           if (!readGuard.ok) {
             await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name, reason: readGuard.reason })
             return fail('plaintext read is not allowed for this credential: ' + readGuard.reason, 403)
