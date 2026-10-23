@@ -43,8 +43,16 @@ const routes = {
   '/api/settings': () => ({ settings: {}, profile: {} }),
 }
 
+// Saving from the detail page used to close #modal, which is hidden while the
+// page is open, so the stale page stayed on screen. A5 drives the real button.
+const writes = []
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
+  if (req.method === 'POST') {
+    writes.push(url.pathname)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    return res.end('{"ok":true}')
+  }
   const route = routes[url.pathname]
   if (route) {
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -139,8 +147,19 @@ try {
   const rotate = await evaluate("!!document.getElementById('ma-rotate')")
   modal && copy && rotate ? pass('A4 agent dialog opens with token actions') : fail('A4', JSON.stringify({ modal, copy, rotate }))
 
-  // A5 - nothing threw while all of that happened.
-  problems.length === 0 ? pass('A5 no runtime errors') : fail('A5', problems.slice(0, 3).join(' | '))
+  // A5 - saving closes the pushed page instead of the (already hidden) modal.
+  await evaluate("document.querySelector('[data-item-menu]').click()")
+  await wait(700)
+  await evaluate("document.getElementById('item-page-edit').click()")
+  await wait(300)
+  await evaluate("document.getElementById('mi-save').click()")
+  await wait(900)
+  const saved = writes.includes('/api/items/update')
+  const pageGone = await evaluate("document.getElementById('item-page').classList.contains('in')")
+  saved && !pageGone ? pass('A5 save posts and closes the detail page') : fail('A5', JSON.stringify({ saved, pageGone, writes }))
+
+  // A6 - nothing threw while all of that happened.
+  problems.length === 0 ? pass('A6 no runtime errors') : fail('A6', problems.slice(0, 3).join(' | '))
 } finally {
   try { ws?.close() } catch {}
   child.kill()
