@@ -95,3 +95,4 @@ extension.crx
 !test-mf-telegram-control.mjs
 !test-mf-auto-approval.mjs
 !test-mf-log-filters.mjs
+!test-mf-login-and-ai-fixes.mjs

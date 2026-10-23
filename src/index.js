@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { uiHtml } from './ui.js'
-import { aiSnapshot, askAi, aiInsights, aiModelCatalog } from './ai.js'
+import { aiSnapshot, askAi, aiInsights, aiModelCatalog, WORKERS_AI_DEFAULT } from './ai.js'
 import { parseCommand, TELEGRAM_HELP, formatPendingList, formatGrants, formatStatus, resolvePending, autoRuleActive, describeAutoRule } from './telegram.js'
 import { LOGO_PNG_B64, FAVICON_ICO_B64 } from './logo.js'
 import {
@@ -3105,7 +3105,7 @@ function oauthConsentPage(origin, params, client, catalog = { items: [], groups:
     '<div style="margin-top:16px"><button class="primary" name="decision" value="allow">允许</button><button name="decision" value="deny">拒绝</button></div></form></div></html>'
 }
 
-function standaloneLoginPage(next, providers = []) {
+function standaloneLoginPage(next, providers = [], { accounts = [], current = '' } = {}) {
   const target = next.startsWith('/') ? next : '/'
   // One button per enabled provider. Adding a provider in 设置 is enough for it
   // to appear here; nothing needs to change on this page.
@@ -3115,19 +3115,31 @@ function standaloneLoginPage(next, providers = []) {
   const oidcBlock = buttons
     ? '<div class="sep"><span>或</span></div>' + buttons
     : ''
+  // The account picker. Without it, login was pinned to whichever vault account
+  // was selected last, so switching accounts locked the operator out of the
+  // broker itself. Any known account can be chosen, and the address can still be
+  // typed, so an account added in NodeWarden works before the next deploy.
+  const accountOptions = accounts.map((email) =>
+    '<option value="' + escapeHtml(email) + '"' + (email === current ? ' selected' : '') + '>' + escapeHtml(email) + '</option>',
+  ).join('')
+  const accountBlock = accounts.length
+    ? '<label>账户</label><select id="account">' + accountOptions + '</select>'
+      + '<div class="hint">切换账户会改变之后解锁的 vault；随时可以在这里换回原来的账户。</div>'
+    : ''
   return String.raw`<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>登录 · Secrets Broker</title><style>
     :root{--bg:#f3f6fb;--card:#fff;--line:#e3e9f2;--text:#152033;--muted:#6b7890;--ok:#0f9d8a}
     *{box-sizing:border-box}
     body{font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);margin:0;min-height:100vh;display:grid;place-items:center;padding:24px 16px}
     .card{width:100%;max-width:400px;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:28px;box-shadow:0 1px 2px rgba(20,40,80,.04),0 8px 24px rgba(20,40,80,.06)}
-    @media(prefers-color-scheme:dark){body{background:#0b1220;color:#e6edf7}.card{background:#111a2b;border-color:#24324a}input{background:#111a2b;border-color:#24324a;color:#e6edf7}}
+    @media(prefers-color-scheme:dark){body{background:#0b1220;color:#e6edf7}.card{background:#111a2b;border-color:#24324a}input,select{background:#111a2b;border-color:#24324a;color:#e6edf7}}
     .brand{display:flex;align-items:center;gap:10px;margin-bottom:6px}
     .brand img{width:34px;height:34px;border-radius:9px;object-fit:cover;display:block}
     h1{font-size:19px;margin:0;letter-spacing:-.2px}
     .sub{color:var(--muted);font-size:12px;margin:0 0 20px}
     label{display:block;font-size:12px;color:var(--muted);margin:14px 0 5px}
-    input{width:100%;border:1px solid #d8e0ec;border-radius:11px;padding:11px 12px;font:inherit;outline:none;background:var(--card);color:inherit}
-    input:focus{border-color:var(--ok);box-shadow:0 0 0 3px rgba(15,157,138,.14)}
+    input,select{width:100%;border:1px solid #d8e0ec;border-radius:11px;padding:11px 12px;font:inherit;outline:none;background:var(--card);color:inherit}
+    input:focus,select:focus{border-color:var(--ok);box-shadow:0 0 0 3px rgba(15,157,138,.14)}
+    .hint{font-size:11px;color:var(--muted);margin-top:5px;line-height:1.5}
     button{width:100%;margin-top:20px;border:0;border-radius:11px;padding:11px;font:inherit;font-weight:600;background:var(--ok);color:#fff;cursor:pointer}
     button:active{transform:translateY(1px)}
     .status{font-size:12px;min-height:18px;margin-top:10px;color:#c0392b}
@@ -3138,6 +3150,7 @@ function standaloneLoginPage(next, providers = []) {
   </style></head><body><div class="card">
     <div class="brand"><img src="/logo.png" alt=""><h1>Secrets Broker</h1></div>
     <p class="sub">管理登录。这不是 Bitwarden 主密码。</p>
+    ${accountBlock}
     <label for="password">管理密码</label><input id="password" type="password" autocomplete="current-password">
     <div id="totp" style="display:none"><label for="code">两步验证码</label><input id="code" inputmode="numeric" autocomplete="one-time-code" placeholder="6 位验证码"></div>
     <button id="go">登录</button><div id="status" class="status" role="status"></div>
@@ -3149,7 +3162,8 @@ function standaloneLoginPage(next, providers = []) {
       const status=document.getElementById('status')
       status.textContent=''
       try{
-        const response=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('password').value,code:document.getElementById('code').value})})
+        const accountEl=document.getElementById('account')
+        const response=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:document.getElementById('password').value,code:document.getElementById('code').value,account:accountEl?accountEl.value:''})})
         const data=await response.json()
         if(!response.ok){
           if(data.totpRequired){document.getElementById('totp').style.display='block';status.textContent=data.error||'请输入验证码'}
@@ -3222,7 +3236,19 @@ export default {
       if (await adminAuthorized(request, env)) return Response.redirect(new URL(nextTarget, url).toString(), 302)
       const state = await loadState(env)
       const providers = oidcProviders(state).filter((entry) => entry.enabled !== false)
-      return htmlResponse(standaloneLoginPage(nextTarget, providers))
+      // Every vault account is offered, not just the last one switched to. The
+      // current settings.vaultEmail is only a default: logging in used to be
+      // pinned to whichever account was selected last, so switching accounts
+      // locked you out of your own broker until you logged back in as that one.
+      let accounts = []
+      try {
+        const rows = await env.NODEWARDEN_DB.prepare('SELECT email FROM users ORDER BY created_at').all()
+        accounts = (rows.results ?? []).map((row) => String(row.email ?? '')).filter(Boolean)
+      } catch {}
+      return htmlResponse(standaloneLoginPage(nextTarget, providers, {
+        accounts,
+        current: state.settings?.vaultEmail || '',
+      }))
     }
     if (url.pathname === '/connect' && request.method === 'GET') {
       if (!(await adminAuthorized(request, env))) return Response.redirect(new URL('/login?next=' + encodeURIComponent(url.pathname + url.search), url).toString(), 302)
@@ -3574,8 +3600,25 @@ export default {
         }
       }
       await clearLoginFailures(env, ip)
+      // An account chosen on the login page becomes the vault this broker uses.
+      // It is a preference, not a lock: the next login offers every account
+      // again, so a switch is always reversible without logging in as the one
+      // you just left.
+      const wantedAccount = String(body.account ?? '').trim()
+      if (wantedAccount) {
+        const exists = await env.NODEWARDEN_DB.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').bind(wantedAccount).first()
+        if (!exists) return fail('账户不存在：' + wantedAccount, 400)
+        await updateState(env, (state) => {
+          state.settings ??= { notifications: {} }
+          state.settings.vaultEmail = wantedAccount
+          // The unlocked session belongs to the previous account; drop it so the
+          // operator cannot read the old vault under the new account's name.
+          return state
+        })
+        await stateStub(env).fetch('https://state/session', { method: 'DELETE' }).catch(() => {})
+      }
       const cookie = await createAdminCookie(env, request)
-      await addAudit(env, { event: 'admin.login', ip })
+      await addAudit(env, { event: 'admin.login', ip, account: wantedAccount || undefined })
       // SameSite=None so the cookie is sent on the cross-site POST that the
       // OAuth consent form performs (meta.ai -> this origin). With Lax the
       // browser withholds it on POST, validCookie sees no cookie, and the user
@@ -5345,7 +5388,7 @@ export default {
       const state = await loadState(env)
       const fetchCustom = url.searchParams.get('fetch') === '1'
       const catalog = await aiModelCatalog(env, state.settings, { fetchCustom })
-      return json({ ok: true, ...catalog })
+      return json({ ok: true, workersDefault: WORKERS_AI_DEFAULT, ...catalog })
     }
     // The assistant, and the facts it is given. Read-only: it can explain and
     // suggest, and it cannot change a thing. The snapshot is built here, on the
@@ -5403,7 +5446,7 @@ export default {
           provider: state.settings?.ai?.provider === 'workers-ai' ? 'workers-ai' : 'custom',
           endpoint: state.settings?.ai?.endpoint ?? '',
           model: state.settings?.ai?.model ?? '',
-          workersModel: state.settings?.ai?.workersModel ?? '@cf/meta/llama-3.1-8b-instruct',
+          workersModel: state.settings?.ai?.workersModel ?? WORKERS_AI_DEFAULT,
           timeoutMs: state.settings?.ai?.timeoutMs ?? 25000,
           hasApiKey: Boolean(state.settings?.ai?.apiKey || env.AI_API_KEY),
           workersAiAvailable: Boolean(env.AI),
@@ -5505,8 +5548,32 @@ export default {
           }
           const current = latest.settings.notifications.telegram
           try {
-            await fetch(`https://api.telegram.org/bot${current.botToken}/setWebhook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: `${url.origin}/telegram/webhook`, secret_token: current.webhookSecret, allowed_updates: ['callback_query'] }) })
-          } catch {}
+            // Both update kinds: callback_query drives the approve/deny buttons,
+            // and message is what lets the operator type /pending, /approve and
+            // questions. Subscribing to only callback_query is why text
+            // messages were silently dropped by Telegram.
+            const hook = await fetch(`https://api.telegram.org/bot${current.botToken}/setWebhook`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: `${url.origin}/telegram/webhook`, secret_token: current.webhookSecret, allowed_updates: ['callback_query', 'message'] }) })
+            const hookBody = await hook.json().catch(() => ({}))
+            // Register the command menu, so the operator sees the commands in
+            // Telegram instead of having to remember them.
+            if (hookBody?.ok) {
+              await fetch(`https://api.telegram.org/bot${current.botToken}/setMyCommands`, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ commands: [
+                  { command: 'pending', description: '列出待审批请求' },
+                  { command: 'approve', description: '批准：#1 或 #1 24h' },
+                  { command: 'deny', description: '拒绝：#1' },
+                  { command: 'grants', description: '列出授权' },
+                  { command: 'extend', description: '延长：agent 条目 天数' },
+                  { command: 'revoke', description: '撤销：agent 条目' },
+                  { command: 'auto', description: '自动审批：agent 分钟 / off' },
+                  { command: 'status', description: '概览' },
+                  { command: 'help', description: '帮助' },
+                ] }),
+              }).catch(() => {})
+            }
+            if (!hookBody?.ok) return json({ ok: false, error: 'setWebhook failed: ' + (hookBody?.description ?? 'unknown') }, 502)
+          } catch (error) { return json({ ok: false, error: String(error.message ?? error) }, 502) }
         }
         return json({ ok: true })
       }

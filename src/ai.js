@@ -116,8 +116,19 @@ async function askCustom({ endpoint, apiKey, model, messages, timeoutMs }) {
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) return { ok: false, reason: 'provider ' + response.status + ': ' + String(payload?.error?.message ?? payload?.error ?? '').slice(0, 160) }
     const text = payload?.choices?.[0]?.message?.content
-    if (typeof text !== 'string' || !text.trim()) return { ok: false, reason: 'provider returned no text' }
-    return { ok: true, text: text.trim(), provider: 'custom' }
+    // Some gateways answer with `text` (completions) or a content array rather
+    // than a string; take whichever is present instead of failing a working
+    // provider for a shape difference.
+    const fromCompletions = payload?.choices?.[0]?.text
+    const fromArray = Array.isArray(text) ? text.map((part) => (typeof part === 'string' ? part : part?.text ?? '')).join('') : ''
+    const answer = typeof text === 'string' && text.trim() ? text : (fromArray || (typeof fromCompletions === 'string' ? fromCompletions : ''))
+    if (!answer || !String(answer).trim()) {
+      // Name what arrived, so an empty reply is diagnosable rather than a shrug.
+      const shape = payload && typeof payload === 'object' ? Object.keys(payload).slice(0, 6).join(',') : typeof payload
+      const finish = payload?.choices?.[0]?.finish_reason ?? ''
+      return { ok: false, reason: 'provider returned no text（返回字段：' + shape + (finish ? '，finish_reason=' + finish : '') + '）' }
+    }
+    return { ok: true, text: String(answer).trim(), provider: 'custom' }
   } catch (error) {
     return { ok: false, reason: String(error.message ?? error).slice(0, 160) }
   } finally { clearTimeout(timer) }
@@ -130,12 +141,18 @@ async function askWorkersAi(env, { model, messages, timeoutMs }) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const result = await env.AI.run(model || '@cf/meta/llama-3.1-8b-instruct', { messages, max_tokens: 900 }, { signal: controller.signal })
+    const result = await env.AI.run(model || WORKERS_AI_DEFAULT, { messages, max_tokens: 900 }, { signal: controller.signal })
     const text = typeof result === 'string' ? result : (result?.response ?? '')
     if (!String(text).trim()) return { ok: false, reason: 'Workers AI returned no text' }
     return { ok: true, text: String(text).trim(), provider: 'workers-ai' }
   } catch (error) {
-    return { ok: false, reason: String(error.message ?? error).slice(0, 160) }
+    const message = String(error.message ?? error)
+    // 5035 is Cloudflare's "this model is not on your plan". Say which model and
+    // what to do, instead of surfacing a bare code.
+    if (/5035|not available on the Workers Free plan|upgrade/i.test(message)) {
+      return { ok: false, reason: '模型 ' + (model || WORKERS_AI_DEFAULT) + ' 不在免费计划内；在设置里换成 Llama 3.1 8B 或 Llama 3.2 3B' }
+    }
+    return { ok: false, reason: message.slice(0, 160) }
   } finally { clearTimeout(timer) }
 }
 
@@ -166,28 +183,24 @@ export async function askAi(env, settings, { question, snapshot, history = [] })
   return { ok: false, reason: failures.join('；') || '没有可用的 AI 提供方' }
 }
 
-// Workers AI text-generation models, as of the catalogue in 2026. Kept here
-// rather than fetched at boot because the Worker has no way to ask Cloudflare for
-// its catalogue without a separate API token — the AI binding can run a model but
-// cannot list them. A stale entry is harmless: picking one that has been retired
-// produces a clear provider error, and the field is still editable.
+// Workers AI text-generation models. The default must be one the Free plan can
+// actually run: the DeepSeek V4 models are paid-only and answer 5035 on a free
+// account, which is what made the assistant look broken.
+export const WORKERS_AI_DEFAULT = '@cf/meta/llama-3.1-8b-instruct-fp8'
 export const WORKERS_AI_MODELS = [
-  { id: '@cf/deepseek-ai/deepseek-v4.1-flash-1017', label: 'DeepSeek V4.1 Flash（推荐，中文好）' },
-  { id: '@cf/deepseek-ai/deepseek-v4-flash-0731', label: 'DeepSeek V4 Flash' },
-  { id: '@cf/deepseek-ai/deepseek-v4-pro-0813', label: 'DeepSeek V4 Pro（更强，更慢）' },
-  { id: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', label: 'DeepSeek R1 Distill 32B' },
-  { id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: 'Llama 3.3 70B' },
-  { id: '@cf/meta/llama-3.1-8b-instruct-fp8', label: 'Llama 3.1 8B（快）' },
-  { id: '@cf/meta/llama-3.2-3b-instruct', label: 'Llama 3.2 3B（最快）' },
-  { id: '@cf/meta/llama-4-scout-17b-16e-instruct', label: 'Llama 4 Scout 17B' },
+  { id: '@cf/meta/llama-3.1-8b-instruct-fp8', label: 'Llama 3.1 8B（免费计划可用，推荐）' },
+  { id: '@cf/meta/llama-3.2-3b-instruct', label: 'Llama 3.2 3B（最快，免费可用）' },
+  { id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: 'Llama 3.3 70B（更强，免费额度内可用）' },
   { id: '@cf/qwen/qwen3-30b-a3b-fp8', label: 'Qwen3 30B' },
-  { id: '@cf/qwen/qwen3.8-27b', label: 'Qwen 3.8 27B' },
   { id: '@cf/zai-org/glm-4.7-flash', label: 'GLM-4.7 Flash' },
-  { id: '@cf/zai-org/glm-5.3-flash', label: 'GLM-5.3 Flash' },
-  { id: '@cf/openai/gpt-oss-120b', label: 'GPT-OSS 120B' },
   { id: '@cf/openai/gpt-oss-20b', label: 'GPT-OSS 20B' },
   { id: '@cf/mistralai/mistral-small-3.1-24b-instruct', label: 'Mistral Small 3.1 24B' },
-  { id: '@cf/google/gemma-4-26b-a4b-it', label: 'Gemma 4 26B' },
+  // Paid-plan models, listed but marked: choosing one on a free account answers
+  // 5035 and the settings page says why rather than leaving a mystery.
+  { id: '@cf/deepseek-ai/deepseek-v4.1-flash-1017', label: 'DeepSeek V4.1 Flash（需付费计划）', paid: true },
+  { id: '@cf/deepseek-ai/deepseek-v4-flash-0731', label: 'DeepSeek V4 Flash（需付费计划）', paid: true },
+  { id: '@cf/deepseek-ai/deepseek-v4-pro-0813', label: 'DeepSeek V4 Pro（需付费计划）', paid: true },
+  { id: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', label: 'DeepSeek R1 Distill 32B（需付费计划）', paid: true },
 ]
 
 // Ask an OpenAI-compatible endpoint what it serves. GET /models is the one part

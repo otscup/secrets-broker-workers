@@ -1062,7 +1062,7 @@ async function loadWorkerModels(current) {
   try {
     const data = await api('/api/ai/models')
     const select = $('ai-workers-model')
-    const chosen = current || data.workersModel || '@cf/deepseek-ai/deepseek-v4.1-flash-1017'
+    const chosen = current || data.workersModel || data.workersDefault || '@cf/meta/llama-3.1-8b-instruct-fp8'
     select.innerHTML = (data.workersModels || []).map((model) =>
       '<option value="' + esc(model.id) + '"' + (model.id === chosen ? ' selected' : '') + '>' + esc(model.label) + '</option>'
     ).join('')
