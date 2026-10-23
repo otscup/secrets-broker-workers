@@ -279,6 +279,10 @@ button.small{padding:6px 12px;font-size:var(--text-sub);border-radius:var(--r-md
 .link-button{border-radius:var(--r-md);font-size:var(--text-body-lg);padding:10px 16px}
 .link-button.primary{background:var(--blue);color:#fff}
 .seg{background:var(--fill);border:0;border-radius:9px;padding:2px;gap:2px}
+/* The globe time range shares its row with the pause button; without this
+   the track grows past the card edge on a 393pt phone. */
+#globe-range{display:flex;align-items:center;gap:2px;flex:0 1 auto;min-width:0}
+#globe-range button{flex:0 0 auto;width:auto;min-width:0;padding:6px 10px}
 .seg button{background:transparent;color:var(--label);padding:6px 12px;font-size:var(--text-sub);border-radius:7px;font-weight:500}
 .seg button.on{background:var(--card);color:var(--label);box-shadow:0 3px 8px rgba(0,0,0,.12)}
 html[data-theme="dark"] .seg button.on{background:#636366}
@@ -431,6 +435,7 @@ body.page-open{overflow:hidden}
 @media(max-width:720px){
   nav button{flex-direction:column;gap:3px;font-size:var(--text-tab);line-height:1;padding:6px 2px}
   nav button svg{display:block;width:26px;height:26px;stroke-width:1.7}
+  #globe-range{flex:1 1 100%;justify-content:space-between}
   #view-agents .row>select,#view-logs .row>select{width:auto;flex:1 1 0;min-width:0}
   #view-logs .row>input{flex:1 1 100%}
   #view-logs .row>button{flex:1 1 100%}
