@@ -4966,6 +4966,24 @@ export default {
               const ckey = capabilityKey(agentName, shareItemId, 'secret.read')
               next.capabilities[ckey] = { id: ckey, subjectId: agentName, accountId: session.email, itemId: shareItemId, itemName: item, action: 'secret.read', mode: 'preapproved', createdAt: nowIso(), createdBy: 'admin:' + session.email, expiresAt: shareExpiresAt, maxUses: shareMaxUses, usedCount: 0, revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1 }
             }
+            // Sharing grants access but does not put the item in the Agent's
+            // scope, and scope is what list_secrets filters on — so the Agent
+            // could not even see the name it had just been given. Adding it here
+            // is the piece that was missing.
+            if (body.addToScope === true) {
+              const owned = next.agents?.[agentName]
+              if (owned) {
+                owned.allow ??= []
+                if (!owned.allow.includes(item)) owned.allow.push(item)
+              } else {
+                next.oauthAgentProfiles ??= {}
+                const profile = next.oauthAgentProfiles[agentName]
+                if (profile) {
+                  profile.allow ??= []
+                  if (!profile.allow.includes(item)) profile.allow.push(item)
+                }
+              }
+            }
             return next
           })
           await addAudit(env, { event: 'grant.share', agent: agentName, name: item, account: session.email })

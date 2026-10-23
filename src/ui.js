@@ -474,7 +474,9 @@ $('modal-body').addEventListener('click', (event) => { const grantEdit = event.t
 $('modal-close-x').onclick = () => show('modal', false)
 $('modal').addEventListener('click', (event) => { if (event.target === $('modal')) show('modal', false) })
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !$('modal').classList.contains('hidden')) show('modal', false) })
-$('items-box').addEventListener('click', async (event) => {
+// 被拦下的请求 lives in its own card, not inside items-box, so the handler is
+// bound to that table. Binding it to items-box was why 授权 and 忽略 did nothing.
+$('denied-list').addEventListener('click', async (event) => {
   const allowDenied = event.target.closest('[data-allow-denied]')
   if (allowDenied) { openAllowDenied(allowDenied.dataset.agent, allowDenied.dataset.name, allowDenied.dataset.action); return }
   const allowUse = event.target.closest('[data-allow-use]')
@@ -485,8 +487,9 @@ $('items-box').addEventListener('click', async (event) => {
       await api('/api/denied/dismiss', { method: 'POST', body: JSON.stringify({ agent: dismissDenied.dataset.agent, name: dismissDenied.dataset.name, action: dismissDenied.dataset.action }) })
       await loadState(); toast('已忽略')
     } catch (error) { toast(error.message, true) }
-    return
   }
+})
+$('items-box').addEventListener('click', async (event) => {
   const grantEdit = event.target.closest('[data-item-grant]'); if (grantEdit) { openGrantMenu(grantEdit.dataset.agent, grantEdit.dataset.name); return } const menu = event.target.closest('[data-item-menu]'); if (menu) { openItemMenu(menu.dataset.itemMenu); return } const toggle = event.target.closest('[data-policy]'); if (toggle) { const item = app.items.find((entry) => entry.name === toggle.dataset.policy); if (!item) return; try { await api('/api/policies', { method: 'POST', body: JSON.stringify({ name: item.name, noApproval: !item.noApproval }) }); await loadItems(); toast('已更新免审批策略') } catch (error) { toast(error.message, true) } return } const read = event.target.closest('[data-read]'); if (read) reveal(read.dataset.read) })
 $('agents-box').addEventListener('click', (event) => {
   const extend = event.target.closest('[data-agent-extend]')
@@ -519,7 +522,9 @@ function pickListHtml(id, options, selected, emptyHint) {
 function pickListValues(id) {
   return [...document.querySelectorAll('.' + id + ':checked')].map((box) => box.value)
 }
-// The names and groups that exist right now, for the pickers.
+// The names and groups that exist right now, for the pickers. app.items is only
+// populated by the 密钥 page, so an Agent dialog opened first would show an empty
+// picker and silently save an empty allow list. Callers await ensureItems().
 function knownItemNames() {
   return ((app.items || []).map((item) => item.name)).filter(Boolean).sort((a, b) => a.localeCompare(b))
 }
@@ -528,9 +533,15 @@ function knownGroups() {
   for (const item of app.items || []) if (item.group) groups.add(item.group)
   return [...groups].sort((a, b) => a.localeCompare(b))
 }
+// Fetch the item list once, so a picker never renders from nothing.
+async function ensureItems() {
+  if ((app.items || []).length) return
+  try { const result = await api('/api/items'); app.items = result.items || [] } catch {}
+}
 
 // Creation moved into a modal so it no longer pushes the list down.
-function openAgentCreate() {
+async function openAgentCreate() {
+  await ensureItems()
   openModal('新建 Agent', '<div class="hint">Token 只在创建后显示一次。</div>' +
     '<label class="field">名称</label><input id="ac-name" placeholder="如 dsh">' +
     '<label class="field">显示名（可选）</label><input id="ac-alias" placeholder="便于识别的名字">' +
@@ -1872,11 +1883,11 @@ function openBulkShare() {
     const checked = single ? (app.data.grants || []).some((grant) => !grant.revokedAt && grant.agent === agent.name && grant.name === names[0]) : names.every((name) => (app.data.grants || []).some((grant) => !grant.revokedAt && grant.agent === agent.name && grant.name === name))
     return '<label class="chk" style="display:flex;width:100%"><input type="checkbox" class="bulk-agent" value="' + esc(agent.name) + '" ' + (checked ? 'checked' : '') + '> ' + esc(agent.alias || agent.name) + (agent.oauth ? ' <span class="pill">OAuth</span>' : '') + '</label>'
   }).join('')
-  openModal('批量分享 / 同步（' + names.length + ' 个条目）', '<div class="hint">勾选的 Agent 会获得这些条目；勾选“取消未勾选分享”后，未勾选 Agent 的现有分享会被撤销。</div><div style="max-height:220px;overflow:auto;margin-top:8px">' + (boxes || '<div class="hint">没有 Agent</div>') + '</div><label class="field">跨账户目标文件夹（跨账户时必填）</label><input id="bulk-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="bulk-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="bulk-reads" type="number" min="1"><label class="chk"><input type="checkbox" id="bulk-revoke" ' + (single ? 'checked' : '') + '> 取消未勾选 Agent 的分享</label><div class="row" style="margin-top:12px"><button class="primary" id="bulk-confirm">确定</button></div>')
+  openModal('批量分享 / 同步（' + names.length + ' 个条目）', '<div class="hint">勾选的 Agent 会获得这些条目；勾选“取消未勾选分享”后，未勾选 Agent 的现有分享会被撤销。</div><div style="max-height:220px;overflow:auto;margin-top:8px">' + (boxes || '<div class="hint">没有 Agent</div>') + '</div><label class="field">跨账户目标文件夹（跨账户时必填）</label><input id="bulk-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="bulk-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="bulk-reads" type="number" min="1"><label class="chk"><input type="checkbox" id="bulk-scope" checked> 同时把这些条目加入 Agent 的可读范围</label><div class="hint" style="margin:2px 0 0 22px">分享本身只产生一次「授权」。Agent 还要在范围内才看得到这个条目，所以默认一起勾上；取消勾选就只授权、不改范围。</div><label class="chk"><input type="checkbox" id="bulk-revoke" ' + (single ? 'checked' : '') + '> 取消未勾选 Agent 的分享</label><div class="row" style="margin-top:12px"><button class="primary" id="bulk-confirm">确定</button></div>')
   $('bulk-confirm').onclick = async () => {
     const agentsSelected = [...document.querySelectorAll('.bulk-agent:checked')].map((box) => box.value)
     try {
-      const result = await api('/api/grants/sync', { method: 'POST', body: JSON.stringify({ items: names, agents: agentsSelected, seconds: Number($('bulk-seconds').value), maxReads: $('bulk-reads').value || null, targetFolder: $('bulk-folder').value.trim(), revokeUnselected: $('bulk-revoke').checked }) })
+      const result = await api('/api/grants/sync', { method: 'POST', body: JSON.stringify({ items: names, agents: agentsSelected, seconds: Number($('bulk-seconds').value), maxReads: $('bulk-reads').value || null, targetFolder: $('bulk-folder').value.trim(), revokeUnselected: $('bulk-revoke').checked, addToScope: $('bulk-scope').checked }) })
       show('modal', false); selectedItems.clear(); await Promise.all([loadState(), loadItems()])
       toast('分享 ' + (result.granted?.length || 0) + '，转移 ' + (result.queued?.length || 0) + '，取消 ' + (result.revoked?.length || 0) + (result.errors?.length ? '，失败 ' + result.errors.length : ''))
     } catch (error) { toast(error.message, true) }
@@ -1963,10 +1974,12 @@ async function saveAgentFromModal(originalName) {
   } catch (error) { toast(error.message, true) }
 }
 function agentPermFields(agent) {
-  return '<label class="field">可读条目（勾选，不勾=无权限）</label>' + pickListHtml('ma-allow', knownItemNames(), agent.allow || [], '密钥库里还没有条目。') +
-    '<label class="field">可读分组（勾选，不勾=不限）</label>' + pickListHtml('ma-groups', knownGroups(), agent.groups || [], '还没有任何分组。')
+  return '<div class="hint" style="margin:2px 0 6px">这里的「可读条目」是<b>范围</b>：决定这个 Agent 有资格申请哪些条目（list_secrets 也按它过滤）。它不等于已经拿到授权——分享/审批产生的是一次具体的<b>授权</b>，在「授权」页能看到。两者都满足才能读到值。</div>'
+    + '<label class="field">可读条目（范围内的条目，不勾=看不到也申请不了）</label>' + pickListHtml('ma-allow', knownItemNames(), agent.allow || [], '密钥库里还没有条目。')
+    + '<label class="field">可读分组（范围内按分组放行）</label>' + pickListHtml('ma-groups', knownGroups(), agent.groups || [], '还没有任何分组。')
 }
-function openAgentMenu(name) {
+async function openAgentMenu(name) {
+  await ensureItems()
   const agent = app.data.agents.find((entry) => entry.name === name); if (!agent) return
   if (agent.oauth) {
     openModal('OAuth Agent「' + name + '」', '<div class="hint">OAuth 动态注册产生的 Agent，绑定账户：<code>' + esc(agent.account || '-') + '</code>。可以修改名称、备注、权限和写入开关；撤销授权会删除 token。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存</button><button class="danger" id="ma-oauth-revoke">撤销 OAuth 授权</button></div>')
