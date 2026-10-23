@@ -123,8 +123,12 @@ async function fillLogin(page, origin, username, password) {
       && el.name !== 'search' && el.id !== 'search') || null
     const set = (el, value) => {
       // React and Vue track the previous value; a plain assignment is ignored.
-      const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set
-      if (setter) setter.call(el, value); else el.value = value
+      // Use the accessor that OWNS the property: a page may define `value` on
+      // the element itself, and the prototype's setter would then write past it.
+      let owner = el
+      let desc = null
+      while (owner && !(desc = Object.getOwnPropertyDescriptor(owner, 'value'))) owner = Object.getPrototypeOf(owner)
+      if (desc?.set) desc.set.call(el, value); else el.value = value
       el.dispatchEvent(new Event('input', { bubbles: true }))
       el.dispatchEvent(new Event('change', { bubbles: true }))
     }

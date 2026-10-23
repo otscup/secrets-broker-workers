@@ -86,3 +86,7 @@ attach-route.mjs
 !test-mf-denied-visibility.mjs
 !test-mf-share-scope.mjs
 !test-mf-extension-cors.mjs
+
+# Extension signing artefacts are local only; never commit a private key
+extension.pem
+extension.crx

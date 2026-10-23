@@ -69,9 +69,15 @@ function fillInPage(user, pass) {
     ['text', 'email', 'tel', ''].includes(String(el.type || '').toLowerCase())
     && el.name !== 'search' && el.id !== 'search') || null
   const set = (el, value) => {
-    // React and Vue track the previous value; a plain assignment is ignored.
-    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set
-    if (setter) setter.call(el, value); else el.value = value
+    // React and Vue track the previous value and ignore a plain assignment, so
+    // the native setter is used. It has to be the accessor that OWNS the
+    // property: a page may define `value` on the element itself (some test
+    // harnesses and a few widgets do), and taking the prototype's setter then
+    // writes past it. Walk from the element up to the first owner.
+    let owner = el
+    let desc = null
+    while (owner && !(desc = Object.getOwnPropertyDescriptor(owner, 'value'))) owner = Object.getPrototypeOf(owner)
+    if (desc?.set) desc.set.call(el, value); else el.value = value
     el.dispatchEvent(new Event('input', { bubbles: true }))
     el.dispatchEvent(new Event('change', { bubbles: true }))
   }
