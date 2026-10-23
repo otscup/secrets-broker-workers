@@ -519,6 +519,8 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 .ov-action>div{min-width:0}
 .ov-action button{flex:0 0 auto;white-space:nowrap}
 .ov-pair{margin-bottom:var(--sp-3)}
+@media(min-width:1280px){.wrap{max-width:1240px}}
+#globe-card .globe-box{max-height:240px}
 .dash{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3);align-items:stretch;margin-bottom:var(--sp-3)}
 .dash>.card,.dash>.ov-actions{margin:0}
 .dash .span2{grid-column:span 2}
