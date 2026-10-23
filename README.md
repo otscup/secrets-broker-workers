@@ -37,6 +37,7 @@ DSH plugin (handles pending approvals inside the settings page):
 - ✅ Approval flow: once / 1h / 24h / 7d / permanent; pending requests in the UI
 - ✅ Grant actions: extend duration, set max reads, revoke, delete; direct share to an agent
 - ✅ Per-item no-approval policy (reads are still audited)
+- ✅ Per-item classification (api / web) with exact-origin fill policies
 - ✅ Audit log and dashboard: KPIs, bar trend, agent share, top items, recent activity
 - ✅ Profile page + OIDC (xid) login/binding with PKCE
 - ✅ Account menu from avatar, dark mode, password change, TOTP 2FA
@@ -175,6 +176,27 @@ curl -H "Authorization: Bearer $AGENT_TOKEN" \
 Agents are created in the **Agents** tab; the token is shown only once.
 The item's **no-approval** toggle in the **Items** tab makes reads immediate while still
 recording audit events.
+
+## Classifying a credential
+
+Every credential is labelled **api**, **web** or unclassified, shown next to its
+name. The label decides what an Agent may do with it:
+
+- **api** — an API key. An Agent may read it, but only after you explicitly allow
+  plaintext reads for that item (30-day expiry).
+- **web** — a website login. It is only ever filled into the origins you list;
+  an Agent never receives the plaintext.
+- **unclassified** — refused by default, so nothing is readable until you choose.
+
+The same three colours are used in the picker and beside the name. You can set
+the label in the item's ⋮ menu, in bulk from the selection bar, or when storing
+a key from the DSH plugin.
+
+Origins are matched exactly: a subdomain, another port or `example.com.evil.test`
+will not match `example.com`. `https` is required, except for a host that cannot
+leave the local network (`localhost`, `127.x`, `10.x`, `192.168.x`,
+`172.16-31.x`, `*.lan`, `*.local`), which may use `http` because a homelab
+console usually has no certificate. A bare `host:port` is read as `https`.
 
 ## OIDC (xid) login
 
