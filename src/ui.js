@@ -209,19 +209,229 @@ ul.items{list-style:none;margin:0;padding:0}ul.items li{display:flex;align-items
 .chart-tip.show{opacity:1;transform:translateY(0);animation:tipShake .22s ease}
 @keyframes tipShake{0%,100%{margin-left:0}25%{margin-left:2px}75%{margin-left:-2px}}
 .donut-seg{cursor:pointer;transition:stroke-width .15s,opacity .15s}.donut-seg:hover,.donut-seg.active{stroke-width:25;opacity:1!important}.modal .secret{max-height:120px;overflow:auto}
-.card,.kpi{border-radius:20px!important;box-shadow:0 1px 2px rgba(20,40,80,.04),0 8px 24px rgba(20,40,80,.04)!important}
-html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!important;background:#151f31}
 @media(max-width:860px){.kpis{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}}@media(max-width:620px){.user .email{display:none}}
 @media(max-width:720px){.wrap{padding:14px 12px}header{gap:8px}h1{font-size:18px}nav{order:3;width:100%;overflow-x:auto;margin-left:0;padding-bottom:2px}nav button{flex:0 0 auto}.user-wrap{margin-left:0}.theme-switch{margin-left:auto}.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:14px}.row>*{min-width:100%}.row button{width:100%}.modal{padding:8px}.modal .card{max-height:calc(100vh - 16px);padding:16px}.chart{overflow-x:auto}table{font-size:12px}th,td{padding:6px}}
+/* ------------------------------------------------------------------
+   iOS theme layer. Everything below is driven by the tokens at the top of
+   this block; component rules never hardcode a colour, size or radius.
+   Placed last so it wins over the older chrome rules above, which are being
+   retired page by page (lists and the item sheet first).
+   ------------------------------------------------------------------ */
+:root{
+  /* surfaces */
+  --bg-grouped:#F2F2F7;--card:#FFFFFF;--card-2:#F2F2F7;--tabbar-bg:#F7F7F8;
+  /* labels */
+  --label:#000000;--label-2:rgba(60,60,67,.6);--label-3:rgba(60,60,67,.3);
+  /* separators and fills */
+  --separator:rgba(60,60,67,.29);--fill:rgba(120,120,128,.12);--fill-2:rgba(120,120,128,.08);
+  /* system colours */
+  --blue:#007AFF;--green:#34C759;--orange:#FF9500;--red:#FF3B30;--purple:#AF52DE;
+  --mix-icon:14%;--mix-badge:15%;--mix-tint:12%;
+  /* aliases kept so older rules keep resolving */
+  --bg:var(--bg-grouped);--line:var(--separator);--text:var(--label);--muted:var(--label-2);
+  --ok:var(--green);--warn:var(--orange);--danger:var(--red);--btn:var(--fill);--accent:var(--blue);
+  --kpi-bg:var(--card);
+  /* type */
+  --font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --text-title:22px;--lh-title:28px;--text-headline:17px;--lh-headline:22px;
+  --text-body-lg:17px;--lh-body-lg:22px;--text-body:15px;--lh-body:20px;
+  --text-sub:13px;--lh-sub:18px;--text-caption:12px;--lh-caption:16px;--text-tab:10px;
+  /* space */
+  --sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:20px;--sp-6:24px;--sp-7:32px;
+  /* radius */
+  --r-sm:4px;--r-md:8px;--r-lg:12px;--r-xl:16px;--ios-radius:var(--r-lg);--ios-shadow:0 1px 2px rgba(0,0,0,.04);
+  /* structure + motion */
+  --nav-h:44px;--row-h:52px;--tabbar-h:49px;
+  --ease:cubic-bezier(.32,.72,0,1);--dur-push:.32s;--dur-sheet:.30s;--dur-fade:.20s;
+}
+html[data-theme="dark"]{
+  --bg-grouped:#000000;--card:#1C1C1E;--card-2:#2C2C2E;--tabbar-bg:#161618;
+  --label:#FFFFFF;--label-2:rgba(235,235,245,.6);--label-3:rgba(235,235,245,.3);
+  --separator:rgba(84,84,88,.6);--fill:rgba(120,120,128,.32);--fill-2:rgba(120,120,128,.24);
+  --blue:#0A84FF;--green:#30D158;--orange:#FF9F0A;--red:#FF453A;--purple:#BF5AF2;
+  --mix-icon:26%;--mix-badge:24%;--mix-tint:20%;
+  --kpi-bg:var(--card);--ios-shadow:none;
+}
+body{background:var(--bg-grouped);color:var(--label);font:var(--text-body)/var(--lh-body) var(--font-family);-webkit-font-smoothing:antialiased}
+/* The legacy dark rules below are more specific (html[data-theme=dark] body),
+   so the dark side of every surface has to be restated at the same weight. */
+html[data-theme="dark"] body{background:var(--bg-grouped);color:var(--label)}
+html[data-theme="dark"] .card,html[data-theme="dark"] .kpi,html[data-theme="dark"] .ios-card,html[data-theme="dark"] .account-menu,html[data-theme="dark"] .donut-center,html[data-theme="dark"] #global-search-results{background:var(--card);box-shadow:none}
+html[data-theme="dark"] input,html[data-theme="dark"] select,html[data-theme="dark"] textarea{background:var(--fill-2);color:var(--label)}
+html[data-theme="dark"] tbody tr:hover td{background:transparent}
+html[data-theme="dark"] .seg,html[data-theme="dark"] nav{background:var(--fill)}
+input[type=checkbox]{appearance:none;-webkit-appearance:none;width:22px;height:22px;border:1.5px solid var(--separator);border-radius:50%;background:transparent;min-height:0;padding:0;flex:0 0 auto;display:inline-grid;place-items:center;transition:background var(--dur-fade) var(--ease),border-color var(--dur-fade) var(--ease)}
+input[type=checkbox]:checked{background:var(--blue);border-color:var(--blue)}
+input[type=checkbox]:checked::after{content:"";width:6px;height:11px;border:2px solid #fff;border-top:0;border-left:0;transform:translateY(-1.5px) rotate(40deg)}
+input[type=checkbox]:disabled{opacity:.4}
+input[type=checkbox]:focus{box-shadow:none}
+h1{font-size:var(--text-title);line-height:var(--lh-title);font-weight:700;letter-spacing:-.4px}
+.badge{background:color-mix(in srgb,var(--blue) var(--mix-badge),transparent);color:var(--blue);font-size:var(--text-caption);padding:2px var(--sp-2);border-radius:999px}
+nav{background:var(--fill);border-radius:9px;padding:2px;gap:2px;margin-left:var(--sp-2)}
+nav button{padding:6px 14px;border-radius:7px;font-size:var(--text-sub);font-weight:500;color:var(--label)}
+nav button.active{background:var(--card);color:var(--label);box-shadow:0 3px 8px rgba(0,0,0,.12)}
+html[data-theme="dark"] nav button.active{background:#636366}
+.theme-cycle,.icon-btn{color:var(--label-2);border-radius:var(--r-md)}
+.theme-cycle:hover,.icon-btn:hover{background:var(--fill)}
+.avatar{background:var(--fill);border:0;color:var(--label)}
+.account-menu{background:var(--card);border:0;border-radius:var(--r-lg);box-shadow:0 12px 32px rgba(0,0,0,.24);padding:var(--sp-1)}
+.account-menu button{font-size:var(--text-body);padding:10px 12px;border-radius:var(--r-md)}
+.account-menu button:hover{background:var(--fill)}
+.card{background:var(--card);border:0;border-radius:var(--r-lg);box-shadow:var(--ios-shadow);padding:var(--sp-4) var(--sp-4);margin-bottom:var(--sp-4)}
+.card>h2,h2{font-size:var(--text-headline);line-height:var(--lh-headline);font-weight:600;margin:0 0 var(--sp-1);letter-spacing:-.2px}
+.hint{color:var(--label-2);font-size:var(--text-sub);line-height:var(--lh-sub)}
+label.field{font-size:var(--text-sub);color:var(--label-2);margin:var(--sp-3) 0 var(--sp-1)}
+input,select,textarea{background:var(--fill-2);border:0;border-radius:var(--r-md);padding:10px 12px;min-height:var(--nav-h);font-size:var(--text-body-lg);color:var(--label)}
+input::placeholder,textarea::placeholder{color:var(--label-3)}
+input:focus,select:focus,textarea:focus{border:0;box-shadow:0 0 0 3px color-mix(in srgb,var(--blue) 40%,transparent);outline:none}
+button{border-radius:var(--r-md);padding:10px 16px;font-size:var(--text-body-lg);font-weight:500;background:var(--fill);color:var(--label);transition:opacity var(--dur-fade) var(--ease),transform var(--dur-fade) var(--ease)}
+button:active{opacity:.6}
+button.primary{background:var(--blue);color:#fff}
+button.danger{background:color-mix(in srgb,var(--red) var(--mix-badge),transparent);color:var(--red)}
+button.small{padding:6px 12px;font-size:var(--text-sub);border-radius:var(--r-md)}
+.link-button{border-radius:var(--r-md);font-size:var(--text-body-lg);padding:10px 16px}
+.link-button.primary{background:var(--blue);color:#fff}
+.seg{background:var(--fill);border:0;border-radius:9px;padding:2px;gap:2px}
+.seg button{background:transparent;color:var(--label);padding:6px 12px;font-size:var(--text-sub);border-radius:7px;font-weight:500}
+.seg button.on{background:var(--card);color:var(--label);box-shadow:0 3px 8px rgba(0,0,0,.12)}
+html[data-theme="dark"] .seg button.on{background:#636366}
+table{font-size:var(--text-body);border-collapse:separate;border-spacing:0}
+th{font-size:var(--text-sub);font-weight:400;color:var(--label-2);padding:var(--sp-2) var(--sp-3);border-bottom:1px solid var(--separator)}
+td{padding:var(--sp-3);border-bottom:1px solid var(--separator);font-size:var(--text-body)}
+tr:last-child td{border-bottom:0}
+tbody tr:hover td{background:transparent}
+tbody tr:active td{background:var(--fill-2)}
+.pill{background:color-mix(in srgb,var(--green) var(--mix-badge),transparent);color:var(--green);font-size:var(--text-caption);padding:2px var(--sp-2);border-radius:999px}
+.pill:hover{filter:brightness(.96)}
+.pill.off{background:var(--fill);color:var(--label-2)}
+.kind-tag{border:0;border-radius:999px;padding:2px var(--sp-2);font-size:var(--text-caption);margin-left:var(--sp-2)}
+.kind-api{background:color-mix(in srgb,var(--green) var(--mix-badge),transparent);color:var(--green)}
+.kind-web{background:color-mix(in srgb,var(--blue) var(--mix-badge),transparent);color:var(--blue)}
+.kind-none{background:color-mix(in srgb,var(--orange) var(--mix-badge),transparent);color:var(--orange)}
+html[data-theme="dark"] .kind-api,html[data-theme="dark"] .kind-web,html[data-theme="dark"] .kind-none{border:0}
+.kpis{gap:var(--sp-3);margin-bottom:var(--sp-4)}
+.kpi{background:var(--kpi-bg);border:0;border-radius:var(--r-lg);padding:var(--sp-3) var(--sp-4)}
+.kpi .label{font-size:var(--text-sub);color:var(--label-2)}
+.kpi .value{font-size:26px;font-weight:700;letter-spacing:-.6px;margin-top:2px}
+.kpi .sub{font-size:var(--text-caption);color:var(--label-2)}
+.kpi[data-kpi]:hover{border-color:transparent;background:var(--fill-2)}
+.agent-stat{background:var(--card);border:0;border-radius:var(--r-lg);box-shadow:var(--ios-shadow)}
+.agent-stat b{font-size:19px;font-weight:700}
+.agent-stat span{font-size:var(--text-sub);color:var(--label-2)}
+.agent-health{border-radius:999px;font-size:var(--text-caption);padding:3px var(--sp-2)}
+.agent-health.ok{background:color-mix(in srgb,var(--green) var(--mix-badge),transparent);color:var(--green)}
+.agent-health.warn{background:color-mix(in srgb,var(--orange) var(--mix-badge),transparent);color:var(--orange)}
+.agent-health.bad{background:color-mix(in srgb,var(--red) var(--mix-badge),transparent);color:var(--red)}
+.recent .rowline{border-bottom:1px solid var(--separator);font-size:var(--text-sub);padding:10px 0}
+.secret{background:var(--fill-2);color:var(--label);border-radius:var(--r-md);font-size:var(--text-sub)}
+.modal{background:rgba(0,0,0,.4);padding:var(--sp-5);z-index:80;display:flex;align-items:center;justify-content:center}
+.modal .card{max-width:620px;border-radius:var(--r-xl);padding:var(--sp-4) var(--sp-4) var(--sp-5);box-shadow:0 24px 60px rgba(0,0,0,.28)}
+#modal-body{border-radius:var(--r-lg)}
+.modal .card .hint{font-size:var(--text-caption)}
+.modal .table-wrap table{min-width:0}
+.modal .table-wrap th,.modal .table-wrap td{padding:var(--sp-2);font-size:var(--text-sub)}
+.modal-x{position:absolute;top:var(--sp-3);right:var(--sp-3);width:32px;height:32px;display:grid;place-items:center;background:var(--fill);color:var(--label-2);border-radius:999px;font-size:17px;line-height:1;padding:0;margin:0;float:none;z-index:3}
+.modal .card{padding-top:var(--sp-5)}
+.modal .card>h2{padding-right:44px}
+.toast{background:rgba(28,28,30,.92);color:#fff;border-radius:999px;padding:12px 18px;font-size:var(--text-body);box-shadow:0 10px 30px rgba(0,0,0,.28);transition:opacity var(--dur-fade) var(--ease),transform var(--dur-fade) var(--ease)}
+.toast.error{background:var(--red)}
+.chart-tip{background:rgba(28,28,30,.92);border-radius:var(--r-md);font-size:var(--text-caption);box-shadow:0 8px 22px rgba(0,0,0,.28)}
+.status{font-size:var(--text-sub);color:var(--label-2)}
+.error{color:var(--red)}.ok{color:var(--green)}
+ul.items li{border-bottom:1px solid var(--separator);padding:12px 0}
+ul.items .name{font-weight:600;font-size:var(--text-body-lg)}
+ul.items .type{font-size:var(--text-caption);color:var(--label-2)}
+.gs-row{border-radius:var(--r-md);font-size:var(--text-body)}
+.gs-row:hover,.gs-row:focus-visible{background:var(--fill-2)}
+.gs-group-title{font-size:var(--text-caption);color:var(--label-2);text-transform:none}
+#global-search-results{background:var(--card);border:0;border-radius:var(--r-lg);padding:var(--sp-2)}
+@media(max-width:720px){
+  body{padding-bottom:calc(var(--tabbar-h) + env(safe-area-inset-bottom))}
+  nav{position:fixed;left:0;right:0;bottom:0;z-index:50;order:0;width:auto;margin:0;padding:6px var(--sp-2) calc(6px + env(safe-area-inset-bottom));display:flex;justify-content:space-around;gap:0;border-radius:0;background:var(--tabbar-bg);-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%);border-top:1px solid var(--separator);overflow:visible}
+  nav button,nav .icon-btn{flex:1 1 0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:var(--nav-h);padding:2px 0;font-size:var(--text-tab);font-weight:500;color:var(--label-2);background:transparent !important;box-shadow:none !important;border-radius:0}
+  nav button.active{color:var(--blue);background:transparent !important;box-shadow:none !important}
+  .wrap{padding:var(--sp-3) var(--sp-4) calc(var(--sp-5) + env(safe-area-inset-bottom))}
+  header{gap:var(--sp-2);margin-bottom:var(--sp-3)}
+  h1{font-size:26px;line-height:32px}
+  .card{padding:var(--sp-3) var(--sp-3);border-radius:var(--r-lg);margin-bottom:var(--sp-3)}
+  .modal{display:flex;align-items:flex-end;justify-content:stretch;padding:0;overflow:hidden}
+  .modal .card{max-width:none;width:100%;max-height:92vh;border-radius:var(--r-xl) var(--r-xl) 0 0;padding:var(--sp-4) var(--sp-4) calc(var(--sp-5) + env(safe-area-inset-bottom));box-shadow:0 -8px 40px rgba(0,0,0,.28)}
+  .toast{bottom:calc(var(--tabbar-h) + var(--sp-4))}
+  .kpi .value{font-size:22px}
+  td{padding:var(--sp-2) var(--sp-2)}
+  th{padding:6px var(--sp-2)}
+}
+@media (prefers-reduced-motion: reduce){
+  button,.toast,nav button{transition-duration:1ms}
+}
+/* iOS grouped list used by the credentials page. */
+.ios-group{margin-top:var(--sp-4);--ios-lead:0px}
+.ios-group.selecting{--ios-lead:34px}
+.ios-group:not(.selecting) .ios-check{display:none}
+.ios-group-head{display:flex;align-items:center;gap:var(--sp-2);padding:0 var(--sp-4) var(--sp-2);color:var(--label-2);font-size:var(--text-sub)}
+.ios-card{background:var(--card);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--ios-shadow)}
+.ios-row{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);min-height:var(--row-h);position:relative}
+.ios-row+.ios-row::before{content:"";position:absolute;left:calc(var(--sp-3) + var(--ios-lead) + 36px + var(--sp-3));right:0;top:0;height:1px;background:var(--separator)}
+.ios-row:active{background:var(--fill-2)}
+.ios-check{width:20px;height:20px;flex:0 0 auto;accent-color:var(--blue);min-height:0}
+.ios-ico{width:36px;height:36px;border-radius:var(--r-md);display:grid;place-items:center;flex:0 0 auto}
+.ios-ico[data-kind=api]{background:color-mix(in srgb,var(--blue) var(--mix-icon),transparent);color:var(--blue)}
+.ios-ico[data-kind=web]{background:color-mix(in srgb,var(--purple) var(--mix-icon),transparent);color:var(--purple)}
+.ios-ico[data-kind=none]{background:color-mix(in srgb,var(--orange) var(--mix-icon),transparent);color:var(--orange)}
+.ios-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px;cursor:pointer;padding:var(--sp-1) 0;border-radius:var(--r-md)}
+.ios-main:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.ios-title{font-size:var(--text-body-lg);line-height:var(--lh-body-lg);font-weight:500;display:flex;align-items:center;min-width:0;gap:var(--sp-1)}
+.ios-title b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ios-title .kind-tag{margin-left:0;flex:0 0 auto}
+.ios-sub{font-size:var(--text-sub);line-height:var(--lh-sub);color:var(--label-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ios-trail{display:flex;align-items:center;gap:var(--sp-1);flex:0 0 auto}
+.ios-pill{font-size:var(--text-caption);padding:4px 10px;border-radius:999px;background:var(--fill);color:var(--label-2);min-height:28px;font-weight:500}
+.ios-pill.on{background:color-mix(in srgb,var(--green) var(--mix-badge),transparent);color:var(--green)}
+.ios-pill.web{background:color-mix(in srgb,var(--purple) var(--mix-badge),transparent);color:var(--purple)}
+.ios-pill.none{background:color-mix(in srgb,var(--orange) var(--mix-badge),transparent);color:var(--orange)}
+.ios-pill.bad{background:color-mix(in srgb,var(--red) var(--mix-badge),transparent);color:var(--red)}
+.ios-flag{font-size:var(--text-caption);padding:2px 8px;border-radius:999px}
+.ios-flag.bad{background:color-mix(in srgb,var(--red) var(--mix-badge),transparent);color:var(--red)}
+.ios-flag.warn{background:color-mix(in srgb,var(--orange) var(--mix-badge),transparent);color:var(--orange)}
+.ios-more{width:44px;height:44px;display:grid;place-items:center;background:transparent;color:var(--label-3);font-size:18px;padding:0;border-radius:var(--r-md)}
+.ios-more:hover{background:var(--fill-2);color:var(--label-2)}
+.hdr-actions{margin-left:auto;display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;justify-content:flex-end}
+.hdr-actions .small{font-size:var(--text-sub);padding:6px 12px}
+.theme-cycle{width:36px;height:36px;display:grid;place-items:center;font-size:16px;background:transparent}
+@media(max-width:720px){
+  header{flex-wrap:nowrap;align-items:center}
+  header h1{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  h1{font-size:22px;line-height:28px}
+  header .badge{display:none}
+  .hdr-actions{gap:var(--sp-1)}
+  .hdr-actions #ai-help,.hdr-actions .icon-btn,.hdr-actions #page-refresh{display:none}
+  .hdr-actions .small{font-size:var(--text-caption);padding:6px 10px;min-height:36px}
+}
+#view-items .row{align-items:center}
+#view-items .row>button{flex:0 0 auto;min-width:0}
+#view-items .row>#item-filter{flex:1 1 240px}
+@media(max-width:720px){.hdr-actions .who-name,.user .who-name{display:none}}
+@media(max-width:720px){
+  #view-items .row{gap:6px}
+  #view-items .row button{width:auto;flex:0 0 auto;padding:8px 11px;font-size:var(--text-body);min-height:38px}
+  #view-items .row>*{min-width:0}
+  #view-items .row input#item-filter{flex:1 1 100%;width:100%}
+  .ios-flag{display:none}
+  .ios-row{padding:var(--sp-2);gap:var(--sp-2)}
+  .ios-row+.ios-row::before{left:calc(var(--sp-2) + var(--ios-lead) + 36px + var(--sp-2))}
+  .ios-title{font-size:var(--text-body)}
+}
 </style></head><body><div class="wrap">
 <header><img id="site-logo" src="/logo.png" alt="" style="width:30px;height:30px;border-radius:8px;object-fit:cover;cursor:pointer"><h1 id="site-title" style="cursor:pointer">Secrets Broker</h1><span class="badge">Cloudflare Workers</span>
+<div class="hdr-actions">
 <button id="theme-cycle" class="theme-cycle" title="切换主题：浅色 / 深色 / 跟随系统">☀️</button>
-<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button></nav>
 <button id="ai-help" class="small" title="用 AI 解释当前状态">问 AI</button>
 <a class="icon-btn" href="https://github.com/otscup/secrets-broker-workers" target="_blank" rel="noreferrer" title="GitHub"><svg viewBox="0 0 16 16" width="17" height="17" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
 <button id="page-refresh" class="small" title="刷新当前页面">刷新</button>
 <div class="user-wrap"><span class="user"><span class="who-name" id="who"></span><button id="avatar" class="avatar" title="账户">SB</button></span>
 <div id="account-menu" class="account-menu hidden"><button data-view="profile">个人资料</button><button data-view="settings">系统设置</button><button id="account-logout">退出登录</button><button id="lock" class="danger">锁定</button></div></div>
+</div>
+<nav id="nav"><button data-view="overview" class="active">概览</button><button data-view="items">密钥</button><button data-view="agents">Agents</button><button data-view="grants">授权</button><button data-view="logs">日志</button></nav>
 </header>
 
 <section id="login-card" class="card hidden">
@@ -266,8 +476,8 @@ html[data-theme="dark"] .card,html[data-theme="dark"] .kpi{box-shadow:none!impor
     <div class="card"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>
   </section>
 
-  <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读），这里可以设置免审批策略和读取。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
-    <div class="card"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。未分类的凭据默认为拒绝读取。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
+  <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读）。点条目打开详情，可改类型、明文读取、免审批和分享；勾选多条可批量操作。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="items-select">选择</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
+    <div class="card hidden" id="card-fill-policies" aria-hidden="true"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。未分类的凭据默认为拒绝读取。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     <div class="card" id="card-denied"><h2>被拦下的请求</h2><div class="hint">Agent 试图读取但没通过权限检查的条目。这里只是记录，没有放行任何东西；点「授权」才会真正放开。</div><div id="denied-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     
   </section>
@@ -452,6 +662,9 @@ async function api(path, options = {}) {
 const DEFAULT_LOGO = '/logo.png'
 let app = { me: null, data: { agents: [], policies: {}, grants: [], pending: [], audit: [] }, items: [], stats: null, range: '24h', token: '' }
 const selectedItems = new Set()
+// Selection is an explicit mode: iOS lists do not show checkboxes until you ask
+// for them, and showing them all the time squeezed the name column.
+let itemsSelecting = false
 const esc = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 const status = (id, text, cls = '') => { const el = $(id); if (el) { el.textContent = text; el.className = 'status ' + cls } }
 function show(id, visible) { $(id).classList.toggle('hidden', !visible) }
@@ -600,7 +813,7 @@ $('global-search-results').addEventListener('click', (event) => {
   if (view === 'items') { const filter = $('item-filter'); if (filter) { filter.value = row.dataset.name || ''; renderItems() } }
   if (view === 'agents') openAgentDetail(row.dataset.name)
 })
-$('items-refresh').onclick = loadItems; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('require-classification-save').onclick = saveRequireClassification; $('ai-save').onclick = saveAiSettings; $('ai-model-fetch').onclick = fetchCustomModels; $('ai-help').onclick = () => openAiHelp(); $('ai-provider').onchange = () => $('ai-custom-box').classList.toggle('hidden', $('ai-provider').value !== 'custom'); $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + (d.provider === 'workers-ai' ? 'Workers AI' : '自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
+$('items-refresh').onclick = loadItems; $('items-select').onclick = () => { itemsSelecting = !itemsSelecting; if (!itemsSelecting) selectedItems.clear(); $('items-select').textContent = itemsSelecting ? '完成' : '选择'; renderItems() }; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('require-classification-save').onclick = saveRequireClassification; $('ai-save').onclick = saveAiSettings; $('ai-model-fetch').onclick = fetchCustomModels; $('ai-help').onclick = () => openAiHelp(); $('ai-provider').onchange = () => $('ai-custom-box').classList.toggle('hidden', $('ai-provider').value !== 'custom'); $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + (d.provider === 'workers-ai' ? 'Workers AI' : '自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
 // Collapsible settings cards. One delegated handler covers every card, so a
 // new collapsible card needs no extra wiring.
@@ -1293,24 +1506,41 @@ function renderItems() {
     if (kind === 'web') return ' <span class="kind-tag kind-web" title="网站登录：只能被填充到指定网站，Agent 永远拿不到明文">web</span>'
     return ' <span class="kind-tag kind-none" title="' + (guarded ? '未分类：明文读取已被拒绝，请在条目里分类' : '未分类：Agent 可能读到明文，请在条目里分类') + '">' + (guarded ? '未分类 · 禁读' : '未分类 · 可读明文') + '</span>'
   }
-  $('items-box').innerHTML = items.length ? '<table><tr><th><input type="checkbox" id="select-all-items"></th><th>名称</th><th>最后活动</th><th>最后操作</th><th class="nowrap">免审批</th><th class="nowrap">有效期</th><th class="nowrap">操作</th></tr>' + items.map((item) => {
-    const when = item.lastActivityAt ? relativeTime(Date.parse(item.lastActivityAt)) : '无记录'
-    const who = item.lastActor || '-'
-    // The kind is shown for every item, so the operator sees at a glance which
-    // credentials are classified and which are not, instead of deducing it from
-    // a second table further down the page.
-    const nameBadge = kindTag(kindByName.get(item.name))
-    return '<tr><td><input type="checkbox" class="item-select" data-name="' + esc(item.name) + '" ' + (selectedItems.has(item.name) ? 'checked' : '') + '></td>' +
-      '<td><b>' + esc(item.name) + '</b>' + nameBadge + '</td>' +
-      '<td class="hint">' + esc(when) + '</td>' +
-      '<td class="hint">' + esc(who) + '</td>' +
-      '<td class="nowrap"><button class="small ' + (item.noApproval ? 'primary' : '') + '" data-policy="' + esc(item.name) + '">' + (item.noApproval ? '免审批' : '需审批') + '</button></td>' +
-      expiryBadge(item) +
-      '<td class="actions"><button class="small" data-read="' + esc(item.name) + '">读取</button><button class="small" data-item-menu="' + esc(item.name) + '" title="更多">⋮</button></td></tr>'
-  }).join('') + '</table>' : '<div class="hint">没有条目</div>'
-  const all = $('select-all-items')
-  if (all) all.onchange = () => { if (all.checked) items.forEach((item) => selectedItems.add(item.name)); else items.forEach((item) => selectedItems.delete(item.name)); renderItems() }
-  $('items-box').querySelectorAll('.item-select').forEach((box) => { box.onchange = () => { if (box.checked) selectedItems.add(box.dataset.name); else selectedItems.delete(box.dataset.name); updateBulkBar(); const allBox = $('select-all-items'); if (allBox) allBox.checked = items.every((item) => selectedItems.has(item.name)) } })
+  const ico = (kind) => { const paths = kind === 'web'
+    ? '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 2.5 15.4 0 18M12 3c-2.5 2.6-2.5 15.4 0 18"/>'
+    : kind === 'api'
+      ? '<circle cx="8" cy="8" r="4"/><path d="M11 11l8 8M16 16l2-2M19 19l2-2"/>'
+      : '<rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'
+    return '<span class="ios-ico " data-kind="' + (kind || 'none') + '"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + paths + '</svg></span>' }
+  // Grouped like an iOS settings list: classified credentials first, the ones that
+  // still need a decision below. Unclassified items are the risky ones, so they get
+  // their own group instead of being lost in one long table.
+  const row = (item) => {
+    const kind = kindByName.get(item.name)
+    const when = item.lastActivityAt ? relativeTime(Date.parse(item.lastActivityAt)) : '无读取记录'
+    const meta = [item.group, when, item.lastActor].filter(Boolean).map((part) => esc(part)).join(' · ')
+    const expired = typeof item.expiresAt === 'number' && item.expiresAt <= Date.now()
+    const trail = '<button class="ios-pill ' + (item.noApproval ? 'on' : kind === 'web' ? 'web' : kind ? '' : 'none') + (expired ? ' bad' : '') + '" data-policy="' + esc(item.name) + '" title="点击切换：免审批读取 / 需要审批">'
+      + (expired ? '已过期' : kind === 'web' ? '仅填充' : kind === 'api' ? (item.noApproval ? '免审批' : '需审批') : '未分类') + '</button>'
+    return '<div class="ios-row">' +
+      '<input type="checkbox" class="item-select ios-check" data-name="' + esc(item.name) + '" ' + (selectedItems.has(item.name) ? 'checked' : '') + ' title="选择">' +
+      ico(kind) +
+      '<div class="ios-main" data-item-menu="' + esc(item.name) + '" role="button" tabindex="0">' +
+        '<div class="ios-title"><b>' + esc(item.name) + '</b>' + (kind === 'api' || kind === 'web' ? kindTag(kind) : '') + '</div>' +
+        '<div class="ios-sub">' + meta + '</div>' +
+      '</div>' +
+      '<div class="ios-trail">' + trail + '<button class="ios-more" data-item-menu="' + esc(item.name) + '" title="更多">⋮</button></div>' +
+    '</div>'
+  }
+  const classified = items.filter((item) => kindByName.get(item.name) === 'api' || kindByName.get(item.name) === 'web')
+  const unclassified = items.filter((item) => !classified.includes(item))
+  const showChecks = itemsSelecting || selectedItems.size > 0
+  const group = (title, list) => (list.length
+    ? '<div class="ios-group' + (showChecks ? ' selecting' : '') + '"><div class="ios-group-head"><span>' + title + ' · ' + list.length + '</span></div><div class="ios-card">' + list.map(row).join('') + '</div></div>'
+    : '')
+  $('items-box').innerHTML = items.length ? group('已分类', classified) + group('未分类', unclassified) : '<div class="hint" style="margin-top:12px">没有条目</div>'
+  $('items-box').querySelectorAll('.item-select').forEach((box) => { box.onchange = () => { if (box.checked) selectedItems.add(box.dataset.name); else selectedItems.delete(box.dataset.name); updateBulkBar() } })
+  $('items-box').querySelectorAll('.ios-main').forEach((main) => { main.onkeydown = (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openItemMenu(main.dataset.itemMenu) } } })
   updateBulkBar()
 }
 function updateBulkBar() { const bar = $('bulk-bar'); if (!bar) return; bar.classList.toggle('hidden', selectedItems.size === 0); $('bulk-count').textContent = '已选择 ' + selectedItems.size + ' 个条目' }
@@ -2312,14 +2542,6 @@ function itemInfoHtml(item) {
 }
 // The expiry field of the edit dialog. A secret without an expiry shows an
 // empty date, and an empty date on save means no expiry.
-// The expiry badge of an item. Every row needs the cell, so an item without an
-// expiry renders an empty one instead of shifting the row's columns.
-function expiryBadge(item) {
-  if (!item || !item.expiresAt) return '<td class="nowrap"></td>'
-  const days = Math.ceil((item.expiresAt - Date.now()) / 86400e3)
-  const text = days <= 0 ? '已过期' : (days <= 1 ? '今天到期' : days + ' 天后到期')
-  return '<td class="nowrap"><span class="hint" style="color:var(--danger)">' + esc(text) + '</span></td>'
-}
 
 function expiresField(item) {
   const stamp = item && item.expiresAt ? new Date(item.expiresAt).toISOString().slice(0, 10) : ''
