@@ -31,6 +31,7 @@ state.grants = [{ agent: 'dsh', name: 'tavily-api-key', mode: '24h', createdAt: 
 // One refused read, keyed by the agent's identifier. The row has to show the
 // name the operator gave that agent (`DSH 桌面助手`), not `dsh`: the identifier
 // is what the token belongs to, and nobody recognises it in a list.
+state.reminders = [{ kind: 'expiring', agent: 'dsh', severity: 'warning', daysLeft: 2, expiresAt: Date.now() + 2 * 86400e3, message: '2 天后到期' }]
 state.deniedAttempts = [{ agent: 'dsh', name: 'tavily-api-key', action: 'secret.read', reason: 'no-grant', count: 2, firstAt: '2026-10-23T20:00:00.000Z', lastAt: '2026-10-23T20:00:00.000Z' }]
 const items = {
   items: [{
@@ -223,6 +224,21 @@ try {
   denied.rows > 0 && denied.name === 'DSH 桌面助手' && denied.agent === 'dsh'
     ? pass('A13 the denied row shows the display name and keeps the identifier on its buttons')
     : fail('A13', JSON.stringify(denied).slice(0, 200))
+
+  // A14 - the reminder bar carries a 已读 control, and pressing it hides the bar
+  // instead of opening the list behind it.
+  const notice = await evaluate(`(() => {
+    const bar = document.querySelector('#notice-bar')
+    const button = bar && bar.querySelector('[data-notice-dismiss]')
+    if (!button) return { found: false }
+    const before = bar.classList.contains('hidden')
+    button.click()
+    const after = bar.classList.contains('hidden')
+    return { found: true, tone: bar.dataset.tone || '', before, after }
+  })()`)
+  notice.found && !notice.before && notice.after && notice.tone
+    ? pass('A14 the notice bar can be marked read, and it carries a tone')
+    : fail('A14', JSON.stringify(notice).slice(0, 200))
 
   // A11 - nothing threw while all of that happened.
   problems.length === 0 ? pass('A11 no runtime errors') : fail('A11', problems.slice(0, 3).join(' | '))

@@ -47,7 +47,19 @@ button.primary{background:var(--ok);color:#fff}button.danger{background:#fdecec;
 .notice-bar .notice-text{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .notice-bar .notice-count{flex:0 0 auto;font-size:12px;padding:2px 8px;border-radius:999px;background:rgba(0,0,0,.06)}
 .notice-bar .notice-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%}
-.notice-bar[data-level="pending"]{background:#fff4e5;border-color:#f5d9ae;color:#8a5a00}
+.notice-bar[data-tone="red"]{background:#fdecec;border-color:#f5c2c2;color:#a12b2b}
+.notice-bar[data-tone="red"] .notice-dot{background:var(--red)}
+.notice-bar[data-tone="orange"]{background:#fff4e5;border-color:#f5d9ae;color:#8a5a00}
+.notice-bar[data-tone="orange"] .notice-dot{background:#c2760b}
+.notice-bar[data-tone="blue"]{background:#eef4ff;border-color:#cddcf7;color:#2b4f8a}
+.notice-bar[data-tone="blue"] .notice-dot{background:#3f6ec4}
+html[data-theme="dark"] .notice-bar[data-tone="red"]{background:color-mix(in srgb,var(--red) 18%,transparent);border-color:color-mix(in srgb,var(--red) 40%,transparent);color:#ffb4ad}
+html[data-theme="dark"] .notice-bar[data-tone="orange"]{background:color-mix(in srgb,var(--orange) 18%,transparent);border-color:color-mix(in srgb,var(--orange) 40%,transparent);color:#ffd08a}
+html[data-theme="dark"] .notice-bar[data-tone="blue"]{background:color-mix(in srgb,var(--blue) 18%,transparent);border-color:color-mix(in srgb,var(--blue) 40%,transparent);color:#a9c8ff}
+.notice-bar .notice-more{background:none;border:0;font:inherit;color:inherit;cursor:pointer;padding:0 2px}
+.ov-clear{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) 0}
+.ov-clear-mark{flex:0 0 auto;display:flex;width:34px;height:34px;align-items:center;justify-content:center;border-radius:50%;background:color-mix(in srgb,var(--green) var(--mix-badge),transparent);color:var(--green)}
+.ov-clear-mark svg{width:22px;height:22px}
 html[data-theme="dark"] .notice-bar[data-level="pending"]{background:color-mix(in srgb,var(--orange) 18%,transparent);border-color:color-mix(in srgb,var(--orange) 32%,transparent);color:var(--orange)}
 html[data-theme="dark"] .notice-bar[data-level="critical"]{background:color-mix(in srgb,var(--red) 18%,transparent);border-color:color-mix(in srgb,var(--red) 32%,transparent);color:#FF8A80}
 html[data-theme="dark"] .notice-bar .notice-count{background:rgba(255,255,255,.12)}
@@ -848,7 +860,7 @@ function renderAvatar(name, avatarUrl) { const el = $('avatar'); if (!el) return
   // so the header never shows the site logo twice.
   const url = avatarUrl; if (!url) return; const img = document.createElement('img'); img.alt = ''; img.decoding = 'async'; // Only swap the initials for a picture once one actually decoded: a URL that
   // answers 200 with an empty body would otherwise cover them with nothing.
-  img.onload = () => { if (img.naturalWidth > 0) el.appendChild(img) }; img.onerror = () => img.remove(); img.src = url }
+  img.onload = () => { if (img.naturalWidth > 0) { el.textContent = ''; el.appendChild(img) } }; img.onerror = () => img.remove(); img.src = url }
 async function boot() { try { app.me = await api('/api/me'); show('login-card', false); $('who').textContent = app.me.name || String(app.me.email || '').split('@')[0] || ''; $('site-title').textContent = app.me.siteName || 'Secrets Broker'; renderAvatar(app.me.name || app.me.email, app.me.avatarUrl); show('lock', true); if (app.me.unlocked) { show('dashboard', true); show('unlock-card', false); await loadAll(); if (new URLSearchParams(location.search).get('view') === 'profile') { document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-profile')); document.querySelectorAll('#nav button').forEach((button) => button.classList.remove('active')); await loadProfile(); history.replaceState({}, '', '/') } } else { show('dashboard', false); show('unlock-card', true) } } catch { show('login-card', true); show('dashboard', false); show('unlock-card', false); loadOidcLogin() } }
 $('page-refresh').onclick = refreshCurrent
 $('site-title').onclick = () => { location.href = '/' }
@@ -1628,7 +1640,15 @@ function renderOverviewActions() {
   if (pending) rows.push(['有 ' + pending + ' 条请求等你批准', 'Agent 正等着读密钥，超时就自动失效', '去处理', 'grants', 'warn'])
   if (expiring) rows.push([expiring + ' 条授权 24 小时内到期', '到期后 Agent 要重新申请', '去续期', 'grants', ''])
   if (denied) rows.push([denied + ' 个 Agent 被拦下过', '点开能看原因，确认后再放行', '查看', 'items', 'bad'])
-  if (!rows.length) { box.innerHTML = ''; return }
+  if (!rows.length) {
+    const soonest = (data.reminders || []).filter((item) => item.expiresAt).sort((a, b) => a.expiresAt - b.expiresAt)[0]
+    const hint = soonest
+      ? '下一个到期：' + esc(soonest.name || soonest.agent || '') + ' · ' + Math.max(1, Math.ceil((soonest.expiresAt - now) / 86400e3)) + ' 天后'
+      : '没有到期的凭据或授权'
+    box.innerHTML = '<h2>需要你处理</h2><div class="ov-clear"><span class="ov-clear-mark">' + IOS_CHECK.replace(/currentColor/g, 'var(--green)') + '</span>'
+      + '<div><b>都处理完了</b><div class="ios-sub">' + hint + '</div></div></div>'
+    return
+  }
   box.innerHTML = '<h2>需要你处理</h2>' + rows.map((row) => '<div class="ios-field ov-action"><div><b>' + row[0] + '</b><div class="ios-sub">' + row[1] + '</div></div><button class="ios-chip ' + row[4] + '" data-goto="' + row[3] + '">' + row[2] + '</button></div>').join('') + '</div>'
   box.querySelectorAll('[data-goto]').forEach((button) => { button.onclick = () => { const nav = document.querySelector('#nav button[data-view="' + button.dataset.goto + '"]'); if (nav) nav.click() } })
 }
@@ -2029,18 +2049,34 @@ function initGlobe() {
 // full list in a modal.
 let noticeIndex = 0
 let noticeTimer = null
+const NOTICE_READ_KEY = 'sb-notice-read-v1'
+function noticeReadIds() {
+  try { const saved = JSON.parse(localStorage.getItem(NOTICE_READ_KEY) || '[]'); return Array.isArray(saved) ? saved : [] } catch (error) { return [] }
+}
+function markNoticeRead(id) {
+  const ids = noticeReadIds(); if (!ids.includes(id)) ids.push(id)
+  try { localStorage.setItem(NOTICE_READ_KEY, JSON.stringify(ids.slice(-200))) } catch (error) { /* storage full or blocked: the bar just comes back */ }
+}
 function noticeItems() {
   const data = app.data || {}
   const pending = data.pending || []
   if (pending.length) {
-    return pending.map((entry) => ({ level: 'pending', text: '待审批：' + (entry.agent || 'Agent') + ' 请求读取「' + entry.name + '」', kind: 'pending', entry }))
+    return pending.map((entry) => ({ id: 'pending:' + (entry.id || entry.name), tone: 'red', level: 'pending', text: '待审批：' + (entry.agent || 'Agent') + ' 请求读取「' + entry.name + '」', kind: 'pending', entry }))
   }
-  return (data.reminders || []).map((item) => ({ level: item.severity, text: (item.kind && item.kind.indexOf('secret-') === 0 ? '密钥 ' : '') + (item.agent || '') + '：' + (item.message || ''), kind: item.kind, entry: item }))
+  return (data.reminders || []).map((item) => ({
+    id: 'reminder:' + (item.kind || 'note') + ':' + (item.name || item.agent || ''),
+    tone: item.severity === 'critical' || item.severity === 'warning' ? 'orange' : 'blue',
+    level: item.severity,
+    text: (item.kind && item.kind.indexOf('secret-') === 0 ? '密钥 ' : '') + (item.agent || '') + '：' + (item.message || ''),
+    kind: item.kind,
+    entry: item,
+  }))
 }
 function renderNoticeBar() {
   const bar = $('notice-bar')
   if (!bar) return
-  const items = noticeItems()
+  const read = noticeReadIds()
+  const items = noticeItems().filter((item) => !read.includes(item.id))
   if (!items.length) { bar.classList.add('hidden'); bar.innerHTML = ''; if (noticeTimer) { clearInterval(noticeTimer); noticeTimer = null }; return }
   bar.classList.remove('hidden')
   const order = { pending: 0, critical: 1, warning: 2, notice: 3 }
@@ -2049,11 +2085,22 @@ function renderNoticeBar() {
   const render = () => {
     const item = items[noticeIndex % items.length]
     bar.dataset.level = item.level
+    bar.dataset.tone = item.tone
     bar.innerHTML = '<span class="notice-dot"></span><span class="notice-text">' + esc(item.text) + '</span>' +
-      '<span class="notice-count">' + items.length + '</span><span class="notice-more">查看全部 ›</span>'
+      '<span class="notice-count">' + items.length + '</span>' +
+      '<button class="notice-more" data-notice-dismiss="' + esc(item.id) + '" title="标记这条为已读">已读</button>' +
+      '<span class="notice-more">查看全部 ›</span>'
   }
   render()
   if (noticeTimer) clearInterval(noticeTimer)
+  bar.querySelectorAll('[data-notice-dismiss]').forEach((button) => {
+    button.onclick = (event) => {
+      // Clicking 已读 must not also open the whole list behind it.
+      event.stopPropagation()
+      markNoticeRead(button.dataset.noticeDismiss)
+      renderNoticeBar()
+    }
+  })
   if (items.length > 1) {
     noticeTimer = setInterval(() => { noticeIndex += 1; render() }, 4000)
   }
@@ -2144,6 +2191,9 @@ function agentDisplayNote(agent) {
   return agent.note || ''
 }
 const IOS_PERSON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.6"></circle><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6"></path></svg>'
+// The all-clear mark on the work queue. Drawn, not typed, so it scales with the
+// surrounding text and keeps the same stroke weight as the other icons.
+const IOS_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 12.4l2.6 2.6L16 9.6"></path></svg>'
 function renderAgents() {
   const all = (app.data && app.data.agents) || []
   renderAgentStats(all)
