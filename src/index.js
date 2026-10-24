@@ -3076,6 +3076,22 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   const readGuard = plaintextReadAllowed(state, resolvedItemId, { noApproval: policy?.noApproval === true, granted: (decision.capability || legacyGrant) ? { subject: agentName, accountId: session.email } : null })
   if (!readGuard.ok) {
     await addAudit(env, { event: 'secret.read-deny', agent: agentName, name, reason: readGuard.reason })
+    // The agent has the scope but not the plaintext door. Leaving this as a bare
+    // 403 is why a freshly authorised MCP client looked "connected but broken":
+    // the console had nothing to show and nothing to click. Record it in the same
+    // list as a missing grant, so one chip can open the door.
+    await updateState(env, (next) => {
+      const key = 'deny\u0000' + agentName + '\u0000' + name + '\u0000plaintext'
+      next.deniedAttempts ??= {}
+      const before = next.deniedAttempts[key]
+      next.deniedAttempts[key] = {
+        agent: agentName, name, itemId: resolvedItemId, account: session.email, action: 'secret.read',
+        reason: readGuard.reason, plaintext: true, origin: '',
+        count: (before?.count ?? 0) + 1, firstAt: before?.firstAt ?? nowIso(), lastAt: nowIso(),
+        notifiedAt: before?.notifiedAt ?? 0,
+      }
+      return next
+    })
     return { status: 'forbidden', error: 'plaintext read is not allowed for this credential: ' + readGuard.reason, reason: readGuard.reason }
   }
   // One event name for every authorised read, with the risk carried in fields.
@@ -3215,7 +3231,11 @@ function oauthConsentPage(origin, params, client, catalog = { items: [], groups:
     '<div class="group-head">可读条目</div>' + boxes('grant_items', catalog.items) +
     '<div class="group-head">可读分组</div>' + boxes('grant_groups', catalog.groups) +
     '<div class="group">' +
-    '<label class="row"><input type="checkbox" name="grant_all" value="1"><span>允许全部条目（含以后新增的）</span></label>' +
+    // Checked by default: an operator who clicks 允许 without touching anything
+    // used to hand the client a token with an empty scope, and every read then
+    // failed with no hint about why. Scope is the cheap part; the plaintext
+    // switch below is the one that stays opt-in.
+    '<label class="row"><input type="checkbox" name="grant_all" value="1" checked><span>允许全部条目（含以后新增的）</span></label>' +
     // Off by default, and short: granting scope must not silently open the
     // plaintext door for a month. The operator opts in and picks the window.
     '<label class="row"><input type="checkbox" name="grant_plaintext" value="1"><span>同时允许读取明文值</span></label>' +
@@ -6312,6 +6332,29 @@ export default {
         await addAudit(env, { event: 'secret.write', agent: resolved.name, name })
         return json({ ok: true, name: created.name, created: true })
       } catch (error) { return fail(String(error.message ?? error), 500) }
+    }
+    // Reading a stored password out of the admin panel is the most direct way to
+    // turn one stolen session cookie into every credential in the vault, so it is
+    // gated on the second factor rather than on the cookie alone. Without TOTP
+    // there is nothing to gate on, and the panel tells the operator to enrol it.
+    if (url.pathname === '/api/secret/reveal' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      if (state.security?.totpEnabled !== true) return fail('totp not configured', 428)
+      const session = await getSession(env)
+      if (!session) return fail('vault locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '').trim()
+      if (!name) return fail('name required', 400)
+      const secret = new TextDecoder().decode(await unwrapWithKek(state.security.totpSecretWrapped, await kekBytes(env)))
+      if (!(await verifyTotp(secret, body.code))) {
+        await addAudit(env, { event: 'secret.view-deny', name, reason: 'bad-totp', via: 'web' })
+        return fail('验证码错误', 401)
+      }
+      const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
+      if (!result) return fail('not found', 404)
+      await addAudit(env, { event: 'secret.view', name, via: 'web', totp: true })
+      return json({ value: result.value, username: result.username, totp: result.totp })
     }
     if (url.pathname === '/secret') {
       const admin = await adminAuthorized(request, env)

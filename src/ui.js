@@ -374,6 +374,7 @@ ul.items .type{font-size:var(--text-caption);color:var(--label-2)}
 .ios-pill{font-size:var(--text-caption);padding:4px 10px;border-radius:999px;background:var(--fill);color:var(--label-2);min-height:28px;font-weight:500}
 .ios-pill.on{background:color-mix(in srgb,var(--green) var(--mix-badge),transparent);color:var(--green)}
 .ios-pill.web{background:color-mix(in srgb,var(--purple) var(--mix-badge),transparent);color:var(--purple)}
+.ios-sub .ios-expired{color:var(--red);font-weight:500}
 .ios-pill.none{background:color-mix(in srgb,var(--orange) var(--mix-badge),transparent);color:var(--orange)}
 .ios-pill.ok,.ios-pill.warn{background:color-mix(in srgb,var(--green) var(--mix-badge),transparent);color:var(--green)}
 .ios-pill.warn{background:color-mix(in srgb,var(--orange) var(--mix-badge),transparent);color:var(--orange)}
@@ -974,6 +975,16 @@ document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && 
 $('denied-list').addEventListener('click', async (event) => {
   const allowDenied = event.target.closest('[data-allow-denied]')
   if (allowDenied) { openAllowDenied(allowDenied.dataset.agent, allowDenied.dataset.name, allowDenied.dataset.action); return }
+  const allowPlaintext = event.target.closest('[data-allow-plaintext]')
+  if (allowPlaintext) {
+    const days = Number(allowPlaintext.dataset.days || 1)
+    try {
+      await api('/api/fill/read-policy', { method: 'POST', body: JSON.stringify({ item: allowPlaintext.dataset.name, allow: true, ttlDays: days }) })
+      await loadState()
+      toast('已允许读取明文 ' + days + ' 天')
+    } catch (error) { toast(error.message, true) }
+    return
+  }
   const allowUse = event.target.closest('[data-allow-use]')
   if (allowUse) { openAllowUse(allowUse.dataset.agent, allowUse.dataset.name); return }
   const dismissDenied = event.target.closest('[data-dismiss-denied]')
@@ -1686,14 +1697,19 @@ function renderItems() {
     const when = item.lastActivityAt ? relativeTime(Date.parse(item.lastActivityAt)) : '无读取记录'
     const meta = [item.group, when, item.lastActor].filter(Boolean).map((part) => esc(part)).join(' · ')
     const expired = typeof item.expiresAt === 'number' && item.expiresAt <= Date.now()
-    const trail = '<button class="ios-pill ' + (item.noApproval ? 'on' : kind === 'web' ? 'web' : kind ? '' : 'none') + (expired ? ' bad' : '') + '" data-policy="' + esc(item.name) + '" title="点击切换：免审批读取 / 需要审批">'
-      + (expired ? '已过期' : kind === 'web' ? '仅填充' : kind === 'api' ? (item.noApproval ? '免审批' : '需审批') : '未分类') + '</button>'
+    // The pill is the approval state and nothing else: it used to read 已过期
+    // whenever the credential expired, which hid the state the click changes and
+    // made a successful toggle look like it did nothing. Expiry is a separate fact,
+    // so it rides along in the subtitle instead.
+    const approval = item.noApproval ? '免审批' : kind === 'web' ? '仅填充' : kind ? '需审批' : '未分类'
+    const trail = '<button class="ios-pill ' + (item.noApproval ? 'on' : kind === 'web' ? 'web' : kind ? '' : 'none') + '" data-policy="' + esc(item.name) + '" title="点击切换：免审批读取 / 需要审批">'
+      + esc(approval) + '</button>'
     return '<div class="ios-row">' +
       '<input type="checkbox" class="item-select ios-check" data-name="' + esc(item.name) + '" ' + (selectedItems.has(item.name) ? 'checked' : '') + ' title="选择">' +
       ico(kind) +
       '<div class="ios-main" data-item-menu="' + esc(item.name) + '" role="button" tabindex="0">' +
         '<div class="ios-title"><b>' + esc(item.name) + '</b>' + (kind === 'api' || kind === 'web' ? kindTag(kind) : '') + '</div>' +
-        '<div class="ios-sub">' + meta + '</div>' +
+        '<div class="ios-sub">' + meta + (expired ? ' · <span class="ios-expired">已过期</span>' : '') + '</div>' +
       '</div>' +
       '<div class="ios-trail">' + trail + '<button class="ios-more" data-item-menu="' + esc(item.name) + '" title="更多">⋮</button></div>' +
     '</div>'
@@ -2159,8 +2175,7 @@ function renderAgents() {
       '<div class="ios-sub">' + (agentDisplayNote(agent) ? esc(agentDisplayNote(agent)) + ' · ' : '') + esc(health.detail) + '</div>' +
       '<div class="ios-sub">' + days + '</div></div>' +
       '<div class="ios-trail"><button class="ios-pill plain" data-agent-extend="' + esc(agent.name) + '" title="延长授权">延长</button>' +
-      '<span class="ios-pill ' + dotClass + '">' + esc(health.label) + '</span>' +
-      '<button class="ios-more" data-agent-menu="' + esc(agent.name) + '" title="更多">⋮</button></div></div>'
+      '<span class="ios-pill ' + dotClass + '">' + esc(health.label) + '</span></div></div>'
   }).join('')
   box.innerHTML = '<div class="ios-group"><div class="ios-group-head"><span>共 ' + agents.length + ' 个 Agent</span></div>' +
     '<div class="ios-card">' + rows + '</div></div>'
@@ -2328,6 +2343,11 @@ function renderDenied() {
     const kindTag = kind === 'api' ? '<span class="ios-tag">api</span>'
       : kind === 'web' ? '<span class="ios-tag">web</span>'
       : '<span class="ios-tag">未分类</span>'
+    // A plaintext refusal is not a missing grant: the agent already has scope, it
+    // is the item that still refuses to hand over a value. One chip opens it.
+    const plaintextBtn = entry.plaintext
+      ? '<button class="ios-chip" data-allow-plaintext data-name="' + esc(entry.name || '') + '" data-days="1" title="给这条凭据开 24 小时明文读取">允许明文 24h</button>'
+      : ''
     const useBtn = entry.action === 'secret.use'
       ? ''
       : '<button class="ios-chip" data-allow-use data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" title="只开代持调用，不给明文">http_request</button>'
@@ -2339,6 +2359,7 @@ function renderDenied() {
       '<div class="ios-sub">被拦原因 ' + esc(entry.reason || '') + ' · ' + (entry.count ?? 1) + ' 次 · ' + esc(at) + '</div>' +
       '<div class="ios-actions"><button class="ios-chip" data-allow-denied data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" data-action="' + esc(entry.action || '') + '">授权</button>' +
       useBtn +
+      plaintextBtn +
       '<button class="ios-chip danger" data-dismiss-denied data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" data-action="' + esc(entry.action || '') + '">忽略</button></div></div></div>'
   }).join('')
   box.innerHTML = '<div class="hint" style="margin-bottom:var(--sp-3)">点「授权」只放开这一条；「http_request」给这个 Agent 开代持调用，仍然拿不到明文。</div>' +
@@ -2461,7 +2482,7 @@ function renderGrants() {
     const reads = (grant.reads ?? 0) + (grant.maxReads ? ' / ' + grant.maxReads : '')
     return '<div class="ios-row">' +
       '<span class="ios-ico" data-kind="api">' + IOS_PERSON + '</span>' +
-      '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(grant.name) + '</span>' +
+      '<div class="ios-main" data-grant-menu data-agent="' + esc(grant.agent) + '" data-name="' + esc(grant.name) + '" role="button" tabindex="0"><div class="ios-title"><span class="ios-name">' + esc(grant.name) + '</span>' +
       '<span class="ios-tag">' + esc(grant.mode) + '</span></div>' +
       '<div class="ios-sub">' + esc(agentLabel(grant.agent)) + ' · 已读 ' + reads + '</div></div>' +
       '<div class="ios-trail"><button class="ios-pill ' + (bad ? 'bad' : 'ok') + '" data-item-grant data-agent="' + esc(grant.agent) +
@@ -2788,15 +2809,62 @@ $('item-page-edit').onclick = () => {
   if (next) $('item-page-body').scrollTo({ top: $('item-page-body').scrollHeight, behavior: 'smooth' })
 }
 document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeItemPage() })
+// A stored password is the one thing in this panel worth a second factor: the
+// cookie alone would otherwise be enough to empty the vault. So the button asks
+// for a TOTP code, and an account without TOTP is told to enrol instead of being
+// quietly handed the plaintext.
+async function revealItemSecret(item) {
+  let security
+  try { security = await api('/api/security') } catch (error) { return toast(error.message, true) }
+  if (!security.totpEnabled) {
+    openModal('看明文需要两步验证',
+      '<p class="hint">明文读取要过 6 位验证码。当前账户还没启用两步验证，先在「设置 → 安全」里生成密钥、用验证器扫一次。</p>' +
+      '<div class="row"><button class="primary" id="rv-enrol" type="button">去设置里注册</button></div>')
+    $('rv-enrol').onclick = () => {
+      show('modal', false)
+      const tab = document.querySelector('#nav [data-view=profile]')
+      if (tab) tab.click()
+      const box = $('totp-setup-box')
+      if (box) box.scrollIntoView({ block: 'center' })
+      toast('点「生成密钥」，再用验证器扫二维码')
+    }
+    return
+  }
+  openModal('查看 ' + item.name,
+    '<label class="field">两步验证码</label>' +
+    '<input id="rv-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456">' +
+    '<div class="hint" id="rv-status">6 位数字，30 秒一换</div>' +
+    '<div class="row"><button class="primary" id="rv-go" type="button">查看明文</button></div>')
+  $('rv-code').focus()
+  const submit = async () => {
+    const code = $('rv-code').value.replace(/\s+/g, '')
+    if (!/^\d{6}$/.test(code)) return status('rv-status', '请输入 6 位数字', 'error')
+    try {
+      const data = await api('/api/secret/reveal', { method: 'POST', body: JSON.stringify({ name: item.name, code }) })
+      $('modal-body').innerHTML = '<div class="kv"><span>用户名</span><b>' + esc(data.username || '未设置') + '</b></div>' +
+        '<div class="kv"><span>密钥</span><b><code>' + esc(data.value || '') + '</code></b></div>' +
+        (data.totp ? '<div class="kv"><span>验证码</span><b><code>' + esc(data.totp) + '</code></b></div>' : '') +
+        '<div class="row"><button class="primary" id="rv-copy" type="button">复制密钥</button></div>'
+      $('rv-copy').onclick = () => {
+        if (navigator.clipboard) navigator.clipboard.writeText(data.value || '')
+        toast('已复制')
+      }
+    } catch (error) { status('rv-status', error.message, 'error') }
+  }
+  $('rv-go').onclick = submit
+  $('rv-code').onkeydown = (event) => { if (event.key === 'Enter') submit() }
+}
 function openItemMenu(name) {
   const item = app.items.find((entry) => entry.name === name); if (!item) return
   const agents = app.data.agents || []
   openItemPage(name, itemInfoHtml(item) + '<div class="card"><h2>凭据</h2>' +
-    '<div class="kv"><span>用户名</span><b>' + esc(item.username || '未设置') + '</b></div>' +
+        '<div class="kv"><span>用户名</span><b>' + esc(item.username || '未设置') + '</b></div>' +
+    '<div class="kv"><span>密钥</span><b><button class="ios-pill plain" id="item-reveal" type="button">查看</button></b></div>' +
     '<div class="kv"><span>网址</span><b>' + (item.url ? '<a href="' + esc(item.url) + '" target="_blank" rel="noreferrer">' + esc(item.url) + '</a>' : '未设置') + '</b></div>' +
     '<div class="kv"><span>分组</span><b>' + esc(item.group || '未分组') + '</b></div>' +
     '<div class="kv"><span>有效期</span><b>' + esc(expiryLabel(item)) + '</b></div></div>' +
     fillEditorHtml(item) + '<div class="card edit-only"><label class="field">名称</label><input id="mi-name" value="' + esc(item.name) + '"><label class="field">用户名（留空不改）</label><input id="mi-username" value="' + esc(item.username || '') + '"><label class="field">TOTP Secret（留空不改）</label><input id="mi-totp" value="' + esc(item.totp || '') + '"><label class="field">分组</label><input id="mi-group" value="' + esc(item.group || '') + '" placeholder="例如 blog/prod"><label class="field">网址</label><input id="mi-url" value="' + esc(item.url || '') + '"><label class="field">备注（留空不改）</label><input id="mi-notes" placeholder="新的备注"><label class="field">新密钥值（留空不改）</label><input id="mi-value" type="password" placeholder="留空保留原值"><label class="chk" style="margin-top:8px"><input type="checkbox" id="mi-noapproval" ' + (item.noApproval ? 'checked' : '') + '> 免审批（自动读取，仍记录）</label><div class="row" style="margin-top:14px"><button class="primary" id="mi-save">保存修改</button><button id="mi-share">分享</button><button class="danger" id="mi-delete">删除</button></div><div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div class="hint">分享给 Agent（同账户直接授权；跨账户会先复制到目标账户文件夹，切回目标账户解锁后自动完成）</div><label class="field">Agent</label><select id="mi-share-agent" multiple size="3">' + agents.map((agent) => '<option value="' + esc(agent.name) + '">' + esc(agent.alias || agent.name) + '</option>').join('') + '</select><label class="field">跨账户目标文件夹（同账户可留空）</label><input id="mi-share-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="mi-share-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mi-share-reads" type="number" min="1"></div>' + expiresField(item) + '</div>')
+  $('item-reveal').onclick = () => revealItemSecret(item)
   $('mi-share-sync').onclick = () => { closeItemPage(); selectedItems.clear(); selectedItems.add(item.name); openBulkShare() }
   $('mi-save').onclick = async () => { try { await api('/api/items/update', { method: 'POST', body: JSON.stringify({ name: item.name, newName: $('mi-name').value.trim(), username: $('mi-username').value, totp: $('mi-totp').value, group: $('mi-group').value.trim(), url: $('mi-url').value.trim(), notes: $('mi-notes').value.trim() ? $('mi-notes').value : undefined, value: $('mi-value').value, noApproval: $('mi-noapproval').checked, expiresAt: $('mi-expires').value }) }); closeItemPage(); await Promise.all([loadItems(), loadState()]); toast('已保存') } catch (error) { toast(error.message, true) } }
   $('mi-delete').onclick = async () => { if (!confirm('删除条目「' + item.name + '」？')) return; try { await api('/api/items/delete', { method: 'POST', body: JSON.stringify({ name: item.name }) }); closeItemPage(); await Promise.all([loadItems(), loadState()]); toast('已删除') } catch (error) { toast(error.message, true) } }

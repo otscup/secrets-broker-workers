@@ -141,10 +141,14 @@ try {
   const closed = await evaluate("document.getElementById('item-page').classList.contains('hidden')")
   closed ? pass('A3 back returns to the list') : fail('A3', 'hidden=' + closed)
 
-  // A4 - the agent dialog still opens from the agents view.
+  // A4 - the agent dialog still opens from the agents view. The row menu was
+  // removed because it duplicated 编辑配置 inside the detail sheet, so the test
+  // walks the path a person now walks: row -> detail -> 编辑配置.
   await evaluate("document.querySelector('#nav [data-view=agents]').click()")
   await wait(700)
-  await evaluate("document.querySelector('[data-agent-menu]').click()")
+  await evaluate("document.querySelector('[data-agent-open]').click()")
+  await wait(700)
+  await evaluate("document.getElementById('ad-edit').click()")
   await wait(700)
   const modal = await evaluate("!document.getElementById('modal').classList.contains('hidden')")
   const copy = await evaluate("!!document.getElementById('ma-copy')")
