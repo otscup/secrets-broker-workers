@@ -2406,6 +2406,14 @@ function fillPolicyFor(state, itemId, origin) {
 // The declarations still matter for one case, and only one: an item marked
 // no-approval, where nobody is asked. Then classification and the plaintext
 // policy are the only thing standing between an Agent and the value.
+// Policies are keyed by item name, so the read guard needs the name that goes
+// with an id it was handed.
+function itemNameOf(state, itemId) {
+  if (!itemId) return ''
+  for (const [name, id] of Object.entries(state.itemIds ?? {})) if (id === itemId) return name
+  return ''
+}
+
 function plaintextReadAllowed(state, itemId, { noApproval = false, granted = false, agent = '' } = {}) {
   // An id that could not be resolved is not an unclassified credential: it is an
   // unknown item, and an unknown item never gets plaintext.
@@ -2439,6 +2447,13 @@ function plaintextReadAllowed(state, itemId, { noApproval = false, granted = fal
     // what it is. It bypasses the approval prompt, so it must also satisfy the
     // read guard: an item marked no-approval that still cannot be read is a
     // switch that does nothing.
+    //
+    // It is also the one path with no grant to carry an account, so the policy
+    // itself has to say which vault it was made for. Without that, a name that
+    // exists in two vaults would carry the permission from one into the other.
+    const policyAccount = String(state.policies?.[itemNameOf(state, itemId)]?.accountId ?? '').toLowerCase()
+    const current = String(state.settings?.vaultEmail ?? '').toLowerCase()
+    if (policyAccount && current && policyAccount !== current) return { ok: false, reason: 'account-mismatch' }
     return { ok: true, noApproval: true }
   }
   return { ok: false, reason: 'no-read-grant' }
@@ -4557,9 +4572,13 @@ export default {
       const body = await request.json().catch(() => ({}))
       const name = String(body.name ?? '').trim()
       if (!name) return fail('name required', 400)
+      const session = await getSession(env)
       const state = await updateState(env, (next) => {
         next.policies ??= {}
-        if (body.noApproval === true) next.policies[name] = { noApproval: true }
+        // The account is recorded with the policy: "don't ask me again" is an
+        // answer about one credential in one vault, never a rule that follows
+        // the name into whatever vault is unlocked next.
+        if (body.noApproval === true) next.policies[name] = { noApproval: true, accountId: session?.email ?? next.settings?.vaultEmail ?? '' }
         else delete next.policies[name]
         return next
       })

@@ -1716,23 +1716,37 @@ function healthRowsHtml() {
     return map
   }, {})
   const policies = data.policies || {}
+  // "可直接读取" means an Agent holds a live read grant for it, not "this is an
+  // api credential". Counting the classification said 8 while 22 items were
+  // readable, because a grant is what lets a value out.
+  const readableIds = new Set()
+  for (const action of (data.agentActions || [])) {
+    if (action.action !== 'secret.read') continue
+    if (action.expiresAt && action.expiresAt <= now) continue
+    if (action.usesLeft === 0) continue
+    if (action.itemId) readableIds.add(action.itemId)
+  }
+  for (const entry of ((data.fillPolicies && data.fillPolicies.items) || [])) {
+    if (entry && entry.itemId && entry.plaintextRead) readableIds.add(entry.itemId)
+  }
   let web = 0, api = 0, none = 0, noApproval = 0, soon = 0, past = 0
   for (const item of items) {
     const kind = kinds[item.id] || ''
     if (kind === 'web') web += 1
     else if (kind === 'api') api += 1
     else none += 1
+    if (readableIds.has(item.id)) api += 0
     if ((policies[item.name] && policies[item.name].noApproval) || item.noApproval) noApproval += 1
     // expiresAt is a number, 0 means "no expiry"; Date.parse on a number is NaN.
     if (item.expiresAt > now) { if (item.expiresAt - now < 7 * 86400e3) soon += 1 }
     else if (item.expiresAt > 0) past += 1
   }
   const total = items.length || 1
-  const bucketsOf = { api: [], web: [], none: [], noApproval: [], expiry: [] }
+  const bucketsOf = { readable: [], web: [], none: [], noApproval: [], expiry: [] }
   for (const item of items) {
     const kind = kinds[item.id] || ''
-    const bucket = kind === 'web' ? 'web' : kind === 'api' ? 'api' : 'none'
-    bucketsOf[bucket].push(item)
+    if (readableIds.has(item.id)) bucketsOf.readable.push(item)
+    bucketsOf[kind === 'web' ? 'web' : 'none'].push(item)
     if ((policies[item.name] && policies[item.name].noApproval) || item.noApproval) bucketsOf.noApproval.push(item)
     if (item.expiresAt > 0 && item.expiresAt - now < 7 * 86400e3) bucketsOf.expiry.push(item)
   }
@@ -1753,7 +1767,7 @@ function healthRowsHtml() {
       + '</div>' : '')
     + '</div>'
   return '<div class="health">'
-    + row('api', '可直接读取明文', api, api ? 'api 类，Agent 拿得到值' : '没有 api 类凭据', 'blue')
+    + row('readable', '可直接读取明文', bucketsOf.readable.length, bucketsOf.readable.length ? '有读取授权的条目，含免审批' : '没有任何读取授权', 'blue')
     + row('web', '只能填充', web, web ? '网页登录，值不出站' : '没有网页登录', 'purple')
     + row('none', '未分类', none, none ? '默认拒绝读取' : '都分类了', none ? 'orange' : 'green')
     + row('noApproval', '免审批', noApproval, noApproval ? 'Agent 读它不用问' : '全部需要批准', 'green')
@@ -2768,6 +2782,26 @@ function renderTransfers() {
     '</div></div>').join('') + '</div></div>' : '<div class="hint">没有待复制的条目</div>'
 }
 function who(label) { const agent = (app.data.agents || []).find((entry) => entry.name === label); return agent?.alias || label || '系统' }
+// The reason codes are what the server writes; the operator needs the sentence.
+const REASON_TEXT = {
+  'no-grant': '还没有授权',
+  'not-granted': '还没有授权',
+  'plaintext': '没有读取明文的许可',
+  'plaintext-off': '没有读取明文的许可',
+  'web-credential-is-fill-only': '网页登录只能填充，不给明文',
+  'unclassified-plaintext-off': '未分类条目默认不给明文',
+  'account-mismatch': '条目不属于当前账户',
+  'maxreads-exhausted': '授权次数已用完',
+  'expired': '授权已过期',
+  'origin-not-allowed': '目标站点不在允许列表',
+  'item-id-unresolved': '找不到这个条目',
+  'vault-locked': 'vault 已锁定',
+  'no-origin': '请求里没有目标站点',
+}
+function reasonText(reason) {
+  const key = String(reason || '')
+  return REASON_TEXT[key] || (key ? key : '未说明原因')
+}
 function describe(entry) {
   const name = entry.name ? '「' + entry.name + '」' : ''; const agent = who(entry.agent); const mode = ({ once: '仅本次', '1h': '1 小时', '24h': '24 小时', '7d': '7 天', always: '永久', grant: '授权', 'no-approval': '免审批' })[entry.mode] || entry.mode || ''
   switch (entry.event) {
@@ -2794,6 +2828,30 @@ function describe(entry) {
     case 'vault.lock': return '锁定了 vault'
     case 'admin.login': return '管理登录'
     case 'admin.login-fail': return '管理登录失败'
+    case 'admin.origin-mismatch': return '跨站请求被拒绝（来源与本站不一致）'
+    case 'access.denied': return agent + ' 想读 ' + name + ' 被拦下：' + reasonText(entry.reason)
+    case 'secret.read-deny': return agent + ' 读取 ' + name + ' 被拒绝：' + reasonText(entry.reason)
+    case 'secret.view': return '管理员查看 ' + name + ' 的明文（两步验证通过）'
+    case 'secret.view-deny': return '查看 ' + name + ' 的明文被拒绝：' + reasonText(entry.reason)
+    case 'items.export': return '导出全部明文（两步验证通过）'
+    case 'materialize.request': return agent + ' 申请把 ' + name + ' 写进 ' + (entry.target && entry.target.path ? entry.target.path : '白名单文件')
+    case 'materialize.approve': return '批准 ' + agent + ' 把 ' + name + ' 写进 ' + (entry.target && entry.target.path ? entry.target.path : '白名单文件')
+    case 'materialize.deny': return '拒绝 ' + agent + ' 写入 ' + name
+    case 'secret.materialize': return agent + ' 把 ' + name + ' 写进了 ' + (entry.path || '白名单文件')
+    case 'grant.prune-foreign': return '清理了指向其他账户的旧授权（' + (entry.count || 0) + ' 条）'
+    case 'grant.revoke': return '撤销 ' + agent + ' 对 ' + name + ' 的授权'
+    case 'grant.extend': return '延长 ' + agent + ' 对 ' + name + ' 的授权'
+    case 'action-grant.revoke': return '批量撤销授权（' + (entry.items || 1) + ' 条）'
+    case 'request.auto-approve': return agent + ' 的 ' + name + ' 申请按自动规则放行'
+    case 'oauth.client-register': return '新应用注册了 OAuth 客户端'
+    case 'oauth.client-trust': return '确认了一个 OAuth 应用的首次接入'
+    case 'oauth.authorize': return '授权 OAuth 应用访问 ' + name + (entry.grantAll ? '（全部条目）' : '')
+    case 'oauth.consent-deny': return 'OAuth 同意页的提交被拒绝：' + reasonText(entry.reason)
+    case 'oauth.token-issue': return '签发 OAuth token'
+    case 'oauth.token-deny': return 'OAuth token 请求被拒：' + reasonText(entry.reason)
+    case 'fill.task.claim': return '填表执行器认领了 ' + name + ' 的填充任务'
+    case 'fill.redeem': return '填充任务取走了 ' + name + ' 的凭据'
+    case 'fill.redeem-deny': return '填充任务取凭据被拒：' + reasonText(entry.reason)
     default: return entry.event + (entry.agent ? ' · ' + agent : '') + (name ? ' ' + name : '')
   }
 }

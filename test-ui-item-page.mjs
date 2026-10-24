@@ -32,6 +32,9 @@ state.grants = [{ agent: 'dsh', name: 'tavily-api-key', mode: '24h', createdAt: 
 // name the operator gave that agent (`DSH 桌面助手`), not `dsh`: the identifier
 // is what the token belongs to, and nobody recognises it in a list.
 state.reminders = [{ kind: 'expiring', agent: 'dsh', severity: 'warning', daysLeft: 2, expiresAt: Date.now() + 2 * 86400e3, message: '2 天后到期' }]
+// A live read grant for item-1 only: the health card has to count what an
+// Agent can read, not how many credentials are classified as api.
+state.agentActions = [{ agent: 'dsh', itemName: 'tavily-api-key', itemId: 'item-1', action: 'secret.read', expiresAt: 0, usesLeft: null }]
 state.deniedAttempts = [{ agent: 'dsh', name: 'tavily-api-key', action: 'secret.read', reason: 'no-grant', count: 2, firstAt: '2026-10-23T20:00:00.000Z', lastAt: '2026-10-23T20:00:00.000Z' }]
 const items = {
   items: [{
@@ -41,6 +44,11 @@ const items = {
     // to say null, which is why A12 never bit.
     group: 'ai', expiresAt: 0, noApproval: true,
     lastActivityAt: '2026-10-23T20:00:00.000Z', lastActor: 'dsh',
+  }, {
+    id: 'item-2', type: 1, name: 'unread-api-key', url: 'https://example.com', folderId: null,
+    createdAt: '2026-10-01T00:00:00.000Z', creator: 'vault@example.invalid', username: 'bot', totp: '',
+    group: 'dev', expiresAt: 0, noApproval: false,
+    lastActivityAt: '', lastActor: '',
   }],
   completedTransfers: [],
 }
@@ -210,6 +218,11 @@ try {
   const healthRows = await evaluate("document.querySelectorAll('#ov-actions .health-row').length")
   const health = /密钥健康/.test(String(healthCard)) && /免审批/.test(String(healthCard)) && /可直接读取明文/.test(String(healthCard)) && healthRows === 5
   health ? pass('A7 the health card lists five counts') : fail('A7', 'ov-actions=' + JSON.stringify({ healthRows, text: String(healthCard).slice(0, 120) }))
+
+  // A16 - the first row counts readable credentials (grant or no-approval), not
+  // the api classification: two api items, one readable, so 1 and not 2.
+  const readableCount = await evaluate("(document.querySelector('#ov-actions .health-row .health-value') || {}).textContent || ''")
+  readableCount === '1' ? pass('A16 the health card counts readable credentials, not the api classification') : fail('A16', 'value=' + JSON.stringify(readableCount))
 
   // A8 - 编辑 turns the read-only page into a form without leaving it, and
   // 完成 puts it back. The form card is display:none until the page says so.

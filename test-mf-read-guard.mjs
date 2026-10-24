@@ -500,6 +500,22 @@ async function classify(kind, origins, actions) {
   else fail('G21', 'the explicit grant was ignored: ' + t.slice(0, 120))
 }
 
+// G22/G23: "don't ask me again" is an answer about one vault. A policy that
+// names another account must not open this one, and the same policy made here
+// must still work.
+{
+  await seedState({ policies: { [ITEM]: { noApproval: true, accountId: 'other@example.invalid' } } })
+  const t = toolText(await mcp('get_secret', { name: ITEM }))
+  if (!t.includes(PASSWORD) && /account/i.test(t)) pass('G22 a no-approval policy made in another vault is ignored')
+  else fail('G22', t.slice(0, 140))
+}
+{
+  await seedState({ policies: { [ITEM]: { noApproval: true, accountId: ACCT } } })
+  const t = toolText(await mcp('get_secret', { name: ITEM }))
+  if (t.includes(PASSWORD)) pass('G23 a no-approval policy made here still reads')
+  else fail('G23', t.slice(0, 140))
+}
+
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log(String.fromCharCode(10) + '==== plaintext read guard ' + passed + '/' + results.length + ' passed ====')
