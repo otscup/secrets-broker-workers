@@ -3233,9 +3233,18 @@ function oauthConsentPage(origin, params, client, catalog = { items: [], groups:
         '<label class="row"><input type="checkbox" name="' + name + '" value="' + escape(value) + '"><span>' + escape(value) + '</span></label>'
       ).join('') + '</div>'
     : '<p class="hint">还没有可选的内容，可以先在控制台创建密钥，或稍后到 Agents 页勾选。</p>'
+  // Client names are self-reported, so an unfamiliar one is the only signal the
+  // operator gets that this is a new application asking for keys. Say it plainly
+  // the first time, and let that one approval stop the question coming back.
+  const firstVisit = client && !client.trustedAt
+    ? '<div class="group"><label class="row"><span class="row__label">新应用：<code>' + escape(client.clientName || client.clientId) + '</code> 第一次请求访问</span>' +
+      '<input type="checkbox" name="remember_app" value="1" checked></label></div>' +
+      '<p class="hint">这个名称由客户端自己填写，不能当作身份证明。若不是你刚才在自己的 Agent 里点开授权，直接点「拒绝」。取消勾选则下次还会再问一次。</p>'
+    : '<p class="hint">这个应用已经在本站确认过：<code>' + escape(client?.clientName || client?.clientId || '') + '</code>。</p>'
   return '<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>MCP 授权 · Secrets Broker</title><style>' + consolePageCss() + '</style>' + consoleThemeBoot() + '</head><body><div class="wrap wrap--wide">' +
     '<div class="brand"><img src="/logo.png" alt=""><div><h1>MCP 授权</h1><p class="sub">客户端 <code>' + escape(client?.clientName ?? params.get('client_id')) + '</code> 请求访问你的密钥库</p></div></div>' +
-    '<form method="post" action="/oauth/authorize">' + field('client_id') + field('redirect_uri') + field('state') + field('code_challenge') + field('code_challenge_method') + field('scope') +
+    '<form method="post" action="/oauth/authorize">' + field('client_id') + field('redirect_uri') + field('state') + field('code_challenge') + field('code_challenge_method') +
+    firstVisit + field('scope') +
     '<p class="hint">Scope: ' + escape(params.get('scope') ?? 'secrets.read') + ' · 勾选只给它申请和读取的资格，值本身还要看同类里的明文开关。不勾则暂时不给任何条目。</p>' +
     '<div class="group-head">可读条目</div>' + boxes('grant_items', catalog.items) +
     '<div class="group-head">可读分组</div>' + boxes('grant_groups', catalog.groups) +
@@ -5762,6 +5771,13 @@ export default {
       return json(oauthMetadata(url.origin))
     }
     if (url.pathname === '/oauth/register' && request.method === 'POST') {
+      // Open registration is what lets a standard MCP client connect without the
+      // operator copying an id out of a log first. A deployment that would rather
+      // pre-approve every client can turn it off and hand out ids itself.
+      const registerAllowed = String(env.OAUTH_ALLOW_REGISTER ?? '1').toLowerCase()
+      if (registerAllowed === '0' || registerAllowed === 'false' || registerAllowed === 'off') {
+        return json({ error: 'registration_disabled', error_description: 'this broker does not accept dynamic client registration' }, 403)
+      }
       const body = await request.json().catch(() => ({}))
       const state = await loadState(env)
       if (Object.keys(state.oauthClients ?? {}).length >= 100) return fail('too many registered clients', 429)
@@ -5777,7 +5793,7 @@ export default {
       const written = await mutateState(env, [{
         op: 'set',
         path: ['oauthClients', clientId],
-        value: { clientId, clientName, redirectUris, createdAt: nowIso() },
+        value: { clientId, clientName, redirectUris, createdAt: nowIso(), trustedAt: null },
       }])
       if (!written?.ok) return fail('could not persist client registration', 500)
       // Registration is open (that is what makes standard MCP clients work) but it
@@ -5892,6 +5908,11 @@ export default {
         const grantAll = params.get('grant_all') === '1'
         const grantPlaintext = params.get('grant_plaintext') === '1'
         const grantHours = Math.max(1, Math.min(720, Number(params.get('grant_hours')) || 24))
+        const rememberApp = params.get('remember_app') === '1'
+        if (rememberApp && !client.trustedAt) {
+          await mutateState(env, [{ op: 'set', path: ['oauthClients', clientId, 'trustedAt'], value: nowIso() }])
+          await addAudit(env, { event: 'oauth.client-trust', clientId, clientName: client.clientName ?? '' })
+        }
         await updateState(env, (next) => {
           next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', scope: String(params.get('scope') ?? 'secrets.read'), account, createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000, grantItems, grantGroups, grantAll, grantPlaintext, grantHours }
           return next

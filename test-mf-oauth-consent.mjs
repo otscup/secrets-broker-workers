@@ -106,7 +106,45 @@ const follow = async (url, headers = {}) => {
   else fail('O7', JSON.stringify({ status: r.status, loc: loc.slice(0, 60) }))
 }
 
+// O8: a client nobody has seen before is called out on the consent page, with a
+// checkbox that stops the question coming back.
+{
+  await seed()
+  const cookie = await loginCookie()
+  const r = await mf.dispatchFetch('https://broker.test' + AUTHZ, { headers: { cookie }, redirect: 'manual' })
+  const body = await r.text()
+  const noticed = body.includes('第一次请求访问') && body.includes('name="remember_app"')
+  if (noticed) pass('O8 first-time client is flagged with a remember checkbox')
+  else fail('O8', JSON.stringify({ status: r.status, snippet: body.slice(0, 120) }))
+}
+// O9: ticking 记住 marks the client, so the next consent page says it is known.
+{
+  await seed()
+  const cookie = await loginCookie()
+  await mf.dispatchFetch('https://broker.test/oauth/authorize', {
+    method: 'POST', redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie },
+    body: 'client_id=' + CLIENT + '&redirect_uri=' + encodeURIComponent(REDIRECT) + '&code_challenge=' + 'a'.repeat(43) + '&code_challenge_method=S256&decision=allow&grant_all=1&remember_app=1',
+  })
+  const st = await getState()
+  const trusted = Boolean(st.oauthClients?.[CLIENT]?.trustedAt)
+  const again = await (await mf.dispatchFetch('https://broker.test' + AUTHZ, { headers: { cookie }, redirect: 'manual' })).text()
+  const quiet = again.includes('已经在本站确认过') && !again.includes('name="remember_app"')
+  if (trusted && quiet) pass('O9 记住 marks the client and the next visit is quiet')
+  else fail('O9', JSON.stringify({ trusted, quiet }))
+}
+
 await mf.dispose()
+
+// O10: a deployment can close dynamic registration entirely.
+{
+  const closed = new Miniflare({ modules: true, modulesRules: [{ type: 'ESModule', include: ['**/*.js'] }], compatibilityDate: '2024-01-01', scriptPath: 'src/index.js', durableObjects: { BROKER_STATE: 'BrokerState' }, vars: { SESSION_KEK: KEK, ADMIN_PASSWORD: PASS, OAUTH_ALLOW_REGISTER: '0' }, bindings: { SESSION_KEK: KEK, ADMIN_PASSWORD: PASS, OAUTH_ALLOW_REGISTER: '0' }, serviceBindings: { NODEWARDEN: async () => new Response('{}') } })
+  const r = await closed.dispatchFetch('https://broker.test/oauth/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ client_name: 'x', redirect_uris: ['https://x.example/cb'] }) })
+  const body = await r.text()
+  if (r.status === 403 && body.includes('registration_disabled')) pass('O10 OAUTH_ALLOW_REGISTER=0 refuses registration')
+  else fail('O10', JSON.stringify({ status: r.status, body: body.slice(0, 90) }))
+  await closed.dispose()
+}
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== oauth consent login flow ' + passed + '/' + results.length + ' passed ====')
 if (passed !== results.length) process.exit(1)
