@@ -1063,6 +1063,11 @@ async function recordLoginFailure(env, ip) {
     state.security ??= {}
     state.security.loginAttempts ??= {}
     const now = Date.now()
+    // Same reason as the fill counters: this map is keyed by address and would
+    // otherwise keep a row per IP that ever guessed a password.
+    for (const [oldIp, oldAttempt] of Object.entries(state.security.loginAttempts)) {
+      if (now - (oldAttempt?.last ?? 0) > 15 * 60 * 1000) delete state.security.loginAttempts[oldIp]
+    }
     const previous = state.security.loginAttempts[ip]
     state.security.loginAttempts[ip] = { first: previous && now - previous.first < 15 * 60 * 1000 ? previous.first : now, count: (previous?.count ?? 0) + 1, last: now }
     return state
@@ -2413,12 +2418,16 @@ const FILL_RATE_LIMITS = {
 // The counter lives in the main state, so it is written through the same
 // compare-and-swap writer as everything else and survives a restart.
 // Returns null when the action is allowed, otherwise the reason.
-// Returns null when the action is allowed, otherwise the reason.
 async function fillRateLimited(env, key, limit, windowMs) {
   let reason = null
   await updateState(env, (state) => {
     const now = Date.now()
     state.fillRateCounters ??= {}
+    // Counters are keyed by executor, account and credential, so the map only
+    // grows while new keys keep arriving. Drop the ones whose window has passed.
+    for (const [oldKey, oldEntry] of Object.entries(state.fillRateCounters)) {
+      if (now - (oldEntry?.startedAt ?? 0) > Math.max(windowMs, 60000)) delete state.fillRateCounters[oldKey]
+    }
     const entry = state.fillRateCounters[key]
     if (!entry || now - entry.startedAt > windowMs) {
       state.fillRateCounters[key] = { count: 1, startedAt: now }
