@@ -24,6 +24,7 @@ import { log, handleApprovals, openBrowser } from './approval.mjs'
 import { createBridge } from './bridge.mjs'
 import { login } from './oauth.mjs'
 import { runMaterialize } from './materialize.mjs'
+import { runSync } from './sync.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
 
@@ -40,6 +41,8 @@ Usage
   secrets-broker logout          forget the stored token
   secrets-broker materialize <item> --path <file> --key NAME
                                  ask, then write an approved credential into a file
+  secrets-broker sync --remote URL
+                                 compare this broker with another one, read-only
 
 Environment
   BROKER_URL          broker base URL (default ${DEFAULT_URL})
@@ -47,6 +50,8 @@ Environment
   BROKER_TOKEN_FILE   file fallback for the token cache
   BROKER_TOKEN_STORE  file | keychain
   BROKER_NO_BROWSER=1 print URLs instead of opening a browser
+  BROKER_REMOTE_URL   the other broker for sync
+  BROKER_REMOTE_TOKEN its token (the local one is BROKER_TOKEN or the stored login)
 
 Example client config (Claude Desktop, Codex, any stdio MCP client)
   {
@@ -103,6 +108,51 @@ async function main() {
     const result = await login(brokerUrl())
     log(`logged in; token kept in ${result.store}`)
     return 0
+  }
+
+  if (command === 'sync') {
+    const flag = (flagName) => {
+      const index = argv.indexOf(flagName)
+      return index >= 0 ? argv[index + 1] : ''
+    }
+    // Stage 1 is a preview. Refusing --apply outright is better than accepting
+    // it and quietly doing nothing, which would look like a successful merge.
+    if (argv.includes('--apply') || argv.includes('--write')) {
+      process.stderr.write('sync is read-only for now: drop --apply, look at the diff, then we can agree on the merge rules\n')
+      return 2
+    }
+    const remoteUrl = (flag('--remote') || process.env.BROKER_REMOTE_URL || '').replace(/\/+$/, '')
+    if (!remoteUrl) {
+      process.stderr.write('usage: secrets-broker sync --remote https://broker.example [--json] [--verbose]\n')
+      return 2
+    }
+    try {
+      const result = await runSync({
+        localUrl: brokerUrl(),
+        localToken: process.env.BROKER_TOKEN || loadToken() || '',
+        remoteUrl,
+        remoteToken: flag('--remote-token') || process.env.BROKER_REMOTE_TOKEN || '',
+        verbose: argv.includes('--verbose'),
+      })
+      if (argv.includes('--json')) {
+        const summary = {
+          local: result.local.count,
+          remote: result.remote.count,
+          push: result.diff.push.length,
+          pull: result.diff.pull.length,
+          delete: result.diff.delete.length,
+          equal: result.diff.equal,
+          conflict: result.diff.conflict.length,
+        }
+        process.stdout.write(JSON.stringify(summary) + '\n')
+        return 0
+      }
+      process.stdout.write(result.text + '\n')
+      return 0
+    } catch (error) {
+      process.stderr.write(String(error?.message ?? error) + '\n')
+      return 1
+    }
   }
 
   if (command === 'materialize') {

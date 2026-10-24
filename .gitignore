@@ -100,3 +100,5 @@ extension.crx
 !test-mf-auto-approval.mjs
 !test-mf-log-filters.mjs
 !test-mf-login-and-ai-fixes.mjs
+
+!test-mf-sync.mjs

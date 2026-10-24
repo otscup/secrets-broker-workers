@@ -279,6 +279,84 @@ await asyncCheck('C7 login completes against a stub authorization server', async
   assert.ok(verifierSeen.length > 20, 'code_verifier is sent on exchange')
 })
 
+// C9 sync --dry-run compares two brokers and writes to neither
+await asyncCheck('C9 sync previews the difference and writes nothing', async () => {
+  // spawnSync would block this process's event loop, and the stubs below live
+  // in it, so the child's fetch would never be answered.
+  const runAsync = (args, env) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI, ...args], { env: { ...process.env, ...env } })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.on('close', (status) => resolve({ status, stdout, stderr }))
+  })
+  const makeBroker = async (items) => {
+    const writes = []
+    const server = http.createServer((req, res) => {
+      writes.push(req.method + ' ' + req.url)
+      if (req.url === '/sync/pull') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, account: 'vault@example.invalid', count: items.length, items }))
+        return
+      }
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'nope' }))
+    })
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+    return { url: 'http://127.0.0.1:' + server.address().port, server, writes }
+  }
+
+  const row = (id, body, updatedAt, deletedAt = null) => ({
+    id, type: 1, folderId: null, name: 'enc-' + body, notes: null, data: '2.iv|ct|mac-' + body, key: null,
+    createdAt: '2026-10-01T00:00:00.000Z', updatedAt, deletedAt, archivedAt: null,
+  })
+
+  // same id on both sides, one newer copy, one local-only item, one remote-only
+  // item, and one tombstone only the remote knows about.
+  const local = await makeBroker([
+    row('aaaa1111', 'shared', '2026-10-02T00:00:00.000Z'),
+    row('bbbb2222', 'local-only', '2026-10-03T00:00:00.000Z'),
+    row('cccc3333', 'older', '2026-10-01T00:00:00.000Z'),
+    row('ffff6666', 'live-then-deleted', '2026-10-01T00:00:00.000Z'),
+  ])
+  const remote = await makeBroker([
+    row('aaaa1111', 'shared', '2026-10-02T00:00:00.000Z'),
+    row('cccc3333', 'newer', '2026-10-05T00:00:00.000Z'),
+    row('dddd4444', 'remote-only', '2026-10-04T00:00:00.000Z'),
+    row('eeee5555', 'tombstone-only', '2026-10-06T00:00:00.000Z', '2026-10-06T00:00:00.000Z'),
+    row('ffff6666', 'tombstone-wins', '2026-10-07T00:00:00.000Z', '2026-10-07T00:00:00.000Z'),
+  ])
+
+  try {
+    const r = await runAsync(['sync', '--remote', remote.url, '--json'], { BROKER_URL: local.url, BROKER_TOKEN: 'tok' })
+    assert.equal(r.status, 0, 'exit status: ' + r.stderr)
+    const summary = JSON.parse(r.stdout)
+    assert.equal(summary.push, 1, 'local-only goes up')
+    assert.equal(summary.pull, 2, 'remote-only + remote-newer come down')
+    assert.equal(summary.delete, 1, 'the newer tombstone asks to delete the local copy')
+    assert.equal(summary.equal, 1, 'identical ciphertext is not a change')
+
+    const text = await runAsync(['sync', '--remote', remote.url], { BROKER_URL: local.url, BROKER_TOKEN: 'tok' })
+    assert.equal(text.status, 0, 'exit status: ' + text.stderr)
+    assert.match(text.stdout, /只读预览/)
+    assert.match(text.stdout, /将上传/)
+
+    // The only requests either side saw are reads: three runs, three GETs, no
+    // POST/PUT/DELETE anywhere.
+    assert.ok(local.writes.length >= 2, 'both brokers were asked: ' + local.writes.length)
+    assert.deepEqual([...new Set(local.writes)], ['GET /sync/pull'])
+    assert.deepEqual([...new Set(remote.writes)], ['GET /sync/pull'])
+
+    const refused = await runAsync(['sync', '--remote', remote.url, '--apply'], { BROKER_URL: local.url, BROKER_TOKEN: 'tok' })
+    assert.equal(refused.status, 2, '--apply is refused while stage 1 is read-only')
+    assert.match(refused.stderr, /read-only/)
+  } finally {
+    local.server.close()
+    remote.server.close()
+  }
+})
+
 fs.rmSync(tmp, { recursive: true, force: true })
 const failed = results.filter((entry) => !entry.ok)
 console.log(`==== cli bridge ${results.length - failed.length}/${results.length} passed ====`)

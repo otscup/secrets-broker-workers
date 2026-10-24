@@ -6362,6 +6362,50 @@ export default {
       await addAudit(env, { event: 'oauth.token-issue', agent: agentName, clientId: entry.clientId, items: (entry.grantItems ?? []).length, groups: (entry.grantGroups ?? []).length, all: entry.grantAll === true })
       return json({ access_token: accessToken, token_type: 'Bearer', expires_in: 86400, scope: entry.scope })
     }
+    // ── Sync (stage 1: read-only) ──────────────────────────────────────────
+    // A sibling broker asks for the encrypted rows so the operator's browser or
+    // CLI can compare the two vaults. Nothing here is decrypted: `data` and
+    // `name` are the same Bitwarden blobs that sit in D1, so a stolen sync token
+    // costs a list of ids and timestamps, not a credential. Off unless the
+    // deployment says SYNC_ENABLED=1, because it does expose vault shape.
+    if (url.pathname === '/sync/pull' && (request.method === 'GET' || request.method === 'POST')) {
+      if (String(env.SYNC_ENABLED ?? '') !== '1') return fail('sync is not enabled on this broker (set SYNC_ENABLED=1)', 404)
+      const puller = await resolveAgent(request, env)
+      let account = ''
+      if (puller) {
+        account = puller.agent?.account || ''
+      } else if (await adminAuthorized(request, env)) {
+        const session = await getSession(env)
+        account = session?.email || ''
+      } else {
+        return fail('unauthorized', 401)
+      }
+      const state = await loadState(env)
+      if (!account) account = await vaultEmail(env, env.NODEWARDEN_DB, state).catch(() => '')
+      if (!account) return fail('no vault account is configured on this broker', 409)
+      // ciphers.user_id is the vault user id, not the email: resolve it the same
+      // way every other read path does, or sync would silently compare nothing.
+      const owner = await env.NODEWARDEN_DB.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').bind(account).first().catch(() => null)
+      if (!owner) return fail('no vault user matches ' + account + ' (is the vault database initialised?)', 409)
+      const rows = await env.NODEWARDEN_DB.prepare(
+        'SELECT id, type, folder_id, name, notes, data, key, created_at, updated_at, deleted_at, archived_at FROM ciphers WHERE user_id = ?',
+      ).bind(owner.id).all()
+      const items = (rows.results ?? []).map((row) => ({
+        id: row.id,
+        type: row.type,
+        folderId: row.folder_id ?? null,
+        name: row.name,
+        notes: row.notes ?? null,
+        data: row.data,
+        key: row.key ?? null,
+        createdAt: row.created_at ?? null,
+        updatedAt: row.updated_at ?? null,
+        deletedAt: row.deleted_at ?? null,
+        archivedAt: row.archived_at ?? null,
+      }))
+      await addAudit(env, { event: 'sync.pull', agent: puller?.name ?? 'admin', count: items.length, account })
+      return json({ ok: true, account, count: items.length, items })
+    }
     if (url.pathname === '/mcp' && request.method === 'POST') {
       const resolved = await resolveAgent(request, env)
       if (!resolved) return new Response(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'unauthorized' } }), { status: 401, headers: { 'content-type': 'application/json', 'www-authenticate': 'Bearer' } })

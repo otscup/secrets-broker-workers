@@ -111,6 +111,7 @@ leaving it in the agent's context.
 | `secrets-broker login` | log in now |
 | `secrets-broker status` | which broker, which store, is the token still valid |
 | `secrets-broker logout` | forget the stored token |
+| `secrets-broker sync --remote URL` | preview what differs from another broker (read-only) |
 
 | Variable | Meaning |
 |---|---|
@@ -119,6 +120,29 @@ leaving it in the agent's context.
 | `BROKER_TOKEN_FILE` | file fallback for the token cache |
 | `BROKER_TOKEN_STORE` | `file` or `keychain`, to force a backend |
 | `BROKER_NO_BROWSER=1` | print URLs instead of opening a browser |
+| `BROKER_REMOTE_URL` / `BROKER_REMOTE_TOKEN` | the other broker for `sync`, and its token |
+
+### Comparing two brokers
+
+Sync moves the vault between two deployments (for example this worker and a
+broker you run locally). It moves **ciphertext**: `ciphers.name` and
+`ciphers.data` are the same Bitwarden blobs that sit in D1, so neither broker
+needs the master key to hand them over, and a stolen sync token leaks ids and
+timestamps, not credentials.
+
+Stage 1 only previews. Nothing is written to either side:
+
+```bash
+secrets-broker sync --remote https://sb.otscup.com      # needs SYNC_ENABLED=1 there
+```
+
+It prints how many items only exist locally, how many only exist remotely, what
+is newer on each side, and which rows are tombstones. `--json` prints the counts
+alone, `--verbose` lists every row instead of the first twenty. `--apply` is
+refused on purpose until the merge rules are agreed.
+
+The endpoint it uses (`GET /sync/pull`) is off unless the deployment sets
+`SYNC_ENABLED=1`, and it accepts only an admin session or an agent token.
 
 ### Three ways to connect an agent
 
