@@ -226,6 +226,59 @@ const mintedACode = (res) => Boolean(new URL(res.headers.get('location') || 'htt
   else fail('O7', JSON.stringify({ status: res.status, location: res.headers.get('location') || '' }))
 }
 
+// ── O8-O9 a second vault's items must not ride along ─────────────────────
+// state.itemIds is an append-only cache across vaults, so "allow every item"
+// used to mint a capability and a plaintext policy for whatever that other
+// account had left behind. Those rows then appeared in the Agent dialog as
+// authorisations nobody made, and went live again after an account switch.
+const GHOST = 'ghost-item'
+const GHOST_ID = 'item-ghost'
+await db.prepare('INSERT OR REPLACE INTO users (id,email,key,kdf_type,kdf_iterations,created_at) VALUES (?,?,?,?,?,?)').bind('u2', 'other@example.invalid', 'k', 0, 600000, '2024-01-01').run()
+await db.prepare('INSERT OR REPLACE INTO ciphers (id,user_id,type,folder_id,name,notes,data,key,favorite,reprompt,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+  .bind(GHOST_ID, 'u2', 1, null, 'ghost', '', JSON.stringify({ login: {} }), null, 0, 0, '2024-01-01', '2024-01-01', null).run()
+
+// O8: granting everything mints nothing for the other vault's credential.
+{
+  const current = (await (await stub.fetch('https://do/state')).json()).state
+  await stub.fetch('https://do/state', { method: 'PUT', body: JSON.stringify({
+    ...current,
+    oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {}, capabilities: {}, actionGrants: {}, plaintextReadPolicies: {},
+    itemIds: { ...(current.itemIds || {}), [GHOST]: GHOST_ID },
+    credentialKinds: { ...(current.credentialKinds || {}), [GHOST_ID]: 'api' },
+  }) })
+  const res = await allowWith({ grant_all: '1', grant_plaintext: '1', grant_hours: '24' })
+  await exchange(res.headers.get('location') || '')
+  const state = (await (await stub.fetch('https://do/state')).json()).state
+  const caps = Object.values(state.capabilities || {}).map((cap) => cap.itemId)
+  const policy = (state.plaintextReadPolicies || {})[GHOST_ID]
+  const mintedOwn = caps.includes(API_ID)
+  if (!caps.includes(GHOST_ID) && !policy && mintedOwn) pass("O8 granting every item mints nothing for another vault's credential")
+  else fail('O8', JSON.stringify({ caps, policy, mintedOwn }))
+}
+
+// O9: unlocking drops grants whose credential belongs to a different vault.
+{
+  const current = (await (await stub.fetch('https://do/state')).json()).state
+  const cap = (itemId, name) => ({ id: 'k:' + itemId, subjectId: 'oauth:stale', accountId: ACCT, itemId, itemName: name, action: 'secret.read', mode: 'preapproved', createdAt: '2024-01-01', createdBy: 'oauth-consent:' + ACCT, expiresAt: 0, maxUses: null, usedCount: 0, revokedAt: null })
+  await stub.fetch('https://do/state', { method: 'PUT', body: JSON.stringify({
+    ...current,
+    capabilities: { ['k:' + GHOST_ID]: cap(GHOST_ID, GHOST), ['k:' + API_ID]: cap(API_ID, API) },
+    plaintextReadPolicies: { [GHOST_ID]: { itemId: GHOST_ID, accountId: ACCT, expiresAt: 0 } },
+    actionGrants: { ['oauth:stale' + String.fromCharCode(0) + GHOST_ID]: { id: 'ag1', subjectId: 'oauth:stale', accountId: ACCT, itemId: GHOST_ID, itemName: GHOST, actions: ['secret.read'] } },
+  }) })
+  const unlock = await mf.dispatchFetch('https://broker.test/api/unlock', {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ symEncKey: Buffer.alloc(32, 1).toString('base64'), symMacKey: Buffer.alloc(32, 2).toString('base64'), ttl: '24h' }),
+  })
+  const state = (await (await stub.fetch('https://do/state')).json()).state
+  const caps = Object.keys(state.capabilities || {})
+  const pruned = !caps.includes('k:' + GHOST_ID) && !(state.plaintextReadPolicies || {})[GHOST_ID] && !Object.keys(state.actionGrants || {}).some((k) => k.includes(GHOST_ID))
+  const keptOwn = caps.includes('k:' + API_ID)
+  const audited = (state.audit || []).some((entry) => entry.event === 'grant.prune-foreign')
+  if (unlock.status === 200 && pruned && keptOwn && audited) pass('O9 unlocking drops grants bound to another vault and keeps its own')
+  else fail('O9', JSON.stringify({ status: unlock.status, pruned, keptOwn, audited, caps }))
+}
+
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== oauth consent grants ' + passed + '/' + results.length + ' passed ====')

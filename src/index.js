@@ -1287,6 +1287,44 @@ async function vaultUser(env, db, session) {
 // from accounts you have since switched away from, so an unfiltered snapshot
 // reports another vault's items and looks like a privilege leak. An empty set
 // (vault locked) means "no item list", never "everything".
+// A grant is bound to a cipher id. If that id belongs to a vault other than the
+// one unlocked now, the grant cannot be used for this account — but it is not
+// harmless: it goes live again the next time that other account is unlocked,
+// and until then it sits in the Agent dialog looking like an authorisation the
+// operator made for this vault. Drop the ones this account cannot own.
+async function pruneForeignGrants(env, session) {
+  if (!session?.email) return 0
+  let ids
+  try {
+    const user = await vaultUser(env, env.NODEWARDEN_DB, session)
+    const rows = await env.NODEWARDEN_DB.prepare('SELECT id FROM ciphers WHERE user_id = ?').bind(user.id).all()
+    ids = new Set((rows.results ?? []).map((row) => row.id))
+  } catch { return 0 }
+  const state = await loadState(env)
+  const account = String(session.email).toLowerCase()
+  const isForeign = (entry) => Boolean(entry && entry.itemId && !ids.has(entry.itemId))
+  const ownsAccount = (entry) => String(entry?.accountId ?? '').toLowerCase() === account ||
+    String(entry?.createdBy ?? '').toLowerCase().endsWith(':' + account)
+  const victims = (next) => {
+    const out = []
+    for (const [key, cap] of Object.entries(next.capabilities ?? {})) if (isForeign(cap) && ownsAccount(cap)) out.push(['capabilities', key, cap.itemName || cap.itemId])
+    for (const [itemId, policy] of Object.entries(next.plaintextReadPolicies ?? {})) {
+      if (!ids.has(itemId) && String(policy?.accountId ?? '').toLowerCase() === account) out.push(['plaintextReadPolicies', itemId, itemId])
+    }
+    for (const [key, grant] of Object.entries(next.actionGrants ?? {})) if (isForeign(grant) && ownsAccount(grant)) out.push(['actionGrants', key, grant.itemName || grant.itemId])
+    return out
+  }
+  const found = victims(state)
+  if (!found.length) return 0
+  await updateState(env, (next) => {
+    for (const [bucket, key] of victims(next)) delete next[bucket][key]
+    return next
+  })
+  const names = found.map((row) => row[2])
+  await addAudit(env, { event: 'grant.prune-foreign', account: session.email, count: names.length, items: names.slice(0, 20) })
+  return names.length
+}
+
 async function vaultItemNames(env, db) {
   const session = await getSession(env)
   if (!session) return new Set()
@@ -4350,6 +4388,7 @@ export default {
         const sessionData = { email, symEncKey: String(body.symEncKey), symMacKey: String(body.symMacKey), expiresAt }
         await putSession(env, sessionData)
         const completedTransfers = await processTransfers(env, sessionData)
+        await pruneForeignGrants(env, sessionData)
         await addAudit(env, { event: 'vault.unlock', email, ttl: body.ttl ?? '24h' })
         return json({ ok: true, expiresAt, permanent: ttl === 0, completedTransfers })
       } catch (error) { return fail(String(error.message ?? error), 400) }
@@ -6142,6 +6181,18 @@ export default {
       const expiresAt = Date.now() + 24 * 3600 * 1000
       const session = await getSession(env)
       const account = entry.account || session?.email || await vaultEmail(env, env.NODEWARDEN_DB, state)
+      // `state.itemIds` is an append-only name->id cache: it keeps names from
+      // vaults the operator has since switched away from. Minting "everything"
+      // from that cache handed a brand new OAuth client plaintext grants for
+      // another account's credentials, which then appeared in the Agent dialog
+      // as rows nobody approved and went live again after an account switch.
+      // Bound the mint to the items that exist in the vault unlocked right now,
+      // and take the ids from that live list rather than from the cache.
+      const liveIds = new Map()
+      try {
+        const unlocked = session && String(session.email).toLowerCase() === String(account).toLowerCase() ? session : null
+        if (unlocked) for (const item of await listCiphers(env, env.NODEWARDEN_DB, unlocked)) liveIds.set(item.name, item.id)
+      } catch {}
       await updateState(env, (next) => {
         delete next.oauthCodes[code]
         next.oauthTokens[hash] = { hash, agent: agentName, clientId: entry.clientId, account, createdAt: nowIso(), expiresAt }
@@ -6162,12 +6213,13 @@ export default {
         // Agent can read once approved — a scope grant is not a month-long
         // authority by accident.
         next.plaintextReadPolicies ??= {}
-        const wanted = new Set(entry.grantItems ?? [])
-        if (entry.grantAll === true) for (const name of Object.keys(next.itemIds ?? {})) wanted.add(name)
+        const wanted = new Set()
+        for (const name of entry.grantItems ?? []) if (liveIds.has(name)) wanted.add(name)
+        if (entry.grantAll === true) for (const name of liveIds.keys()) wanted.add(name)
         const livedMs = (Number(entry.grantHours) || 24) * 3600e3
         next.capabilities ??= {}
         for (const name of wanted) {
-          const itemId = next.itemIds?.[name]
+          const itemId = liveIds.get(name)
           if (!itemId) continue
           // A web credential is fill-only by design and must never gain a
           // plaintext read policy, so choosing one here cannot weaken that rule.
