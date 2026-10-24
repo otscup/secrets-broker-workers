@@ -3057,6 +3057,70 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
   return { ok, reason, legacy: legacyDecision, grant: null, capability: cap, capabilityKey: key, grantEligible, capabilityDecisive }
 }
 
+// A refusal that only says "not allowed" costs the Agent (and the operator) a
+// round of guessing: is it the kind, the account, a missing grant, or a target
+// that was never allowed? This answers that with the same authorities the real
+// path uses, and never reads the value.
+async function explainAccess(env, { resolved, session, name, action, origin = '', url = '' }) {
+  if (!name) return { error: 'name is required' }
+  if (!SECRET_ACTIONS.has(action)) return { error: 'unknown action: ' + action, actions: [...SECRET_ACTIONS] }
+  const state = await loadState(env)
+  const accountId = session?.email ?? ''
+  const itemId = state.itemIds?.[name] ?? await resolveItemId(env, env.NODEWARDEN_DB, session, name)
+  const itemName = name
+  if (!itemId) {
+    return {
+      item: itemName, action, decision: 'deny',
+      reasons: ['当前账户里没有这个条目（名字必须与面板上完全一致）'],
+      suggestions: ['list_secrets 看一遍可用的名字'],
+    }
+  }
+  const kind = state.credentialKinds?.[itemId] ?? ''
+  const policy = state.policies?.[itemName] ?? null
+  const cap = state.capabilities?.[capabilityKey(resolved.name, itemId, action)] ?? null
+  const status = capabilityStatus(cap)
+  const target = action === 'secret.fill' ? { origin } : action === 'secret.use' && url ? { url } : null
+  const decision = authorizeSecretAction(state, { agent: resolved.agent, agentName: resolved.name, itemId, itemName, action, target, accountId })
+  const guard = plaintextReadAllowed(state, itemId, { agent: resolved.name, noApproval: policy?.noApproval === true, granted: cap && status !== 'revoked' ? { subject: resolved.name, accountId } : null })
+  const reasons = []
+  const suggestions = []
+  if (kind === 'web') reasons.push('这是网页登录，只能填充到白名单站点，不能取明文')
+  else if (!kind) reasons.push('还没有分类（未分类条目默认不给明文）')
+  else reasons.push('分类：' + kind + '（可以取明文）')
+  if (policy?.noApproval === true) reasons.push('已设为免审批：in-scope 的 Agent 读它不用问')
+  if (cap) reasons.push('能力：' + ({ valid: '有效', expiring: '有效（24 小时内到期）', expired: '已过期', revoked: '已撤销', exhausted: '次数已用完', missing: '无' })[status] + (cap.expiresAt ? '，到期 ' + new Date(cap.expiresAt).toISOString() : '') + (cap.maxUses != null ? '，已用 ' + (cap.usedCount ?? 0) + '/' + cap.maxUses : ''))
+  else reasons.push('能力：无')
+  if (decision.ok) reasons.push('判定：放行（' + decision.reason + '）')
+  else if (decision.grantEligible) reasons.push('判定：需要你批准（' + decision.reason + '）')
+  else reasons.push('判定：拒绝（' + decision.reason + '）')
+  if (action === 'secret.read' && !guard.ok) reasons.push('明文读取限制：' + guard.reason)
+  if (action === 'secret.fill') {
+    const fill = fillPolicyFor(state, itemId, origin)
+    if (!fill.ok) reasons.push('填充策略：' + fill.reason)
+    else reasons.push('填充策略：允许 ' + fill.origins.join('、') + '（动作 ' + fill.actions.join('/') + '）')
+  }
+  if (action === 'secret.use') {
+    const use = usePolicyFor(state, itemId, accountId)
+    if (!use) reasons.push('调用策略：没有配置（secret.use 需要逐条目站点白名单）')
+    else reasons.push('调用策略：' + (use.anyTarget ? '任意站点（经审批）' : (use.origins ?? []).join('、')))
+  }
+  if (resolved.agent?.account && accountId && String(resolved.agent.account).toLowerCase() !== String(accountId).toLowerCase()) reasons.push('这个 Agent 绑定的是另一个 vault 账户')
+  if (decision.ok) suggestions.push(action === 'secret.read' ? 'get_secret / get_credential 取用' : action === 'secret.fill' ? 'request_fill' : 'http_request')
+  else if (decision.grantEligible) suggestions.push('request_access 发起申请，等审批页批准后重试')
+  else if (kind === 'web') suggestions.push('request_fill（让浏览器执行器填进允许的站点）')
+  else if (status === 'expired' || status === 'revoked' || status === 'exhausted') suggestions.push('让操作员在面板里重新授权这个条目')
+  else suggestions.push('让操作员在「动作授权」里给这个条目加上 ' + action + '，或在同意页勾上「允许读取明文」')
+  return {
+    item: itemName, itemId, action,
+    kind: kind || 'unclassified',
+    account: cap?.accountId || accountId,
+    decision: decision.ok ? 'allow' : decision.grantEligible ? 'needs-approval' : 'deny',
+    reason: decision.reason,
+    reasons,
+    suggestions,
+  }
+}
+
 function shadowAudit(env, state, action, agentName, itemName, itemId, newDecision, legacyDecision) {
   if (state.settings?.shadowPolicy !== true && env.POLICY_SHADOW !== '1') return
   if (newDecision === legacyDecision) return
@@ -3196,7 +3260,10 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
       })
       await addAudit(env, { event: 'access.denied', agent: agentName, name, itemId, action, reason: why, source: 'agent' })
       if (shouldNotify) await notifyPending(env, origin, { id: 'deny-' + itemId, agent: agentName, name, createdAt: nowIso(), action, denied: true, reason: why }, ctx).catch(() => {})
-      return { status: 'forbidden', error: 'agent not allowed to read this item', reason: 'not-granted' }
+      // Say which action was refused: "read" sent agents looking for a read
+      // permission when the block was about calling the API with it.
+      const verb = action === 'secret.use' ? 'use this credential (http_request)' : action === 'secret.fill' ? 'fill with this credential' : 'read this item'
+      return { status: 'forbidden', error: 'agent not allowed to ' + verb + '; run explain_access for the reason', reason: 'not-granted' }
     }
   }
   const policy = state.policies?.[name]
@@ -6310,6 +6377,7 @@ export default {
         return result({ tools: [
           { name: 'list_secrets', description: 'List secret item names available to this agent (no values).', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
           { name: 'request_access', description: 'Request approval to read a secret by name. Returns an approval URL if pending.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
+          { name: 'explain_access', description: 'Explain, without returning any value, why this agent can or cannot use a credential: its kind, the account it belongs to, the grant that exists and the rule that decides. Use it when a tool answers "not allowed" and you need to know whether to request access, ask for a fill, or stop.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' }, action: { type: 'string', enum: ['secret.read', 'secret.use', 'secret.fill', 'secret.materialize'], description: 'Action to explain (default secret.read)' }, origin: { type: 'string', description: 'Target origin, for secret.fill' }, url: { type: 'string', description: 'Target URL, for secret.use' } }, required: ['name'], additionalProperties: false } },
           { name: 'get_secret', description: 'Read a secret value after approval. Disabled unless MCP_ALLOW_READ=1.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'get_credential', description: 'Read username, password and TOTP for a login item after approval.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'request_fill', description: 'Ask a browser executor to fill a stored website login into an allowed origin. The agent never receives the value; it learns whether the request was approved and, if so, the task id.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Item name' }, origin: { type: 'string', description: 'Exact https origin the credential may be filled into' }, action: { type: 'string', description: 'Fill action, currently login', enum: ['login'] } }, required: ['name', 'origin'], additionalProperties: false } },
@@ -6326,6 +6394,10 @@ export default {
         const session = await getSession(env)
         if (!session) return result(text('vault locked; open the broker page or run unlock.mjs', true))
         try {
+          if (name === 'explain_access') {
+            const explained = await explainAccess(env, { resolved, session, name: String(args.name ?? ''), action: String(args.action ?? 'secret.read'), origin: args.origin ? String(args.origin) : '', url: args.url ? String(args.url) : '' })
+            return result(text(explained))
+          }
           if (name === 'list_secrets') {
             if (resolved.agent.account && String(resolved.agent.account).toLowerCase() !== String(session.email).toLowerCase()) return result(text('agent is bound to another vault account', true))
             const items = await listCiphers(env, env.NODEWARDEN_DB, session)

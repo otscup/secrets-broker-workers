@@ -63,7 +63,7 @@ DSH plugin (handles pending approvals inside the settings page):
 - ✅ Audit log and dashboard: KPIs, bar trend, agent share, top items, recent activity
 - ✅ Profile page + OIDC (xid) login/binding with PKCE
 - ✅ Account menu from avatar, dark mode, password change, TOTP 2FA
-- ✅ HTTP MCP endpoint (`/mcp`) with tools: `list_secrets`, `request_access`, `get_secret`, `request_fill`, `materialize`
+- ✅ HTTP MCP endpoint (`/mcp`) with tools: `list_secrets`, `explain_access`, `request_access`, `get_secret`, `request_fill`, `materialize`
 - ✅ Notification settings: Telegram / ntfy / Gotify / wxpush (sent on pending request)
 - ✅ Headless `unlock.mjs`
 - ⬜ DSH plugin / OAuth MCP discovery
@@ -154,6 +154,10 @@ Hermes configuration examples.
 Tools:
 
 - `list_secrets` — item names/URLs, no values;
+- `explain_access` — says, without reading anything, why this agent can or
+  cannot use a credential and what to do about it (`allow` / `needs-approval` /
+  `deny`, the kind, the grant, the rule that decided). It is the answer to a
+  bare `not allowed` for both an agent and the operator on the other end;
 - `request_access` — creates an approval request and returns the approval URL;
 - `get_secret` — returns the value once approved (set `MCP_ALLOW_READ=1`);
 - `request_fill` — asks a registered browser executor to fill a stored website
