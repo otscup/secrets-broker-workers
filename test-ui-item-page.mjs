@@ -46,6 +46,11 @@ const items = {
 }
 const stats = { totalReads: 3, activeAgents: 1, pending: 1, activeGrants: 1, buckets: [], topItems: [], topAgents: [] }
 
+// /api/items lags /api/stats on every real load (it decrypts the whole vault),
+// which left a window where the health card counted zero items and printed its
+// all-clear hints. Hold the answer back so the window is reachable here too.
+const ITEMS_DELAY_MS = 900
+
 const routes = {
   '/api/me': () => ({ email: 'vault@example.invalid', name: 'Vault', avatarUrl: '', siteName: 'Test', unlocked: true, expiresAt: Date.now() + 3600e3, pending: 1 }),
   '/api/state': () => state,
@@ -58,13 +63,14 @@ const routes = {
 // Saving from the detail page used to close #modal, which is hidden while the
 // page is open, so the stale page stayed on screen. A5 drives the real button.
 const writes = []
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
   if (req.method === 'POST') {
     writes.push(url.pathname)
     res.writeHead(200, { 'content-type': 'application/json' })
     return res.end('{"ok":true}')
   }
+  if (url.pathname === '/api/items') await wait(ITEMS_DELAY_MS)
   const route = routes[url.pathname]
   if (route) {
     res.writeHead(200, { 'content-type': 'application/json' })
@@ -129,7 +135,30 @@ try {
   await send('Page.enable')
   await send('Runtime.enable')
   await send('Page.navigate', { url: base + '/' })
-  await wait(2200)
+
+  // A15 - while /api/items is still in flight the health card must not report
+  // zeros with all-clear hints. It used to read app.items, which is empty until
+  // the vault decrypts, so a card that had looked at nothing printed 未分类 0 ·
+  // 都分类了 and 免审批 0 · 全部需要批准. The fixture's single credential is
+  // no-approval, so any rendered card reading 免审批 0 is that bug.
+  const seen = { rows: -1, waited: false, staleZero: false, text: '' }
+  for (let i = 0; i < 24; i++) {
+    await wait(100)
+    const shot = await evaluate(`(() => {
+      const box = document.getElementById('ov-actions')
+      const rows = [...box.querySelectorAll('.health-row')]
+      const noApproval = rows.find((row) => /免审批/.test(row.textContent))
+      return { rows: rows.length, noApproval: noApproval ? noApproval.querySelector('.health-value').textContent : null, text: box.textContent }
+    })()`)
+    if (!shot || !shot.text) continue
+    if (/正在读取密钥/.test(shot.text)) seen.waited = true
+    if (seen.rows < 0 && shot.rows) { seen.rows = shot.rows; seen.text = shot.text }
+    if (shot.rows > 0 && shot.noApproval === '0') seen.staleZero = true
+  }
+  const settledRows = await evaluate("document.querySelectorAll('#ov-actions .health-row').length")
+  seen.waited && !seen.staleZero && settledRows === 5
+    ? pass('A15 the health card waits for the vault instead of reporting an empty all-clear')
+    : fail('A15', JSON.stringify({ settledRows, waited: seen.waited, staleZero: seen.staleZero, firstRows: seen.rows }))
 
   // A1 - the list renders rows from /api/items, not an empty shell.
   const rows = await evaluate("document.querySelectorAll('#items-box .ios-row').length")
