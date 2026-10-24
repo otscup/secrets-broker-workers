@@ -1576,8 +1576,39 @@ async function createCipher(env, db, session, fields, folderNameOverride) {
   return { name, id }
 }
 
+// A sync device is another broker instance, not an agent. The local broker
+// authenticates to this one and asks for the encrypted rows; the token belongs
+// to that installation, is revoked on its own, and never appears in the Agents
+// list, because the only thing it can do is pull ciphertext. Keeping it out of
+// `state.agents` is the point: an agent token is a thing whose scope you curate
+// item by item, and it must not double as a full-vault reader.
+function syncDeviceList(state) {
+  return Object.values(state.syncDevices ?? {})
+    .map((device) => ({
+      id: device.id,
+      name: device.name,
+      createdAt: device.createdAt ?? '',
+      lastUsedAt: device.lastUsedAt ?? null,
+      revokedAt: device.revokedAt ?? null,
+    }))
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+}
+
+async function resolveSyncDevice(request, env, state) {
+  const header = request.headers.get('authorization') ?? ''
+  const match = header.match(new RegExp('^Bearer\\s+(.+)$', 'i'))
+  if (!match) return null
+  const hash = await sha256Base64(match[1])
+  for (const device of Object.values(state.syncDevices ?? {})) {
+    if (device.revokedAt) continue
+    if (!constantTimeEqual(encoder.encode(device.hash ?? ''), encoder.encode(hash))) continue
+    return device
+  }
+  return null
+}
+
 function publicState(state) {
-  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], allowAll: agent.allowAll === true, write: agent.write === true, sync: agent.sync === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '', expiresAt: typeof agent.expiresAt === 'number' ? agent.expiresAt : null }))
+  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], allowAll: agent.allowAll === true, write: agent.write === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '', expiresAt: typeof agent.expiresAt === 'number' ? agent.expiresAt : null }))
   const seen = new Set(agents.map((agent) => agent.name))
   const now = Date.now()
   for (const token of Object.values(state.oauthTokens ?? {})) {
@@ -1669,6 +1700,7 @@ function publicState(state) {
     }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
     transfers: (state.transfers ?? []).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, sourceAccount: entry.sourceAccount, targetAccount: entry.targetAccount, folder: entry.folder, createdAt: entry.createdAt, error: entry.error ?? '' })),
     audit: state.audit ?? [],
+    syncDevices: syncDeviceList(state),
   }
 }
 
@@ -5311,7 +5343,7 @@ export default {
         if (state.agents[name]) { error = 'agent already exists'; return state }
         // New agents are never legacy: only pre-existing records without an
         // explicit flag are treated as legacy by the loadState default.
-        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), note: String(body.note ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], allowAll: body.allowAll === true, write: body.write === true, sync: body.sync === true, legacy: false, account, createdAt: nowIso() }
+        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), note: String(body.note ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], allowAll: body.allowAll === true, write: body.write === true, legacy: false, account, createdAt: nowIso() }
         return state
       })
       if (error) return fail(error, 409)
@@ -5432,7 +5464,6 @@ export default {
           if (Array.isArray(body.groups)) agent.groups = body.groups.map(String).filter(Boolean)
           if (typeof body.allowAll === 'boolean') agent.allowAll = body.allowAll
           if (typeof body.write === 'boolean') agent.write = body.write
-          if (typeof body.sync === 'boolean') agent.sync = body.sync
           return state
         }
         const oauthExists = Object.values(state.oauthTokens ?? {}).some((token) => token.agent === name)
@@ -5840,6 +5871,43 @@ export default {
       const state = await loadState(env)
       const session = await getSession(env)
       return json({ ok: true, insights: aiInsights(aiSnapshot(state, { vaultUnlocked: Boolean(session), scope: await vaultItemNames(env, env.NODEWARDEN_DB) })) })
+    }
+    // ── Sync devices ───────────────────────────────────────────────────────
+    // The token below belongs to another broker installation, not to an agent.
+    // It is handed out once (the panel shows it a single time), stored as a
+    // hash, revocable on its own, and it can only reach /sync/pull.
+    if (url.pathname === '/api/sync/devices' && request.method === 'GET') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      return json({ devices: syncDeviceList(state) })
+    }
+    if (url.pathname === '/api/sync/devices/create' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '').trim().slice(0, 48)
+      if (!/^[\w .-]{1,48}$/.test(name)) return fail('名称只能包含字母、数字、空格、点、横线和下划线（1-48 字）', 400)
+      const state = await loadState(env)
+      if (Object.keys(state.syncDevices ?? {}).length >= 20) return fail('同步设备最多 20 个', 400)
+      const token = randomToken() + randomToken()
+      const id = 'sdev_' + randomToken().slice(0, 10)
+      const account = state.settings?.vaultEmail ?? ''
+      await mutateState(env, [
+        { op: 'set', path: ['syncDevices', id], value: { id, name, hash: await sha256Base64(token), account, createdAt: nowIso(), lastUsedAt: null, revokedAt: null } },
+      ])
+      await addAudit(env, { event: 'sync.device.create', name, device: id })
+      // Shown once: only the hash is kept, so a second read cannot recover it.
+      return json({ ok: true, device: { id, name }, token })
+    }
+    if (url.pathname === '/api/sync/devices/revoke' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const id = String(body.id ?? '')
+      const state = await loadState(env)
+      const device = state.syncDevices?.[id]
+      if (!device) return fail('device not found', 404)
+      await mutateState(env, [{ op: 'set', path: ['syncDevices', id, 'revokedAt'], value: nowIso() }])
+      await addAudit(env, { event: 'sync.device.revoke', name: device.name, device: id })
+      return json({ ok: true })
     }
     if (url.pathname === '/api/settings') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -6371,15 +6439,18 @@ export default {
     // deployment says SYNC_ENABLED=1, because it does expose vault shape.
     if (url.pathname === '/sync/pull' && (request.method === 'GET' || request.method === 'POST')) {
       if (String(env.SYNC_ENABLED ?? '') !== '1') return fail('sync is not enabled on this broker (set SYNC_ENABLED=1)', 404)
-      const puller = await resolveAgent(request, env)
+      // Only two callers: a broker holding a sync-device token, or the operator
+      // in this very panel. An agent token is neither — an agent's scope is
+      // curated item by item, so letting it enumerate the vault would undo the
+      // one promise this broker makes.
       let account = ''
-      if (puller) {
-        // An ordinary agent must not be able to walk the vault: it sees the
-        // items you put in its scope, one decision at a time. A sync device is
-        // a separate thing the operator marks as such, and even then it only
-        // ever sees ciphertext — never a value, never a name.
-        if (puller.agent?.sync !== true) return fail('this agent is not a sync device', 403)
-        account = puller.agent?.account || ''
+      const probe = await loadState(env)
+      const device = await resolveSyncDevice(request, env, probe)
+      if (device) {
+        account = device.account || ''
+        await mutateState(env, [{ op: 'set', path: ['syncDevices', device.id, 'lastUsedAt'], value: nowIso() }])
+      } else if (request.headers.get('authorization')) {
+        return fail('this token is not a sync device', 403)
       } else if (await adminAuthorized(request, env)) {
         const session = await getSession(env)
         account = session?.email || ''
@@ -6409,7 +6480,7 @@ export default {
         deletedAt: row.deleted_at ?? null,
         archivedAt: row.archived_at ?? null,
       }))
-      await addAudit(env, { event: 'sync.pull', agent: puller?.name ?? 'admin', count: items.length, account })
+      await addAudit(env, { event: 'sync.pull', agent: device ? 'device:' + device.name : 'admin', device: device?.id, count: items.length, account })
       return json({ ok: true, account, count: items.length, items })
     }
     if (url.pathname === '/mcp' && request.method === 'POST') {

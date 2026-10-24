@@ -1,14 +1,16 @@
 // /sync/pull hands a sibling broker the ciphertext, and nothing else.
-// The endpoint is off by default, needs a credential, and must never return
-// anything a reader could turn into a password without the master key.
+// The endpoint is off by default, needs a *device* credential (never an agent
+// token), and must never return anything a reader could turn into a password
+// without the master key.
 import { Miniflare } from 'miniflare'
-import { wrapWithKek, encryptStr } from './src/crypto.js'
+import { encryptStr } from './src/crypto.js'
 
 const results = []
 const pass = (n) => { results.push({ n, ok: true }); console.log('PASS  ' + n) }
 const fail = (n, d) => { results.push({ n, ok: false, d }); console.log('FAIL  ' + n + ' :: ' + d) }
 
 const AUTH = 'sync-agent-token'
+const DEVICE_TOKEN = 'device-token-2f9c'
 const SESSION_KEK = Buffer.alloc(32, 7).toString('base64')
 const AGENT = 'sync-agent'
 const ACCT = 'vault@example.invalid'
@@ -16,14 +18,16 @@ const ITEM_ID = 'item-sync-1'
 const ITEM_NAME = 'cloudflare-token'
 const PASSWORD = 'SYNC_TEST_VALUE_41be'
 
-const scenario = async (bindings, agentFlags = {}) => {
+const sha256 = async (text) => Buffer.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))).toString('base64')
+
+const scenario = async (bindings, deviceOverrides = {}) => {
   const mf = new Miniflare({
     modules: true,
     modulesRules: [{ type: 'ESModule', include: ['**/*.js'] }],
     compatibilityDate: '2024-01-01',
     scriptPath: 'src/index.js',
     durableObjects: { BROKER_STATE: 'BrokerState' },
-    bindings: { SESSION_KEK, ...bindings },
+    bindings: { SESSION_KEK, ADMIN_PASSWORD: 'operator-pw', ...bindings },
     serviceBindings: { NODEWARDEN: async () => new Response('{}') },
     d1Databases: { NODEWARDEN_DB: 'sync-db-' + Math.random().toString(36).slice(2) },
   })
@@ -40,74 +44,109 @@ const scenario = async (bindings, agentFlags = {}) => {
       .bind(ITEM_ID, 'u1', 1, null, await encryptStr(ITEM_NAME, E, M), await encryptStr('note text', E, M), JSON.stringify(data), null, 0, 0, '2024-01-01T00:00:00.000Z', '2024-10-01T00:00:00.000Z', null)
       .run()
   }
-  const hash = Buffer.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(AUTH)))).toString('base64')
   const ns = await mf.getDurableObjectNamespace('BROKER_STATE')
   const stub = ns.get(ns.idFromName('global'))
-  const state = { agents: { [AGENT]: { hash, allow: [], groups: [], allowAll: false, write: false, sync: false, legacy: false, account: ACCT, createdAt: '2024-01-01', ...agentFlags } }, oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {}, policies: {}, grants: {}, pending: {}, audit: [], itemGroups: {}, security: {}, settings: { vaultEmail: ACCT, notifications: {} }, capabilities: {}, actionGrants: {}, usePolicies: {}, credentialKinds: { [ITEM_ID]: 'api' }, itemIds: { [ITEM_NAME]: ITEM_ID } }
+  const state = {
+    agents: { [AGENT]: { hash: await sha256(AUTH), allow: [], groups: [], allowAll: false, write: false, legacy: false, account: ACCT, createdAt: '2024-01-01' } },
+    oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {}, policies: {}, grants: {}, pending: {}, audit: [], itemGroups: {},
+    security: {}, settings: { vaultEmail: ACCT, notifications: {} }, capabilities: {}, actionGrants: {}, usePolicies: {},
+    syncDevices: { sdev_test: { id: 'sdev_test', name: 'local-broker', hash: await sha256(DEVICE_TOKEN), account: ACCT, createdAt: '2026-01-01T00:00:00.000Z', lastUsedAt: null, revokedAt: null, ...deviceOverrides } },
+    credentialKinds: { [ITEM_ID]: 'api' },
+    itemIds: { [ITEM_NAME]: ITEM_ID },
+  }
   await stub.fetch('https://state/state', { method: 'PUT', body: JSON.stringify(state) })
   return mf
 }
 
-const pull = (mf, headers = {}) => mf.dispatchFetch('https://broker.test/sync/pull', { headers })
+const login = async (mf) => {
+  const r = await mf.dispatchFetch('https://broker.test/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'operator-pw' }) })
+  return String(r.headers.get('set-cookie') ?? '').split(';')[0]
+}
 
 // S1 - off unless the deployment opts in.
 {
   const mf = await scenario({})
-  const r = await pull(mf, { authorization: 'Bearer ' + AUTH })
+  const r = await mf.dispatchFetch('https://broker.test/sync/pull', { headers: { authorization: 'Bearer ' + DEVICE_TOKEN } })
   const text = await r.text()
-  const okS1 = r.status === 404 && /not enabled/.test(text)
-  okS1 ? pass('S1 sync is refused until SYNC_ENABLED=1') : fail('S1', String(r.status) + ' ' + text.slice(0, 80))
+  r.status === 404 && /not enabled/.test(text) ? pass('S1 sync is refused until SYNC_ENABLED=1') : fail('S1', r.status + ' ' + text.slice(0, 80))
   await mf.dispose()
 }
 
 // S2 - no credential, no rows.
 {
   const mf = await scenario({ SYNC_ENABLED: '1' })
-  const r = await pull(mf)
+  const r = await mf.dispatchFetch('https://broker.test/sync/pull')
   r.status === 401 ? pass('S2 an anonymous caller gets 401') : fail('S2', String(r.status))
   await mf.dispose()
 }
 
-// S5 - an ordinary agent must not be able to walk the vault.
+// S3 - a device token gets the encrypted rows, and only those.
 {
   const mf = await scenario({ SYNC_ENABLED: '1' })
-  const r = await pull(mf, { authorization: 'Bearer ' + AUTH })
-  const text = await r.text()
-  ;(r.status === 403 && /not a sync device/.test(text))
-    ? pass('S5 an agent without the sync flag is refused')
-    : fail('S5', String(r.status) + ' ' + text.slice(0, 80))
-  await mf.dispose()
-}
-
-// S6 - once marked as a sync device, the same token is allowed.
-{
-  const mf = await scenario({ SYNC_ENABLED: '1' }, { sync: true })
-  const r = await pull(mf, { authorization: 'Bearer ' + AUTH })
+  const r = await mf.dispatchFetch('https://broker.test/sync/pull', { headers: { authorization: 'Bearer ' + DEVICE_TOKEN } })
   const body = await r.json().catch(() => ({}))
-  ;(r.status === 200 && body.count === 1)
-    ? pass('S6 a marked sync device is allowed')
-    : fail('S6', String(r.status) + ' ' + JSON.stringify(body).slice(0, 80))
-  await mf.dispose()
-}
-
-// S3 - an agent token gets the encrypted rows, and only those.
-{
-  const mf = await scenario({ SYNC_ENABLED: '1' }, { sync: true })
-  const body = await pull(mf, { authorization: 'Bearer ' + AUTH }).then((r) => r.json())
   const item = (body.items ?? [])[0] ?? {}
   const blob = JSON.stringify(body)
   const leaks = [PASSWORD, ITEM_NAME, 'alice', 'note text'].filter((needle) => blob.includes(needle))
   body.ok === true && body.count === 1 && item.id === ITEM_ID && item.data && item.name && leaks.length === 0
-    ? pass('S3 the pull returns ciphertext and no cleartext')
-    : fail('S3', JSON.stringify({ count: body.count, id: item.id, leaks }))
+    ? pass('S3 a device token gets ciphertext and no cleartext')
+    : fail('S3', JSON.stringify({ status: r.status, count: body.count, id: item.id, leaks }))
   await mf.dispose()
 }
 
-// S4 - a wrong token is not an empty answer: it is refused.
+// S4 - a wrong token is not an empty answer, and not a 500 either.
 {
-  const mf = await scenario({ SYNC_ENABLED: '1' }, { sync: true })
-  const r = await pull(mf, { authorization: 'Bearer not-a-token' })
-  r.status === 401 ? pass('S4 a bad token is refused, not answered with nothing') : fail('S4', String(r.status))
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const r = await mf.dispatchFetch('https://broker.test/sync/pull', { headers: { authorization: 'Bearer not-a-token' } })
+  const text = await r.text()
+  r.status === 403 && /not a sync device/.test(text) ? pass('S4 a bad token is refused, not answered with nothing') : fail('S4', r.status + ' ' + text.slice(0, 80))
+  await mf.dispose()
+}
+
+// S5 - the point of the split: an agent token cannot walk the vault.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const r = await mf.dispatchFetch('https://broker.test/sync/pull', { headers: { authorization: 'Bearer ' + AUTH } })
+  const text = await r.text()
+  r.status === 403 && /not a sync device/.test(text) ? pass('S5 an agent token is refused') : fail('S5', r.status + ' ' + text.slice(0, 80))
+  await mf.dispose()
+}
+
+// S6 - a revoked device is refused as well, even though the hash still matches.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' }, { revokedAt: '2026-02-01T00:00:00.000Z' })
+  const r = await mf.dispatchFetch('https://broker.test/sync/pull', { headers: { authorization: 'Bearer ' + DEVICE_TOKEN } })
+  r.status === 403 ? pass('S6 a revoked device is refused') : fail('S6', String(r.status))
+  await mf.dispose()
+}
+
+// S7 - the device list is admin-only, and never carries the hash.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const anon = await mf.dispatchFetch('https://broker.test/api/sync/devices')
+  const cookie = await login(mf)
+  const listed = await mf.dispatchFetch('https://broker.test/api/sync/devices', { headers: { cookie } }).then((r) => r.json()).catch(() => ({}))
+  const first = (listed.devices ?? [])[0] ?? {}
+  anon.status === 401 && first.name === 'local-broker' && !('hash' in first)
+    ? pass('S7 the device list is admin-only and has no hash')
+    : fail('S7', JSON.stringify({ anon: anon.status, first }))
+  await mf.dispose()
+}
+
+// S8 - only the operator mints one, and the token comes back exactly once.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const anon = await mf.dispatchFetch('https://broker.test/api/sync/devices/create', { method: 'POST', body: JSON.stringify({ name: 'x' }) })
+  const cookie = await login(mf)
+  const created = await mf.dispatchFetch('https://broker.test/api/sync/devices/create', {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'home-laptop' }),
+  }).then((r) => r.json()).catch(() => ({}))
+  const after = await mf.dispatchFetch('https://broker.test/api/sync/devices', { headers: { cookie } }).then((r) => r.json()).catch(() => ({}))
+  const device = (after.devices ?? []).find((d) => d.name === 'home-laptop') ?? {}
+  const leaks = JSON.stringify(after).includes(created.token ?? ' ')
+  anon.status === 401 && typeof created.token === 'string' && created.token.length > 20 && device.id && !leaks
+    ? pass('S8 an admin mints a device token, and it is only shown once')
+    : fail('S8', JSON.stringify({ anon: anon.status, hasToken: typeof created.token, device, leaks }))
   await mf.dispose()
 }
 

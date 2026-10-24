@@ -768,6 +768,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
     <div class="card"><h2>两步验证（TOTP）</h2><div id="totp-status" class="hint"></div><div id="totp-setup-box" class="hidden"><div class="hint">用验证器扫码/手动输入下面的密钥，然后输入 6 位验证码启用。</div><div class="secret" id="totp-secret"></div><label class="field">验证码</label><input id="totp-enable-code" inputmode="numeric" placeholder="6 位验证码"><div style="margin-top:10px"><button class="primary" id="totp-enable">启用两步验证</button></div></div><div class="row" style="margin-top:10px"><button id="totp-setup">生成/重新生成密钥</button><button class="danger hidden" id="totp-disable">关闭两步验证</button></div><div class="status" id="totp-message"></div></div>
 
     <div class="card"><h2>本地写入白名单</h2><p class="hint">允许「把某个条目写进本地文件」的目标路径，一行一个。以 <code>/</code> 结尾表示整个目录。</p><textarea id="mat-paths" rows="3" placeholder="/srv/app/secrets.env"></textarea><div class="row" style="margin-top:10px"><button class="primary" id="mat-save">保存白名单</button></div><div class="status" id="mat-status"></div></div>
+    <div class="card"><h2>同步设备</h2><p class="hint">这里发的是给<b>另一个 broker</b> 用的令牌，不是给 Agent 的。对面装上 CLI 后跑 <code>secrets-broker sync --remote &lt;本站地址&gt;</code>，用这把令牌拉取<b>密文</b>做比对：读不到值，也读不到名字。Agent 的 token 不适用。</p><div id="sdev-list"></div><div class="row" style="margin-top:10px"><input id="sdev-name" placeholder="设备名，例如 home-laptop"><button class="primary" id="sdev-create">新建设备</button></div><div class="secret hidden" id="sdev-token"></div><div class="status" id="sdev-status"></div></div>
     <div class="card"><h2>行为安全</h2><p class="hint">每一项的默认值都是最保守的答案。单独给某个 Agent 或某个条目配过权限的，以那条配置为准。</p>
       <div class="ios-field"><label>允许读取网页登录的明文<div class="hint">关闭时，网站密码只能被填充进指定站点，任何 Agent 都拿不到明文。</div></label><input type="checkbox" class="ios-switch" id="bs-web"></div>
       <div class="ios-field"><label>允许读取未分类条目的明文<div class="hint">关闭时，没有分类的凭据即使被授权也只返回拒绝。</div></label><input type="checkbox" class="ios-switch" id="bs-unclassified"></div>
@@ -943,6 +944,41 @@ async function loadOidcLogin() {
     }
     $('login-oidc').innerHTML = buttons.join('')
   } catch {}
+}
+function when(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false })
+}
+async function renderSyncDevices() {
+  const box = $('sdev-list')
+  if (!box) return
+  const data = await api('/api/sync/devices').catch(() => ({ devices: [] }))
+  const devices = data.devices ?? []
+  if (!devices.length) { box.innerHTML = '<p class="hint">还没有同步设备。新建设备后，把那串令牌填到对面 broker 的 BROKER_REMOTE_TOKEN。</p>'; return }
+  box.innerHTML = devices.map((device) => '<div class="ios-row"><div class="ios-main"><div class="ios-title"><b>' + esc(device.name) + '</b>' + (device.revokedAt ? '<span class="ios-pill bad">已撤销</span>' : '<span class="ios-pill on">可用</span>') + '</div><div class="ios-sub">创建于 ' + esc(when(device.createdAt)) + (device.lastUsedAt ? ' · 最近使用 ' + esc(when(device.lastUsedAt)) : ' · 还没用过') + '</div></div>' + (device.revokedAt ? '' : '<button class="ios-pill plain" data-sdev-revoke="' + esc(device.id) + '">撤销</button>') + '</div>').join('')
+}
+$('sdev-create').onclick = async () => {
+  const name = $('sdev-name').value.trim()
+  if (!name) { status('sdev-status', '先给设备起个名字', 'error'); return }
+  try {
+    const created = await api('/api/sync/devices/create', { method: 'POST', body: JSON.stringify({ name }) })
+    $('sdev-token').classList.remove('hidden')
+    $('sdev-token').innerHTML = '只显示这一次，复制到对面 broker：<br><code>' + esc(created.token) + '</code>'
+    $('sdev-name').value = ''
+    status('sdev-status', '已创建「' + created.device.name + '」', 'ok')
+    await renderSyncDevices()
+  } catch (error) { status('sdev-status', error.message, 'error') }
+}
+$('sdev-list').onclick = async (event) => {
+  const button = event.target.closest('[data-sdev-revoke]')
+  if (!button) return
+  if (!confirm('撤销这个同步设备？对面的下一次拉取会立刻失败。')) return
+  try {
+    await api('/api/sync/devices/revoke', { method: 'POST', body: JSON.stringify({ id: button.dataset.sdevRevoke }) })
+    status('sdev-status', '已撤销', 'ok')
+    await renderSyncDevices()
+  } catch (error) { status('sdev-status', error.message, 'error') }
 }
 $('mat-save').onclick = async () => {
   try {
@@ -3222,7 +3258,7 @@ async function saveAgentFromModal(originalName) {
       const renamed = await api('/api/agents/rename', { method: 'POST', body: JSON.stringify({ name: originalName, newName: requested }) })
       currentName = renamed.name
     }
-    await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name: currentName, alias: $('ma-alias').value.trim(), note: $('ma-note').value.trim(), allow: $('ma-allowall').checked ? [] : pickListValues('ma-allow'), groups: pickListValues('ma-groups'), allowAll: $('ma-allowall').checked, write: $('ma-write').checked, sync: Boolean($('ma-sync') && $('ma-sync').checked) }) })
+    await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name: currentName, alias: $('ma-alias').value.trim(), note: $('ma-note').value.trim(), allow: $('ma-allowall').checked ? [] : pickListValues('ma-allow'), groups: pickListValues('ma-groups'), allowAll: $('ma-allowall').checked, write: $('ma-write').checked }) })
     show('modal', false); await loadState(); toast('已保存 Agent')
   } catch (error) { toast(error.message, true) }
 }
@@ -3339,13 +3375,13 @@ async function openAgentMenu(name) {
   await ensureItems()
   const agent = app.data.agents.find((entry) => entry.name === name); if (!agent) return
   if (agent.oauth) {
-    openModal('OAuth Agent「' + name + '」', '<div class="hint">OAuth 动态注册产生的 Agent，绑定账户：<code>' + esc(agent.account || '-') + '</code>。可以修改名称、备注、权限和写入开关；撤销授权会删除 token。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-sync" ' + (agent.sync ? 'checked' : '') + '> 作为同步设备（只能拉取整库密文用于与另一个 broker 比对，读不到任何明文和名字）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存</button><button class="danger" id="ma-oauth-revoke">撤销 OAuth 授权</button></div>')
+    openModal('OAuth Agent「' + name + '」', '<div class="hint">OAuth 动态注册产生的 Agent，绑定账户：<code>' + esc(agent.account || '-') + '</code>。可以修改名称、备注、权限和写入开关；撤销授权会删除 token。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存</button><button class="danger" id="ma-oauth-revoke">撤销 OAuth 授权</button></div>')
     $('ma-save').onclick = () => saveAgentFromModal(name)
     wireAgentActions(name)
     $('ma-oauth-revoke').onclick = async () => { if (!confirm('撤销 ' + name + ' 的 OAuth token？')) return; try { await api('/api/oauth/revoke', { method: 'POST', body: JSON.stringify({ agent: name }) }); show('modal', false); await loadState(); toast('已撤销') } catch (error) { toast(error.message, true) } }
     return
   }
-  openModal('Agent「' + name + '」', '<div class="hint">绑定账户：<code>' + esc(agent.account || '未绑定（旧数据）') + '</code>。Agent 只能读取该账户；切换账户后旧 Agent 不会自动获得新账户权限。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-sync" ' + (agent.sync ? 'checked' : '') + '> 作为同步设备（只能拉取整库密文用于与另一个 broker 比对，读不到任何明文和名字）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button id="ma-extend">延长授权</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
+  openModal('Agent「' + name + '」', '<div class="hint">绑定账户：<code>' + esc(agent.account || '未绑定（旧数据）') + '</code>。Agent 只能读取该账户；切换账户后旧 Agent 不会自动获得新账户权限。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button id="ma-extend">延长授权</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
   $('ma-save').onclick = () => saveAgentFromModal(name)
   wireAgentActions(name)
   $('ma-extend').onclick = () => openExtendMenu(name)
@@ -3412,6 +3448,7 @@ async function loadSecurity() {
     $('totp-disable').classList.toggle('hidden', !data.totpEnabled)
     const settings = await api('/api/settings').catch(() => ({}))
     $('mat-paths').value = (settings.materializePaths ?? []).join('\n')
+    await renderSyncDevices()
     $('bs-web').checked = settings.webPlaintext === true
     $('bs-unclassified').checked = settings.unclassifiedPlaintext === true
     $('bs-target').checked = settings.useAnyTarget === true
