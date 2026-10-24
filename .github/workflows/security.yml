@@ -151,5 +151,7 @@ jobs:
         run: npm run test:cli
       - name: Materialise allowlist (Miniflare)
         run: npm run test:materialize
+      - name: AI assistant snapshot and switches (Miniflare)
+        run: npm run test:ai-assistant
       - name: Full security suite (short path)
         run: npm run test:security:short

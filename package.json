@@ -82,7 +82,8 @@
     "test:grant-delete": "node test-mf-grant-delete-restore.mjs",
     "test:require-classification": "node test-mf-require-classification.mjs",
     "test:plugin-endpoints": "node test-mf-plugin-endpoints.mjs",
-    "test:plugin-operator": "node test-plugin-endpoints.mjs"
+    "test:plugin-operator": "node test-plugin-endpoints.mjs",
+    "test:ai-assistant": "node test-mf-ai-assistant.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
