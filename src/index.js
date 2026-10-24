@@ -6339,7 +6339,12 @@ export default {
     // there is nothing to gate on, and the panel tells the operator to enrol it.
     if (url.pathname === '/api/secret/reveal' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      // A six-digit code is only worth something while guesses are slow, so this
+      // shares the login throttle: eight wrong codes lock the address out for
+      // fifteen minutes, and a good code clears the counter.
+      const revealIp = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-forwarded-for') ?? 'unknown'
       const state = await loadState(env)
+      if (loginBlocked(state, revealIp)) return fail('尝试次数过多，请 15 分钟后再试', 429)
       if (state.security?.totpEnabled !== true) return fail('totp not configured', 428)
       const session = await getSession(env)
       if (!session) return fail('vault locked', 423)
@@ -6348,9 +6353,11 @@ export default {
       if (!name) return fail('name required', 400)
       const secret = new TextDecoder().decode(await unwrapWithKek(state.security.totpSecretWrapped, await kekBytes(env)))
       if (!(await verifyTotp(secret, body.code))) {
+        await recordLoginFailure(env, revealIp)
         await addAudit(env, { event: 'secret.view-deny', name, reason: 'bad-totp', via: 'web' })
         return fail('验证码错误', 401)
       }
+      await clearLoginFailures(env, revealIp)
       const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
       if (!result) return fail('not found', 404)
       await addAudit(env, { event: 'secret.view', name, via: 'web', totp: true })
