@@ -19,6 +19,7 @@
 import { createInterface } from 'node:readline'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { readFileSync } from 'node:fs'
 import { log, handleApprovals, openBrowser } from './approval.mjs'
 import { createBridge } from './bridge.mjs'
 import { login } from './oauth.mjs'
@@ -85,7 +86,8 @@ async function main() {
     return 0
   }
   if (argv.includes('--version') || command === 'version') {
-    process.stdout.write('secrets-broker local bridge\n')
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+    process.stdout.write('secrets-broker ' + pkg.version + '\n')
     return 0
   }
 
@@ -165,8 +167,21 @@ function serve() {
         if (message.id !== undefined) write({ jsonrpc: '2.0', id: message.id, result: {} })
         return
       }
-      // The remote response already carries the client's id.
-      process.stdout.write(text.endsWith('\n') ? text : text + '\n')
+      // The remote response normally carries the client's id. A transport-level
+      // refusal (401, 429, a plain error body) does not, and forwarding it
+      // verbatim leaves the client waiting for an id that never arrives.
+      let body = null
+      try { body = JSON.parse(text) } catch {}
+      if (body && body.jsonrpc && body.id !== undefined) {
+        process.stdout.write(text.endsWith('\n') ? text : text + '\n')
+        return
+      }
+      if (message.id !== undefined) {
+        const error = body?.error && typeof body.error === 'object'
+          ? { code: Number(body.error.code) || -32000, message: String(body.error.message ?? 'broker refused the request') }
+          : { code: -32000, message: String(body?.error ?? text).slice(0, 200) }
+        write({ jsonrpc: '2.0', id: message.id, error })
+      }
     } catch (error) {
       const detail = String(error?.message ?? error)
       log('request failed:', detail)

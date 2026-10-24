@@ -3,7 +3,9 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "bin": { "secrets-broker": "./cli/index.mjs" },
+  "bin": {
+    "secrets-broker": "./cli/index.mjs"
+  },
   "files": [
     "cli",
     "mcp-stdio",
@@ -85,15 +87,12 @@
   "devDependencies": {
     "esbuild": "^0.28.2",
     "miniflare": "^4.20260730.0",
-    "wrangler": "^4.151.1"
-  },
-  "dependencies": {
+    "wrangler": "^4.151.1",
     "three": "^0.186.1",
-    "three-globe": "^2.45.6"
-  },
-  "optionalDependencies": {
+    "three-globe": "^2.45.6",
     "playwright": "^1.49.1"
   },
+  "dependencies": {},
   "allowScripts": {
     "workerd": true
   }

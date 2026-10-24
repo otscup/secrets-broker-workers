@@ -47,10 +47,14 @@ export function createBridge({ brokerUrl, staticToken = '', onApproval = handleA
     // The stored token was revoked, expired, or belongs to another broker:
     // drop it and log in again once, rather than failing every call from here on.
     if (result.status === 401) {
+      // A static token cannot be refreshed, so say so instead of opening a
+      // browser the operator did not ask for and could not finish.
+      if (staticToken) throw new Error('BROKER_TOKEN was rejected by the broker; create a new agent token in the panel')
       log('token rejected by the broker; logging in again')
       clearRecord()
       tokenPromise = null
       result = await post(await getToken(), message)
+      if (result.status === 401) throw new Error('the broker refused a freshly issued token; check the agent still exists')
     }
 
     if (result.status >= 400 && !result.text) {
