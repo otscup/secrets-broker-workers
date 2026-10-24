@@ -63,7 +63,7 @@ DSH plugin (handles pending approvals inside the settings page):
 - ✅ Audit log and dashboard: KPIs, bar trend, agent share, top items, recent activity
 - ✅ Profile page + OIDC (xid) login/binding with PKCE
 - ✅ Account menu from avatar, dark mode, password change, TOTP 2FA
-- ✅ HTTP MCP endpoint (`/mcp`) with tools: `list_secrets`, `request_access`, `get_secret`, `request_fill`
+- ✅ HTTP MCP endpoint (`/mcp`) with tools: `list_secrets`, `request_access`, `get_secret`, `request_fill`, `materialize`
 - ✅ Notification settings: Telegram / ntfy / Gotify / wxpush (sent on pending request)
 - ✅ Headless `unlock.mjs`
 - ⬜ DSH plugin / OAuth MCP discovery
@@ -133,7 +133,16 @@ Tools:
 - `request_access` — creates an approval request and returns the approval URL;
 - `get_secret` — returns the value once approved (set `MCP_ALLOW_READ=1`);
 - `request_fill` — asks a registered browser executor to fill a stored website
-  login into an allowed origin; the agent gets a task id, never the value.
+  login into an allowed origin; the agent gets a task id, never the value;
+- `materialize` — asks to write one credential into a file the operator has
+  allowlisted (`设置 → 安全 → 本地写入白名单`); an approval records a one-shot job,
+  not a standing read grant;
+- `materialize_redeem` — redeems that job once; the local bridge writes the
+  `KEY=value` line (0600) and the broker only records `secret.materialize`.
+
+`materialize` refuses a path that is not on the allowlist, and re-checks the
+list at redemption, so removing a path also revokes approvals made while it was
+listed. A website login stays fill-only and cannot be materialised.
 
 Example Codex/HTTP MCP config:
 

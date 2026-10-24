@@ -8,6 +8,7 @@ test-*.mjs
 !test-oidc.mjs
 !test-ui-item-page.mjs
 !test-cli.mjs
+!test-mf-materialize.mjs
 !test-r1-r6.mjs
 !test-mf-oidc.mjs
 !test-mf-maxreads.mjs

@@ -1638,6 +1638,32 @@ function publicState(state) {
 // permanent capability (expiresAt null); the legacy grant mirror keeps its
 // old expiresAt: 0 convention for backward compatibility.
 const APPROVAL_DURATIONS = { once: 0, '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, always: null }
+
+// ── Materialise: write a credential into a file the operator pre-approved ──
+// The target path must already be listed in settings.materializePaths. An
+// approval records a one-shot job instead of minting a read capability, so
+// "write this into /srv/app/.env" can never be replayed as "hand me the
+// plaintext". A path that is not on the list is refused, never widened.
+const MATERIALIZE_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+const MATERIALIZE_ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\/)/
+
+function materializeTarget(state, raw) {
+  const targetPath = typeof raw?.path === 'string' ? raw.path.trim() : ''
+  const key = typeof raw?.key === 'string' ? raw.key.trim() : ''
+  if (!targetPath || targetPath.length > 512 || targetPath.includes('\u0000')) return null
+  if (!MATERIALIZE_ABSOLUTE.test(targetPath)) return null
+  if (!MATERIALIZE_KEY.test(key)) return null
+  const allowed = Array.isArray(state?.settings?.materializePaths) ? state.settings.materializePaths : []
+  const hit = allowed.some((entry) => {
+    const prefix = typeof entry === 'string' ? entry : entry?.path
+    if (typeof prefix !== 'string' || !prefix) return false
+    // A trailing separator means "anything under this directory"; otherwise the
+    // entry names one exact file.
+    return prefix.endsWith('/') || prefix.endsWith('\\') ? targetPath.startsWith(prefix) : targetPath === prefix
+  })
+  return hit ? { path: targetPath, key } : null
+}
+
 async function decidePending(env, id, decision, source = 'web') {
   let outcome = null
   await updateState(env, (state) => {
@@ -1653,6 +1679,35 @@ async function decidePending(env, id, decision, source = 'web') {
     // is a guess, so refuse and require a fresh request.
     if (!SECRET_ACTIONS.has(String(entry.action ?? ''))) {
       outcome = { agent: entry.agent, name: entry.name, denied: true, error: 'legacy-pending-without-action' }
+      return state
+    }
+    const requestedAction = String(entry.action ?? '')
+    // Materialise never mints a read capability. It records a single job whose
+    // target the operator saw on the approval page, which is what keeps one
+    // click from becoming a standing plaintext grant.
+    if (requestedAction === 'secret.materialize') {
+      const dest = materializeTarget(state, entry.target)
+      const materializeItemId = entry.itemId || state.itemIds?.[entry.name] || ''
+      const materializeAccount = typeof entry.account === 'string' ? entry.account.trim() : ''
+      if (!dest) {
+        outcome = { agent: entry.agent, name: entry.name, action: requestedAction, denied: true, error: 'materialize-target-not-allowed' }
+        return state
+      }
+      if (!materializeItemId || !isWellFormedAccountId(materializeAccount)) {
+        outcome = { agent: entry.agent, name: entry.name, action: requestedAction, denied: true, error: 'materialize-incomplete' }
+        return state
+      }
+      state.materializeJobs ??= {}
+      // Drop jobs that expired long ago; the map is small but it is also the
+      // only thing here that grows without an upper bound.
+      for (const [jobId, job] of Object.entries(state.materializeJobs)) {
+        if (Number(job?.expiresAt ?? 0) < Date.now() - 3600e3) delete state.materializeJobs[jobId]
+      }
+      state.materializeJobs[id] = {
+        id, agent: entry.agent, name: entry.name, itemId: materializeItemId, account: materializeAccount,
+        target: dest, createdAt: nowIso(), expiresAt: Date.now() + 10 * 60 * 1000, redeemedAt: null,
+      }
+      outcome = { agent: entry.agent, name: entry.name, action: requestedAction, path: dest.path, key: dest.key }
       return state
     }
     const mode = ['once', '1h', '24h', '7d', 'always'].includes(decision) ? decision : 'once'
@@ -2723,7 +2778,7 @@ export function agentInScope(agent, itemGroups, targetName, groupOverride) {
 // secret.read and secret.use are independent actions. secret.read returns
 // plaintext; secret.use only lets the broker inject and execute. Neither
 // implies the other.
-const SECRET_ACTIONS = new Set(['secret.read', 'secret.use', 'secret.fill'])
+const SECRET_ACTIONS = new Set(['secret.read', 'secret.use', 'secret.fill', 'secret.materialize'])
 
 // ── Unified capability model (read/use share one authority) ───────────────
 // A capability is the SOLE authority for secret.read / secret.use grants:
@@ -2851,6 +2906,15 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
   const grant = actionGrantFor(state, subjectId, itemId)
   let grantEligible = Boolean(grant && (grant.actions ?? []).includes(action)
     && (!grant.accountId || !accountId || String(grant.accountId).toLowerCase() === String(accountId).toLowerCase()))
+  if (action === 'secret.materialize' && !cap && agentInScope(agent, state.itemGroups, itemName)) {
+    // Writing a credential into a file is askable by any agent the operator has
+    // put in scope, exactly like a read: the approval page is where the decision
+    // is made. It never becomes a capability, so eligibility here buys nothing
+    // more than the right to ask.
+    grantEligible = true
+    ok = false
+    reason = 'awaiting-approval'
+  }
   if (grantEligible && action === 'secret.use') {
     const policy = usePolicyFor(state, itemId, accountId)
     if (!policy) { ok = false; reason = 'no-use-policy'; grantEligible = false }
@@ -3026,7 +3090,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
       // The pending request records the target origin so the approver can see
       // which site the credential would be filled into. A fill request without
       // an origin is never approvable.
-      const entry = { id: pendingId, agent: agentName, name, account: session.email, action, createdAt: nowIso(), targetOrigin: action === 'secret.fill' ? String(target?.origin ?? '') : '' }
+      const entry = { id: pendingId, agent: agentName, name, account: session.email, action, createdAt: nowIso(), targetOrigin: action === 'secret.fill' ? String(target?.origin ?? '') : '', ...(action === 'secret.materialize' ? { target: { path: String(target?.path ?? ''), key: String(target?.key ?? '') } } : {}) }
       await updateState(env, (next) => { next.pending[pendingId] = entry; if (itemId) { next.itemIds ??= {}; next.itemIds[name] = itemId } return next })
       await addAudit(env, { event: 'request.create', agent: agentName, name })
       // An active auto-approval rule answers it now instead of asking. It is
@@ -3098,6 +3162,14 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     // layer redeems the one-shot authorization for it, with its own token.
     await addAudit(env, { event: 'fill.approved', agent: agentName, name, origin: String(target?.origin ?? '') })
     return { status: 'fill-ok', itemId, origin: String(target?.origin ?? ''), action: String(target?.action ?? 'login') }
+  }
+  if (action === 'secret.materialize') {
+    // Metadata only, and the path is re-validated here: an approval made while
+    // a path was listed must stop working once the operator removes it.
+    const dest = materializeTarget(state, target)
+    if (!dest) return { status: 'forbidden', error: 'materialize target is not allowed', reason: 'target-not-allowed' }
+    await addAudit(env, { event: 'materialize.approved', agent: agentName, name, path: dest.path, key: dest.key })
+    return { status: 'materialize-ok', itemId, target: dest }
   }
   const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
   if (!result) return { status: 'notfound', error: 'not found' }
@@ -5572,6 +5644,9 @@ export default {
           configured: Boolean(effectiveOidc),
           secretConfigured: Boolean(state.settings?.oidc?.clientSecret || env.OIDC_CLIENT_SECRET),
         }, vaultFolder: state.settings?.vaultFolder ?? '', vaultEmail: state.settings?.vaultEmail ?? '', siteName: state.settings?.siteName ?? 'Secrets Broker', requireClassification: requireClassification(state),
+        // Where the local bridge may write a credential. Absolute paths only;
+        // a trailing separator means "anything under this directory".
+        materializePaths: Array.isArray(state.settings?.materializePaths) ? state.settings.materializePaths : [],
         // The key itself is never returned; only whether one is stored.
         ai: {
           enabled: state.settings?.ai?.enabled !== false,
@@ -5608,6 +5683,16 @@ export default {
             }
             if (inc.apiKey === null) delete ai.apiKey
             else if (typeof inc.apiKey === 'string' && inc.apiKey.trim()) ai.apiKey = inc.apiKey.trim().slice(0, 400)
+          }
+          if (Array.isArray(body.materializePaths)) {
+            // Sanitised here, not at use time: what is stored is exactly what
+            // materializeTarget will compare against, so a path that cannot be
+            // used is never silently kept.
+            state.settings.materializePaths = body.materializePaths
+              .filter((entry) => typeof entry === 'string')
+              .map((entry) => entry.trim().slice(0, 512))
+              .filter((entry) => entry && /^(?:[A-Za-z]:[\/]|\/)/.test(entry))
+              .slice(0, 50)
           }
           for (const channel of ['telegram', 'ntfy', 'gotify', 'wxpush']) {
             if (!incoming[channel]) continue
@@ -6052,6 +6137,8 @@ export default {
           { name: 'get_secret', description: 'Read a secret value after approval. Disabled unless MCP_ALLOW_READ=1.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'get_credential', description: 'Read username, password and TOTP for a login item after approval.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'request_fill', description: 'Ask a browser executor to fill a stored website login into an allowed origin. The agent never receives the value; it learns whether the request was approved and, if so, the task id.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Item name' }, origin: { type: 'string', description: 'Exact https origin the credential may be filled into' }, action: { type: 'string', description: 'Fill action, currently login', enum: ['login'] } }, required: ['name', 'origin'], additionalProperties: false } },
+          { name: 'materialize', description: 'Ask to write a stored credential into a file the operator has pre-approved (settings.materializePaths). The value never returns from this call: an approval records a one-shot job that the local bridge redeems once.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Item name' }, path: { type: 'string', description: 'Absolute target file path, on the allowlist' }, key: { type: 'string', description: 'Variable name to write, e.g. OPENAI_API_KEY' } }, required: ['name', 'path', 'key'], additionalProperties: false } },
+          { name: 'materialize_redeem', description: 'Redeem an approved materialize job once. Returns the value for the local bridge to write; the job cannot be redeemed twice.', inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'Job id from the pending approval' } }, required: ['id'], additionalProperties: false } },
           { name: 'request_credential', description: 'Create a secure one-time link for a human to fill in a missing credential; the broker stores it and grants this agent access.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Suggested item name' }, description: { type: 'string', description: 'What the credential is for' } }, required: ['name'] } },
           { name: 'http_request', description: 'Make an HTTPS request with a secret injected server-side. Method allowlist (default GET/POST, extend via HTTP_ALLOW_METHODS; max 16 chars). Path prefix allowlist via HTTP_ALLOW_PATHS (empty = no path restriction). headerName allowlist: Authorization, X-Api-Key, Api-Key, X-Auth-Token (case-insensitive); authPrefix max 32 chars, no CR/LF. Custom headers sanitized (name /^[A-Za-z0-9-]+$/, value <=4KB, max 20; host/content-length/connection/cookie/set-cookie/authorization and other sensitive hops filtered). Body <=64KB as string; GET/HEAD must not send body. Only https, no userinfo, default port 443 or HTTP_ALLOWED_PORTS. The secret is never returned to the caller.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' }, url: { type: 'string', description: 'HTTPS target URL (no userinfo; path must match HTTP_ALLOW_PATHS prefixes when set; port 443 or HTTP_ALLOWED_PORTS)' }, method: { type: 'string', description: 'HTTP method, uppercased (default GET; non-GET/POST requires HTTP_ALLOW_METHODS; max 16 chars)' }, headers: { type: 'object', description: 'Extra headers (sanitized: name /^[A-Za-z0-9-]+$/, value <=4KB, max 20; sensitive/hop headers filtered and cannot override the injected secret header)' }, body: { type: 'string', description: 'Request body as string (<=64KB; GET/HEAD must not include body)' }, headerName: { type: 'string', description: 'Header to inject the secret into (allowlist: Authorization, X-Api-Key, Api-Key, X-Auth-Token; default Authorization)' }, authPrefix: { type: 'string', description: 'Prefix before the secret (default "Bearer ", max 32 chars, no CR/LF)' } }, required: ['name', 'url'] } },
         ] })
@@ -6137,6 +6224,64 @@ export default {
             }
             await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: true })
             return result(text(JSON.stringify({ username: found.username, password: found.value, totp: found.totp })))
+          }
+          // materialize: the value never travels back through this call. An
+          // approval records a one-shot job that only the same subject can
+          // redeem, and the path must be on the operator's allowlist.
+          if (name === 'materialize') {
+            const secretName = String(args.name ?? '').trim()
+            if (!secretName) return result(text('name is required', true))
+            const dest = materializeTarget(resolved.state, { path: args.path, key: args.key })
+            if (!dest) {
+              await addAudit(env, { event: 'materialize.deny', agent: resolved.name, name: secretName, path: String(args.path ?? '').slice(0, 200), key: String(args.key ?? '').slice(0, 64), reason: 'target-not-allowed' })
+              return result(text('target path is not on the materialize allowlist; add it in 设置 → 安全 first', true))
+            }
+            const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx, action: 'secret.materialize', target: dest })
+            // The request id is the job id once approved, so the caller can poll
+            // materialize_redeem with it instead of asking again (asking again
+            // would just queue another approval).
+            if (access.status === 'pending') return result(text(JSON.stringify({ status: 'pending', id: access.requestId, approvalUrl: access.approvalUrl, path: dest.path, key: dest.key })))
+            if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
+            if (access.status !== 'materialize-ok') return result(text('materialize was not authorized', true))
+            return result(text(JSON.stringify({ status: 'approved', path: dest.path, key: dest.key })))
+          }
+          if (name === 'materialize_redeem') {
+            const jobId = String(args.id ?? '').trim()
+            const live = await loadState(env)
+            const job = live.materializeJobs?.[jobId]
+            // One answer for "no such job" and "not yours": the id must not
+            // become an oracle for what other agents asked for.
+            if (!job || job.agent !== resolved.name) return result(text('unknown materialize request', true))
+            if (job.redeemedAt) return result(text('this request was already redeemed', true))
+            if (Number(job.expiresAt ?? 0) < Date.now()) return result(text('this request expired', true))
+            if (String(job.account).toLowerCase() !== String(session.email).toLowerCase()) return result(text('unknown materialize request', true))
+            // Re-check the allowlist at redemption: removing a path must revoke
+            // approvals that were granted while it was listed.
+            if (!materializeTarget(live, job.target)) {
+              await addAudit(env, { event: 'materialize.deny', agent: resolved.name, name: job.name, path: job.target?.path ?? '', reason: 'target-not-allowed' })
+              return result(text('that target is no longer on the materialize allowlist', true))
+            }
+            const found = await readSecretFromRows(env, env.NODEWARDEN_DB, session, job.name)
+            if (!found) return result(text('not found', true))
+            // Writing a password into a file is still a plaintext read, so it
+            // passes the same guard: a website login stays fill-only.
+            const guard = plaintextReadAllowed(live, found.id || job.itemId, { noApproval: live.policies?.[job.name]?.noApproval === true, granted: { subject: resolved.name, accountId: session.email } })
+            if (!guard.ok) {
+              await addAudit(env, { event: 'materialize.deny', agent: resolved.name, name: job.name, path: job.target?.path ?? '', reason: guard.reason })
+              return result(text('plaintext read is not allowed for this credential: ' + guard.reason, true))
+            }
+            let won = false
+            await updateState(env, (next) => {
+              won = false
+              const entry = next.materializeJobs?.[jobId]
+              if (!entry || entry.redeemedAt) return next
+              entry.redeemedAt = nowIso()
+              won = true
+              return next
+            })
+            if (!won) return result(text('this request was already redeemed', true))
+            await addAudit(env, { event: 'secret.materialize', agent: resolved.name, name: job.name, itemId: job.itemId, path: job.target?.path ?? '', key: job.target?.key ?? '', via: 'agent' })
+            return result(text(JSON.stringify({ path: job.target?.path ?? '', key: job.target?.key ?? '', value: found.value })))
           }
           // request_fill: ask for a website credential to be filled in. The Agent
           // never receives the value; it only learns whether the request was

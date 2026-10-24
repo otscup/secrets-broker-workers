@@ -182,6 +182,37 @@ await asyncCheck('C6 approval link is handed to the opener', async () => {
   assert.equal(opened, signed, 'opener should receive the signed approval URL')
 })
 
+// C8 materialised credentials are written create-only, 0600
+const NL = String.fromCharCode(10)
+await asyncCheck('C8 write secrets without replacing an existing key', async () => {
+  const { writeSecretToFile, KeyExistsError } = await import('./cli/write.mjs')
+  const dir = fs.mkdtempSync(path.join(tmp, 'mat-'))
+  const target = path.join(dir, 'app.env')
+
+  const first = writeSecretToFile({ path: target, key: 'OPENAI_API_KEY', value: 'sk-live-1' })
+  assert.equal(first.created, true)
+  assert.equal(fs.readFileSync(target, 'utf8'), 'OPENAI_API_KEY=sk-live-1' + NL)
+  if (process.platform !== 'win32') assert.equal(fs.statSync(target).mode & 0o777, 0o600, 'file is 0600')
+
+  const second = writeSecretToFile({ path: target, key: 'OTHER_KEY', value: 'plain' })
+  assert.equal(second.created, false)
+  assert.equal(fs.readFileSync(target, 'utf8'), 'OPENAI_API_KEY=sk-live-1' + NL + 'OTHER_KEY=plain' + NL)
+
+  let refused = false
+  try {
+    writeSecretToFile({ path: target, key: 'OPENAI_API_KEY', value: 'sk-live-2' })
+  } catch (error) {
+    refused = error instanceof KeyExistsError
+  }
+  assert.ok(refused, 'an existing key is never overwritten')
+  assert.ok(fs.readFileSync(target, 'utf8').includes('sk-live-1'))
+
+  // Values that would break the file are quoted, so one line stays one line.
+  const quoted = writeSecretToFile({ path: target, key: 'QUOTED', value: 'has space # and "quotes"' })
+  assert.ok(quoted)
+  assert.equal(fs.readFileSync(target, 'utf8').split(NL).filter(Boolean).length, 3)
+})
+
 // C7 the login flow stores a token it obtained with PKCE
 await asyncCheck('C7 login completes against a stub authorization server', async () => {
   const file = path.join(tmp, 'oauth.json')

@@ -149,5 +149,7 @@ jobs:
         run: npm run test:ui-item-page
       - name: Local bridge (cli)
         run: npm run test:cli
+      - name: Materialise allowlist (Miniflare)
+        run: npm run test:materialize
       - name: Full security suite (short path)
         run: npm run test:security:short

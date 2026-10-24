@@ -6,6 +6,8 @@
  *   npx @otscup/secrets-broker login      log in now
  *   npx @otscup/secrets-broker status     where is the token kept, is it valid
  *   npx @otscup/secrets-broker logout     forget the token
+ *   npx @otscup/secrets-broker materialize <item> --path <file> --key NAME
+ *                                        write an approved credential into a file
  *
  * Environment:
  *   BROKER_URL          broker base URL (default https://sb.otscup.com)
@@ -17,9 +19,11 @@
 import { createInterface } from 'node:readline'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { log, handleApprovals } from './approval.mjs'
+import { log, handleApprovals, openBrowser } from './approval.mjs'
 import { createBridge } from './bridge.mjs'
 import { login } from './oauth.mjs'
+import { runMaterialize } from './materialize.mjs'
+import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
 
 const DEFAULT_URL = 'https://sb.otscup.com'
@@ -33,6 +37,8 @@ Usage
   secrets-broker login           log in through the browser now
   secrets-broker status          show the broker, the token store and its expiry
   secrets-broker logout          forget the stored token
+  secrets-broker materialize <item> --path <file> --key NAME
+                                 ask, then write an approved credential into a file
 
 Environment
   BROKER_URL          broker base URL (default ${DEFAULT_URL})
@@ -95,6 +101,34 @@ async function main() {
     const result = await login(brokerUrl())
     log(`logged in; token kept in ${result.store}`)
     return 0
+  }
+
+  if (command === 'materialize') {
+    const name = argv[1] && !argv[1].startsWith('-') ? argv[1] : (argv[2] && !argv[2].startsWith('-') ? argv[2] : '')
+    const flag = (flagName) => {
+      const index = argv.indexOf(flagName)
+      return index >= 0 ? argv[index + 1] : ''
+    }
+    const targetPath = flag('--path') || flag('-p')
+    const key = flag('--key') || flag('-k')
+    if (!name || !targetPath || !key) {
+      process.stderr.write('usage: secrets-broker materialize <item> --path <file> --key NAME\n')
+      return 2
+    }
+    const bridge = createBridge({ brokerUrl: brokerUrl(), staticToken: process.env.BROKER_TOKEN || '' })
+    try {
+      const result = await runMaterialize({ bridge, name, path: targetPath, key })
+      process.stdout.write(`${result.created ? 'created' : 'appended'} ${result.key} in ${result.path}\n`)
+      return 0
+    } catch (error) {
+      if (error instanceof KeyExistsError) {
+        process.stderr.write(`${error.message}\n`)
+        process.stderr.write('remove the line yourself, or pass a different --key; overwriting is not automatic\n')
+        return 3
+      }
+      process.stderr.write(String(error?.message ?? error) + '\n')
+      return 1
+    }
   }
 
   if (command !== 'serve') {
