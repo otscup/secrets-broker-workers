@@ -563,6 +563,15 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 .health-row .health-chev{grid-column:4;grid-row:1/3;color:var(--label-3);font-size:15px;transition:transform .2s var(--ease)}
 .health-row.open .health-chev{transform:rotate(90deg)}
 .health-row{grid-template-columns:52px 1fr auto 14px}
+.health{max-height:198px;overflow-y:auto;gap:0}
+.health-row{box-sizing:border-box;display:flex;align-items:center;gap:var(--sp-2);min-height:36px;padding:3px 0;grid-template-columns:none}
+.health-bar{flex:0 0 40px;height:5px;grid-column:auto;grid-row:auto}
+.health-label{flex:0 0 auto;grid-column:auto;grid-row:auto;font-size:var(--text-body)}
+.health-hint{flex:1 1 auto;grid-column:auto;grid-row:auto;font-size:var(--text-caption);color:var(--label-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.health-value{flex:0 0 auto;margin-left:auto;grid-column:auto;grid-row:auto;font-size:var(--text-body-lg);font-variant-numeric:tabular-nums}
+.health-row .health-chev{grid-column:auto;grid-row:auto;flex:0 0 12px}
+.health-cred{padding:5px 0 5px 48px}
+.health-more{padding:5px 0 5px 48px}
 .health-list{display:flex;flex-direction:column;padding:0 0 var(--sp-2) 0}
 .health-cred{display:flex;align-items:baseline;gap:var(--sp-2);background:none;border:0;border-top:1px solid var(--separator);padding:6px 0 6px 52px;font:inherit;font-size:var(--text-sub);color:inherit;text-align:left;cursor:pointer}
 .health-cred:hover{color:var(--blue)}
