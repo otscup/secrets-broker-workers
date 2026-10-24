@@ -205,7 +205,11 @@ const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(pat
 if (invokedDirectly) {
   main()
     .then((code) => {
-      if (typeof code === 'number' && code !== 0) process.exit(code)
+      // A one-shot command returns here; serve() never resolves. Exiting
+      // explicitly matters because the login listener can still be holding
+      // the socket it just answered (browsers keep it alive), which
+      // otherwise leaves the process running after it printed "logged in".
+      process.exit(typeof code === 'number' ? code : 0)
     })
     .catch((error) => {
       log('error:', String(error?.message ?? error))

@@ -274,6 +274,22 @@ let jobId = ''
   else fail('M12', toolText(sibling))
 }
 
+// ── M14 a UNC allowlist entry cannot be satisfied by a local path ────
+// A UNC entry ("//server/share/") loses its leading slashes when it is
+// normalised, so a local "/server/share/x" would match it while the bridge
+// resolves that path somewhere else entirely. UNC entries are refused, so the
+// operator cannot allow one path and get another written.
+{
+  const sep = String.fromCharCode(92)
+  await seedState({ allowlist: [sep + sep + 'srv' + sep + 'share' + sep] })
+  await putSession()
+  const before = await getState()
+  const reply = await mcp('materialize', { name: ITEM, path: '/srv/share/creds.env', key: 'K6' })
+  const after = await getState()
+  const queued = Object.keys(after.pending ?? {}).length - Object.keys(before.pending ?? {}).length
+  if (toolError(reply) && queued === 0) pass('M14 a UNC allowlist entry refuses the local path it collapses to')
+  else fail('M14', JSON.stringify({ text: toolText(reply), queued }))
+}
 // ── M13 MCP_ALLOW_READ=0 keeps the plaintext in the broker ───────────────
 // Redeeming hands the value over MCP, so it is a read. A deployment that turned
 // reads off must not regain them through materialize.

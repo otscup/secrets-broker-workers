@@ -1654,6 +1654,12 @@ const MATERIALIZE_ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\/)/
 // yields null and is refused, never clamped.
 function normalizeMaterializePath(raw) {
   const text = String(raw).split('\\').join('/')
+  // A UNC path ("//server/share/file") cannot be collapsed into one canonical
+  // form here: this function drops the empty first segment, so the checked path
+  // would read "/server/share/file" while the bridge resolves it to
+  // "C:/server/share/file". Refusing keeps the checked path and the written
+  // path identical, which is the whole point of normalising first.
+  if (text.startsWith('//')) return null
   const drive = /^[A-Za-z]:/.exec(text)?.[0] ?? ''
   const rest = text.slice(drive.length)
   const parts = []
@@ -5970,6 +5976,11 @@ export default {
         if (origin) {
           let sameOrigin = false
           try { sameOrigin = new URL(origin).origin === new URL(request.url).origin } catch {}
+          // A sandboxed frame, and a browser driven over the debug protocol,
+          // can submit a same-origin form with "Origin: null". Sec-Fetch-Site
+          // still reports same-origin in that case, so fall back to it rather
+          // than rejecting a consent the browser itself vouches for.
+          if (!sameOrigin && String(origin).toLowerCase() === 'null' && fetchSite === 'same-origin') sameOrigin = true
           if (!sameOrigin) {
             await addAudit(env, { event: 'oauth.consent-deny', reason: 'origin-mismatch', origin: String(origin).slice(0, 120) }).catch(() => {})
             return new Response('跨站提交被拒绝：来源与本站不一致。', { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8' } })

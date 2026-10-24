@@ -133,6 +133,9 @@ export async function login(brokerUrl, options = {}) {
   } finally {
     try {
       listener.close()
+      // close() stops new connections but leaves the one the browser just
+      // used open, which keeps this process alive until the tab closes.
+      listener.closeAllConnections?.()
     } catch {}
   }
 }
