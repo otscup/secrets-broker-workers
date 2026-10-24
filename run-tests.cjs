@@ -30,6 +30,7 @@ function mirror() {
   copy('public')
   copy('docs')
   copy('test-support')
+  copy('cli')
   copy('package.json')
   copy('package-lock.json')
   for (const name of fs.readdirSync(SRC)) {

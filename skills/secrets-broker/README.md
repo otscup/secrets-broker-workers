@@ -65,13 +65,19 @@ as above.
 Some agents only support local stdio MCP servers. Use the bundled bridge:
 
 ```bash
-node mcp-stdio/index.mjs
+npx -y @otscup/secrets-broker
 ```
 
+or, from a checkout, `node cli/index.mjs` (`mcp-stdio/index.mjs` still works and
+now forwards to the same code).
+
 It logs in to the broker with OAuth 2.1 (dynamic client registration + PKCE +
-browser consent), caches the token in
-`~/.secrets-broker/oauth.json`, then proxies stdio MCP requests to
-`https://sb.otscup.com/mcp`.
+browser consent) the first time, keeps the token in the operating system's store
+(macOS Keychain, Linux libsecret, Windows DPAPI — a `0600` file only as a
+fallback), then proxies stdio MCP requests to `https://sb.otscup.com/mcp`.
+When the broker answers with a pending approval, the bridge opens that signed
+link in your browser: the person who can approve is the person at the keyboard,
+not the agent.
 
 Environment:
 
@@ -79,15 +85,19 @@ Environment:
 |---|---|
 | `BROKER_URL` | default `https://sb.otscup.com` |
 | `BROKER_TOKEN` | optional static agent token; skips OAuth |
-| `BROKER_TOKEN_FILE` | token cache path |
+| `BROKER_TOKEN_FILE` | token cache path (fallback store) |
+| `BROKER_TOKEN_STORE` | `file` or `keychain`, to force a backend |
 | `BROKER_NO_BROWSER=1` | print the login URL instead of opening a browser |
 
 Codex-style config:
 
 ```toml
 [mcp_servers.secrets]
-command = "node"
-args = ["/absolute/path/to/mcp-stdio/index.mjs"]
+command = "npx"
+args = ["-y", "@otscup/secrets-broker"]
+
+[mcp_servers.secrets.env]
+BROKER_URL = "https://sb.otscup.com"
 ```
 
 The bridge writes logs to stderr only; stdout is JSON-RPC.

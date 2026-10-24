@@ -147,5 +147,7 @@ jobs:
         run: npm run test:globe-fanout
       - name: Item detail page (browser)
         run: npm run test:ui-item-page
+      - name: Local bridge (cli)
+        run: npm run test:cli
       - name: Full security suite (short path)
         run: npm run test:security:short

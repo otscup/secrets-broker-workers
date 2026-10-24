@@ -87,6 +87,39 @@ The Worker also exposes an MCP OAuth 2.1 authorization server:
 MCP clients that support OAuth can discover and use it; the old static Bearer
 token still works.
 
+### Clients that only speak stdio
+
+Agents like Codex, or anything without HTTP transport, can run the bundled
+bridge instead:
+
+```bash
+npx -y @otscup/secrets-broker          # same as: node cli/index.mjs
+```
+
+While the package is still `private`, run it from a checkout (`node cli/index.mjs`)
+or pack it locally: `npm pack` then `npx -y ./secrets-broker-workers-0.0.1.tgz`.
+
+It logs in once through your browser (OAuth 2.1 with PKCE and a loopback
+redirect), keeps the token in the operating system's own store — Keychain on
+macOS, libsecret on Linux, DPAPI on Windows, and only a `0600` file when none of
+those exist — and opens a pending approval link in your browser instead of
+leaving it in the agent's context.
+
+| Command | What it does |
+|---|---|
+| `secrets-broker` | speak MCP over stdio, for a client config |
+| `secrets-broker login` | log in now |
+| `secrets-broker status` | which broker, which store, is the token still valid |
+| `secrets-broker logout` | forget the stored token |
+
+| Variable | Meaning |
+|---|---|
+| `BROKER_URL` | broker base URL, default `https://sb.otscup.com` |
+| `BROKER_TOKEN` | static agent token; skips login and token storage |
+| `BROKER_TOKEN_FILE` | file fallback for the token cache |
+| `BROKER_TOKEN_STORE` | `file` or `keychain`, to force a backend |
+| `BROKER_NO_BROWSER=1` | print URLs instead of opening a browser |
+
 ## Agent skill
 
 A portable skill is included at [`skills/secrets-broker`](skills/secrets-broker).
