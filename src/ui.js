@@ -703,6 +703,13 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
     <div class="card"><h2>两步验证（TOTP）</h2><div id="totp-status" class="hint"></div><div id="totp-setup-box" class="hidden"><div class="hint">用验证器扫码/手动输入下面的密钥，然后输入 6 位验证码启用。</div><div class="secret" id="totp-secret"></div><label class="field">验证码</label><input id="totp-enable-code" inputmode="numeric" placeholder="6 位验证码"><div style="margin-top:10px"><button class="primary" id="totp-enable">启用两步验证</button></div></div><div class="row" style="margin-top:10px"><button id="totp-setup">生成/重新生成密钥</button><button class="danger hidden" id="totp-disable">关闭两步验证</button></div><div class="status" id="totp-message"></div></div>
 
     <div class="card"><h2>本地写入白名单</h2><p class="hint">允许「把某个条目写进本地文件」的目标路径，一行一个。以 <code>/</code> 结尾表示整个目录。</p><textarea id="mat-paths" rows="3" placeholder="/srv/app/secrets.env"></textarea><div class="row" style="margin-top:10px"><button class="primary" id="mat-save">保存白名单</button></div><div class="status" id="mat-status"></div></div>
+    <div class="card"><h2>行为安全</h2><p class="hint">每一项的默认值都是最保守的答案。单独给某个 Agent 或某个条目配过权限的，以那条配置为准。</p>
+      <div class="ios-field"><label>允许读取网页登录的明文<div class="hint">关闭时，网站密码只能被填充进指定站点，任何 Agent 都拿不到明文。</div></label><input type="checkbox" class="ios-switch" id="bs-web"></div>
+      <div class="ios-field"><label>允许读取未分类条目的明文<div class="hint">关闭时，没有分类的凭据即使被授权也只返回拒绝。</div></label><input type="checkbox" class="ios-switch" id="bs-unclassified"></div>
+      <div class="ios-field"><label>允许 Agent 代调任意主机<div class="hint">关闭时只能调条目里登记过的站点；开启后仍要逐次批准。</div></label><input type="checkbox" class="ios-switch" id="bs-target"></div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="bs-save">保存行为设置</button></div>
+      <div class="status" id="bs-status"></div>
+    </div>
     <div class="card"><h2>在线客户端与登录记录</h2><div class="hint">当前浏览器会话在解锁后保持在线；最近登录来自审计记录。</div><div id="sessions-box" style="margin-top:10px"></div><div id="login-history" style="margin-top:10px"></div></div>
   </section>
 
@@ -887,6 +894,13 @@ $('mat-save').onclick = async () => {
     await api('/api/settings', { method: 'POST', body: JSON.stringify({ materializePaths: paths }) })
     status('mat-status', '已保存 ' + paths.length + ' 条路径', 'ok')
   } catch (error) { status('mat-status', error.message, 'error') }
+}
+$('bs-save').onclick = async () => {
+  try {
+    status('bs-status', '保存中…')
+    await api('/api/settings', { method: 'POST', body: JSON.stringify({ webPlaintext: $('bs-web').checked, unclassifiedPlaintext: $('bs-unclassified').checked, useAnyTarget: $('bs-target').checked }) })
+    status('bs-status', '已保存', 'ok')
+  } catch (error) { status('bs-status', error.message, 'error') }
 }
 $('login').onclick = async () => { try { status('login-status', '登录中…'); await api('/api/login', { method: 'POST', body: JSON.stringify({ password: $('admin-password').value, code: $('totp-code').value }) }); $('admin-password').value = ''; $('totp-code').value = ''; show('totp-row', false); await boot() } catch (error) { if (error.status === 401 && error.data?.totpRequired) { show('totp-row', true); status('login-status', error.data.error || '请输入两步验证码', 'error') } else status('login-status', error.message, 'error') } }
 $('avatar').onclick = (event) => { event.stopPropagation(); show('account-menu', $('account-menu').classList.contains('hidden')) }
@@ -3081,8 +3095,11 @@ async function loadSecurity() {
     const data = await api('/api/security'); $('password-source').textContent = data.passwordSource === 'custom' ? '当前使用自定义密码（保存在 Durable Object）' : '当前使用环境变量 ADMIN_PASSWORD，修改后会保存自定义密码'
     $('totp-status').textContent = data.totpEnabled ? '已启用两步验证' : '未启用'
     $('totp-disable').classList.toggle('hidden', !data.totpEnabled)
-    const paths = await api('/api/settings').then((settings) => settings.materializePaths ?? []).catch(() => [])
-    $('mat-paths').value = paths.join('\n')
+    const settings = await api('/api/settings').catch(() => ({}))
+    $('mat-paths').value = (settings.materializePaths ?? []).join('\n')
+    $('bs-web').checked = settings.webPlaintext === true
+    $('bs-unclassified').checked = settings.unclassifiedPlaintext === true
+    $('bs-target').checked = settings.useAnyTarget === true
   } catch (error) { status('profile-status', error.message, 'error') }
 }
 async function changePassword() { try { await api('/api/security/password', { method: 'POST', body: JSON.stringify({ currentPassword: $('current-password').value, newPassword: $('new-password').value }) }); $('current-password').value = ''; $('new-password').value = ''; status('password-status', '密码已修改', 'ok'); await loadSecurity() } catch (error) { status('password-status', error.message, 'error') } }

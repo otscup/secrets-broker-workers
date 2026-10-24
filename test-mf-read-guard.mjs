@@ -221,15 +221,29 @@ async function classify(kind, origins, actions) {
   else fail('G7', 'plaintext leaked: ' + t.slice(0, 120))
 }
 
-// G8: an unclassified credential keeps the previous behaviour
+// G8: an unclassified credential is refused by default. The default flipped on
+// purpose when the behaviour switches landed: the old code handed plaintext to
+// anything that was not classified as a website login, which made
+// requireClassification:false the only setting that ever mattered.
 {
   await seedState()
   await putSession()
   await grantRead()
   const res = await mcp('get_secret', { name: ITEM })
   const t = toolText(res)
-  if (t.includes(PASSWORD)) pass('G8 an unclassified credential is still readable')
-  else fail('G8', 'the legacy behaviour changed: ' + t.slice(0, 100))
+  if (!t.includes(PASSWORD) && t.includes('unclassified-plaintext-off')) pass('G8 an unclassified credential is refused by default')
+  else fail('G8', 'expected the unclassified switch to refuse, got: ' + t.slice(0, 100))
+}
+
+// G8b: and the operator can turn it back on, which restores the old behaviour.
+{
+  await seedState({ settings: { requireClassification: false, notifications: {}, vaultEmail: ACCT, unclassifiedPlaintext: true } })
+  await putSession()
+  await grantRead()
+  const res = await mcp('get_secret', { name: ITEM })
+  const t = toolText(res)
+  if (t.includes(PASSWORD)) pass('G8b the switch restores the readable behaviour')
+  else fail('G8b', 'switch on but still refused: ' + t.slice(0, 100))
 }
 
 // G9: an unknown action is refused, never downgraded to secret.read
@@ -450,6 +464,40 @@ async function classify(kind, origins, actions) {
   const t = toolText(res)
   if (!t.includes(PASSWORD)) pass('G18 secret.use still runs and keeps the value out of the response')
   else fail('G18', 'the value leaked into the agent response: ' + t.slice(0, 120))
+}
+
+// G19: a website login is fill-only by default, even with a read capability.
+{
+  await seedState({ credentialKinds: { [ITEM_ID]: 'web' }, settings: { requireClassification: false, notifications: {}, vaultEmail: ACCT } })
+  await putSession()
+  await grantRead()
+  const t = toolText(await mcp('get_secret', { name: ITEM }))
+  if (!t.includes(PASSWORD) && t.includes('web-credential-is-fill-only')) pass('G19 a web credential refuses plaintext by default')
+  else fail('G19', 'expected the web switch to refuse, got: ' + t.slice(0, 120))
+}
+
+// G20: the operator can lift that, and then the same granted read returns it.
+{
+  await seedState({ credentialKinds: { [ITEM_ID]: 'web' }, settings: { requireClassification: false, webPlaintext: true, notifications: {}, vaultEmail: ACCT } })
+  await putSession()
+  await grantRead()
+  const t = toolText(await mcp('get_secret', { name: ITEM }))
+  if (t.includes(PASSWORD)) pass('G20 the web switch lets a granted read through')
+  else fail('G20', 'switch on but still refused: ' + t.slice(0, 120))
+}
+
+// G21: an explicit per-agent grant for the item outranks the global switch, so a
+// switch that somebody left off cannot silently remove a permission they gave.
+{
+  await seedState({ credentialKinds: { [ITEM_ID]: 'web' }, settings: { requireClassification: false, notifications: {}, vaultEmail: ACCT } })
+  await putSession()
+  await grantRead()
+  const st = await getState()
+  st.actionGrants = { [AGENT + '\u0000' + ITEM_ID]: { id: 'g1', subjectId: AGENT, accountId: ACCT, itemId: ITEM_ID, itemName: ITEM, actions: ['secret.read'], legacy: false, createdAt: '2024-01-01' } }
+  await stub.fetch('https://state/state', { method: 'PUT', body: JSON.stringify(st) })
+  const t = toolText(await mcp('get_secret', { name: ITEM }))
+  if (t.includes(PASSWORD)) pass('G21 a per-agent grant outranks the web switch')
+  else fail('G21', 'the explicit grant was ignored: ' + t.slice(0, 120))
 }
 
 await mf.dispose()

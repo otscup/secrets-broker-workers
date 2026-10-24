@@ -58,7 +58,7 @@ const CK = 'legacy-agent\u0000' + ITEM_ID + '\u0000secret.read'
 function state(agent, extra = {}) {
   return {
     agents: { 'legacy-agent': { hash, write: false, legacy: true, account: ACCT, ...agent } },
-    policies: {}, grants: {}, pending: {}, audit: [], settings: { requireClassification: false, notifications: {} },
+    policies: {}, grants: {}, pending: {}, audit: [], settings: { requireClassification: false, unclassifiedPlaintext: true, notifications: {} },
     itemGroups: {}, actionGrants: {}, usePolicies: {}, capabilities: {}, itemIds: { [ITEM]: ITEM_ID }, ...extra,
   }
 }

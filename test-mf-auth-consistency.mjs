@@ -57,7 +57,10 @@ async function seedState(extra = {}) {
     agents: { [AGENT]: { hash, allow: [ITEM], groups: [], allowAll: false, write: false, legacy: false, account: ACCT, createdAt: '2024-01-01' } },
     oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {},
     policies: {}, grants: {}, pending: {}, audit: [], itemGroups: {}, security: {},
-    settings: { requireClassification: false, notifications: {}, vaultEmail: ACCT },
+    // These cases are about revocation and capability binding, not about the
+    // behaviour switches, so the unclassified switch is on: the item under test
+    // is an ordinary unclassified credential.
+    settings: { requireClassification: false, unclassifiedPlaintext: true, notifications: {}, vaultEmail: ACCT },
     capabilities: {}, actionGrants: {}, usePolicies: {},
     itemIds: { [ITEM]: ITEM_ID },
     fillExecutors: previous.fillExecutors ?? {},

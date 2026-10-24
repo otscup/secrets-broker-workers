@@ -2368,12 +2368,16 @@ function fillPolicyFor(state, itemId, origin) {
 // The declarations still matter for one case, and only one: an item marked
 // no-approval, where nobody is asked. Then classification and the plaintext
 // policy are the only thing standing between an Agent and the value.
-function plaintextReadAllowed(state, itemId, { noApproval = false, granted = false } = {}) {
+function plaintextReadAllowed(state, itemId, { noApproval = false, granted = false, agent = '' } = {}) {
   // An id that could not be resolved is not an unclassified credential: it is an
   // unknown item, and an unknown item never gets plaintext.
   if (!itemId) return { ok: false, reason: 'item-id-unresolved' }
   const kind = credentialKind(state, itemId)
-  if (kind === 'web') return { ok: false, reason: 'web-credential-is-fill-only' }
+  const rules = behaviourSettings(state)
+  // A per-agent action grant for this item is the operator answering this exact
+  // question for this exact agent, so it outranks the global switch.
+  const explicit = agent ? actionGrantFor(state, agent, itemId) : null
+  const explicitRead = Boolean(explicit && (explicit.actions ?? []).includes('secret.read'))
   // An Agent that was granted this item may read it. The grant is the decision.
   // The account check is NOT bypassed: a capability is bound to the vault it was
   // issued for, and after an account switch the same capability must not read the
@@ -2386,6 +2390,10 @@ function plaintextReadAllowed(state, itemId, { noApproval = false, granted = fal
     if (boundAccount && current && String(boundAccount).toLowerCase() !== current) {
       return { ok: false, reason: 'account-mismatch' }
     }
+    // The switches only ever narrow what a grant can do; a grant never widens
+    // them, because the switch is the operator's answer for the whole vault.
+    if (kind === 'web' && !rules.webPlaintext && !noApproval && !explicitRead) return { ok: false, reason: 'web-credential-is-fill-only' }
+    if (!kind && !rules.unclassifiedPlaintext && !noApproval && !explicitRead) return { ok: false, reason: 'unclassified-plaintext-off' }
     return { ok: true, granted: true }
   }
   if (noApproval) {
@@ -2400,6 +2408,19 @@ function plaintextReadAllowed(state, itemId, { noApproval = false, granted = fal
 
 // Whether an unclassified credential must be refused. Defaults to true so a
 // fresh install is safe; the operator can turn it off in 设置.
+// One switch per question, because a single "mode" preset never fits: an
+// operator may want plaintext for one website credential and not the next.
+// Every default is the safe answer, and an explicit per-item or per-agent
+// choice always outranks the switch.
+function behaviourSettings(state) {
+  const settings = state?.settings ?? {}
+  return {
+    webPlaintext: settings.webPlaintext === true,
+    unclassifiedPlaintext: settings.unclassifiedPlaintext === true,
+    useAnyTarget: settings.useAnyTarget === true,
+  }
+}
+
 function requireClassification(state) {
   // Only consulted for a no-approval item, where nobody is asked. Off by default:
   // classification is metadata now, and an unclassified item being refused after
@@ -2953,10 +2974,15 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
     reason = 'awaiting-approval'
   }
   if (grantEligible && action === 'secret.use') {
-    const policy = usePolicyFor(state, itemId, accountId)
-    if (!policy) { ok = false; reason = 'no-use-policy'; grantEligible = false }
-    else if (!targetAllowed(policy, target)) { ok = false; reason = 'target-denied'; grantEligible = false }
-    else { ok = false; reason = 'awaiting-approval' }
+    // useAnyTarget is the operator saying "any host is fine"; the request still
+    // goes through the approval gate, it just skips the origin allowlist that
+    // would otherwise refuse it before anybody is asked.
+    if (behaviourSettings(state).useAnyTarget) { ok = false; reason = 'awaiting-approval' } else {
+      const policy = usePolicyFor(state, itemId, accountId)
+      if (!policy) { ok = false; reason = 'no-use-policy'; grantEligible = false }
+      else if (!targetAllowed(policy, target)) { ok = false; reason = 'target-denied'; grantEligible = false }
+      else { ok = false; reason = 'awaiting-approval' }
+    }
   }
   if (grantEligible && action === 'secret.fill') {
     // An action grant exists but the operator has not approved this fill yet.
@@ -3148,7 +3174,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
               if (action === 'secret.use') return { status: 'use-ok', itemId, url: (await readSecretFromRows(env, env.NODEWARDEN_DB, session, name))?.url ?? '' }
               // The auto rule just minted and consumed a capability, so this read
               // is granted: classification is not a second gate on it.
-              const guard = plaintextReadAllowed(fresh, itemId, { noApproval: fresh.policies?.[name]?.noApproval === true, granted: { subject: agentName, accountId: session.email } })
+              const guard = plaintextReadAllowed(fresh, itemId, { agent: agentName, noApproval: fresh.policies?.[name]?.noApproval === true, granted: { subject: agentName, accountId: session.email } })
               if (guard.ok) {
                 const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
                 if (result) {
@@ -3217,7 +3243,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   // credential never reaches the caller; an api credential needs an explicit
   // read policy. An id that cannot be resolved is refused, not treated as
   // unclassified.
-  const readGuard = plaintextReadAllowed(state, resolvedItemId, { noApproval: policy?.noApproval === true, granted: (decision.capability || legacyGrant) ? { subject: agentName, accountId: session.email } : null })
+  const readGuard = plaintextReadAllowed(state, resolvedItemId, { agent: agentName, noApproval: policy?.noApproval === true, granted: (decision.capability || legacyGrant) ? { subject: agentName, accountId: session.email } : null })
   if (!readGuard.ok) {
     await addAudit(env, { event: 'secret.read-deny', agent: agentName, name, reason: readGuard.reason })
     // The agent has the scope but not the plaintext door. Leaving this as a bare
@@ -5680,7 +5706,7 @@ export default {
           jwksUri: effectiveOidc?.jwksUri ?? '',
           configured: Boolean(effectiveOidc),
           secretConfigured: Boolean(state.settings?.oidc?.clientSecret || env.OIDC_CLIENT_SECRET),
-        }, vaultFolder: state.settings?.vaultFolder ?? '', vaultEmail: state.settings?.vaultEmail ?? '', siteName: state.settings?.siteName ?? 'Secrets Broker', requireClassification: requireClassification(state),
+        }, vaultFolder: state.settings?.vaultFolder ?? '', vaultEmail: state.settings?.vaultEmail ?? '', siteName: state.settings?.siteName ?? 'Secrets Broker', requireClassification: requireClassification(state), ...behaviourSettings(state),
         // Where the local bridge may write a credential. Absolute paths only;
         // a trailing separator means "anything under this directory".
         materializePaths: Array.isArray(state.settings?.materializePaths) ? state.settings.materializePaths : [],
@@ -5788,6 +5814,7 @@ export default {
           if (typeof body.siteName === 'string' && body.siteName.trim()) state.settings.siteName = body.siteName.trim().slice(0, 60)
           // Defaults to ON when absent, so nothing can turn it off by omission.
           if (typeof body.requireClassification === 'boolean') state.settings.requireClassification = body.requireClassification
+          for (const key of ['webPlaintext', 'unclassifiedPlaintext', 'useAnyTarget']) if (typeof body[key] === 'boolean') state.settings[key] = body[key]
           return state
         })
         await addAudit(env, { event: 'settings.update', scope: 'notifications-oidc' })
@@ -6227,7 +6254,7 @@ export default {
             // the real item id is known. A website login is refused here; only an
             // api credential with an explicit read policy passes, unless the item
             // is marked no-approval (the operator accepted the risk per item).
-            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[secretName]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
+            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { agent: resolved.name, noApproval: resolved.state.policies?.[secretName]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
             if (!readGuard.ok) {
               await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name: secretName, reason: readGuard.reason })
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
@@ -6253,7 +6280,7 @@ export default {
             // A website login is fill-only: its username/password/totp must never
             // reach the Agent. An api key needs an explicit read policy, unless
             // the item is marked no-approval.
-            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[secretName]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
+            const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { agent: resolved.name, noApproval: resolved.state.policies?.[secretName]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
             if (!readGuard.ok) {
               await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name: secretName, reason: readGuard.reason })
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
@@ -6311,7 +6338,7 @@ export default {
             if (!found) return result(text('not found', true))
             // Writing a password into a file is still a plaintext read, so it
             // passes the same guard: a website login stays fill-only.
-            const guard = plaintextReadAllowed(live, found.id || job.itemId, { noApproval: live.policies?.[job.name]?.noApproval === true, granted: { subject: resolved.name, accountId: session.email } })
+            const guard = plaintextReadAllowed(live, found.id || job.itemId, { agent: resolved.name, noApproval: live.policies?.[job.name]?.noApproval === true, granted: { subject: resolved.name, accountId: session.email } })
             if (!guard.ok) {
               await addAudit(env, { event: 'materialize.deny', agent: resolved.name, name: job.name, path: job.target?.path ?? '', reason: guard.reason })
               return result(text('plaintext read is not allowed for this credential: ' + guard.reason, true))
@@ -6633,7 +6660,7 @@ export default {
         // The item name here is `name`; `secretName` only exists in the /mcp
         // tools scope, and referring to it made every successful /secret call
         // throw a ReferenceError and answer 500.
-        const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[name]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
+        const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { agent: resolved.name, noApproval: resolved.state.policies?.[name]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
         if (!readGuard.ok) {
           await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name, reason: readGuard.reason })
           return fail('plaintext read is not allowed for this credential: ' + readGuard.reason, 403)

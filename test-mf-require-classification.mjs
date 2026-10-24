@@ -79,15 +79,26 @@ const grantAccess = async () => {
   return cookie
 }
 
-// C1: the switch defaults ON, and an unclassified credential is refused.
+// C1: the unclassified switch defaults OFF, so an unclassified credential is
+// refused even though a read capability exists. Used to be the other way round.
 {
   await seed()
   await putSession()
-  const cookie = await grantAccess()
+  await grantAccess()
   const text = await agentRead()
-  const refused = /unclassified|not allowed|denied/i.test(text) && !text.includes('super-plain-value')
-  if (!refused) pass('C1 an unclassified credential is readable once granted (classification is metadata now)')
+  const refused = /unclassified-plaintext-off/.test(text) && !text.includes('super-plain-value')
+  if (refused) pass('C1 an unclassified credential is refused by default')
   else fail('C1', text.slice(0, 200))
+}
+
+// C1b: and the operator can allow it, which is the old behaviour.
+{
+  await seed({ settings: { vaultEmail: ACCT, notifications: {}, unclassifiedPlaintext: true } })
+  await putSession()
+  await grantAccess()
+  const text = await agentRead()
+  if (text.includes('super-plain-value')) pass('C1b the switch restores plaintext for unclassified items')
+  else fail('C1b', text.slice(0, 200))
 }
 
 // C2: the state view tells the UI the switch is on.
@@ -106,7 +117,7 @@ const grantAccess = async () => {
   const cookie = await grantAccess()
   const saved = await mf.dispatchFetch('https://broker.test/api/settings', {
     method: 'POST', headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ requireClassification: false }),
+    body: JSON.stringify({ requireClassification: false, unclassifiedPlaintext: true }),
   }).then((r) => r.json())
   const text = await agentRead()
   if (saved.ok && text.includes('super-plain-value')) pass('C3 turning the switch off allows the read again')
@@ -119,7 +130,7 @@ const grantAccess = async () => {
   await putSession()
   const cookie = await adminLogin()
   await mf.dispatchFetch('https://broker.test/api/settings', {
-    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ requireClassification: false }),
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ requireClassification: false, unclassifiedPlaintext: true }),
   })
   const off = await (await mf.dispatchFetch('https://broker.test/api/settings', { headers: { cookie } })).json()
   await mf.dispatchFetch('https://broker.test/api/settings', {
@@ -166,7 +177,7 @@ const grantAccess = async () => {
 // C7: only an authorised admin can change the switch.
 {
   const res = await mf.dispatchFetch('https://broker.test/api/settings', {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requireClassification: false }),
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requireClassification: false, unclassifiedPlaintext: true }),
   })
   if (res.status === 401) pass('C7 only an admin can change the switch')
   else fail('C7', String(res.status))
