@@ -559,6 +559,8 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 .heat__legend{display:flex;align-items:center;gap:5px;margin-top:10px;font-size:11px;color:var(--label-2)}
 .heat__legend i{width:12px;height:12px;border-radius:3px;display:block}
 .heat__total{margin-left:auto}
+.aa-pick{width:34px;padding-right:0}
+.aa-pick .ios-check{display:inline-grid;vertical-align:middle}
 .health-item{display:flex;flex-direction:column}
 .health-row .health-chev{grid-column:4;grid-row:1/3;color:var(--label-3);font-size:15px;transition:transform .2s var(--ease)}
 .health-row.open .health-chev{transform:rotate(90deg)}
@@ -3118,15 +3120,17 @@ function agentActionFields(agent) {
   const held = ((app.data && app.data.agentActions) || []).filter((entry) => entry.agent === agent.name)
   const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持调用（http_request）', 'secret.fill': '网页填充' }
   const rows = held.length
-    ? held.map((entry) => '<tr><td><b>' + esc(entry.itemName) + '</b></td><td>' + esc(actionLabel[entry.action] || entry.action) + '</td>'
+    ? held.map((entry) => '<tr><td class="aa-pick"><input type="checkbox" class="ios-check" data-aa-pick data-item-id="' + esc(entry.itemId) + '" data-action="' + esc(entry.action) + '" data-item="' + esc(entry.itemName) + '" aria-label="选择 ' + esc(entry.itemName) + '"></td>'
+        + '<td><b>' + esc(entry.itemName) + '</b></td><td>' + esc(actionLabel[entry.action] || entry.action) + '</td>'
         + '<td class="hint">' + esc(entry.expiresAt ? new Date(entry.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</td>'
         + '<td><button class="small danger" data-revoke-action data-agent="' + esc(agent.name) + '" data-action="' + esc(entry.action) + '" data-item="' + esc(entry.itemName) + '">撤销</button></td></tr>').join('')
-    : '<tr><td colspan="4" class="hint">还没有任何动作授权。范围只决定能申请，真正能读/能填还要在这里授权。</td></tr>'
+    : '<tr><td colspan="5" class="hint">还没有任何动作授权。范围只决定能申请，真正能读/能填还要在这里授权。</td></tr>'
   return '<div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px">'
     + '<b>动作授权</b>'
     + '<div class="hint" style="margin:4px 0 8px">读取明文、代持调用、网页填充是三件独立的事，要分别给。'
     + '<b>网页填充</b>需要条目先分类为 web 并填好站点，否则给了也填不了。</div>'
-    + '<div class="table-wrap scroll-list" style="max-height:180px"><table><tr><th>条目</th><th>动作</th><th>到期</th><th></th></tr>' + rows + '</table></div>'
+    + '<div class="table-wrap scroll-list" style="max-height:180px"><table><tr><th class="aa-pick"><input type="checkbox" class="ios-check" id="aa-all" aria-label="全选"></th><th>条目</th><th>动作</th><th>到期</th><th></th></tr>' + rows + '</table></div>'
+    + (held.length ? '<div class="row" style="margin-top:8px;gap:8px;align-items:center"><button class="small danger" id="aa-revoke">撤销所选</button><span class="hint" id="aa-count">未选择</span></div>' : '')
     + '<div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap">'
     + '<select id="aa-item" style="flex:1;min-width:140px">' + knownItemNames().map((name) => '<option value="' + esc(name) + '">' + esc(name) + '</option>').join('') + '</select>'
     + '<select id="aa-action" style="flex:0 0 auto"><option value="secret.read">读取明文</option><option value="secret.use">代持调用</option><option value="secret.fill">网页填充</option></select>'
@@ -3176,6 +3180,30 @@ function wireAgentActions(agentName) {
       openAgentMenu(agentName)
     } catch (error) { status('aa-status', error.message, true) }
   }
+  const picks = () => [...document.querySelectorAll('[data-aa-pick]')]
+  const syncCount = () => {
+    const count = picks().filter((box) => box.checked).length
+    if ($('aa-count')) $('aa-count').textContent = count ? '已选 ' + count + ' 项' : '未选择'
+    if ($('aa-all')) $('aa-all').checked = count > 0 && count === picks().length
+  }
+  if ($('aa-all')) $('aa-all').onchange = () => { const all = $('aa-all').checked; for (const box of picks()) box.checked = all; syncCount() }
+  for (const box of picks()) box.onchange = syncCount
+  if ($('aa-revoke')) {
+    $('aa-revoke').onclick = async () => {
+      const chosen = picks().filter((box) => box.checked)
+      if (!chosen.length) return status('aa-status', '先勾选要撤销的授权', true)
+      const targets = chosen.filter((box) => box.dataset.itemId).map((box) => ({ itemId: box.dataset.itemId, action: box.dataset.action }))
+      if (!targets.length) return status('aa-status', '找不到条目 id，刷新页面后重试', true)
+      if (!confirm('撤销「' + agentName + '」的 ' + targets.length + ' 项授权？')) return
+      try {
+        const result = await api('/api/action-grants/revoke', { method: 'POST', body: JSON.stringify({ agent: agentName, targets }) })
+        await loadState()
+        toast('已撤销 ' + (result.count || targets.length) + ' 项')
+        openAgentMenu(agentName)
+      } catch (error) { status('aa-status', error.message, true) }
+    }
+  }
+  syncCount()
   for (const button of document.querySelectorAll('[data-revoke-action]')) {
     button.onclick = async () => {
       const item = button.dataset.item

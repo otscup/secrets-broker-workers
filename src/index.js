@@ -5096,36 +5096,60 @@ export default {
       const session = await getSession(env)
       if (!session) return fail('locked', 423)
       const body = await request.json().catch(() => ({}))
-      const itemId = String(body.itemId ?? '')
       const agentName = String(body.agent ?? '')
-      if (!itemId || !agentName) return fail('itemId and agent required', 400)
+      // One row in the dialog is one request; "revoke everything I ticked" is
+      // the same operation repeated, so it arrives as a list and is applied in
+      // a single state write instead of one round-trip per row.
+      const targets = Array.isArray(body.targets)
+        ? body.targets.slice(0, 200).map((entry) => ({ itemId: String(entry?.itemId ?? ''), action: String(entry?.action ?? '') }))
+        : [{ itemId: String(body.itemId ?? ''), action: String(body.action ?? '') }]
+      const wantedTargets = targets.filter((entry) => entry.itemId)
+      if (!wantedTargets.length || !agentName) return fail('itemId and agent required', 400)
+      for (const entry of wantedTargets) {
+        if (entry.action && !SECRET_ACTIONS.has(entry.action)) return fail('unknown action', 400)
+      }
       // Only revoke grants that belong to the currently unlocked vault account.
       // Soft-revoke: capabilities keep revokedAt/revokedBy for status display;
-      // the consume gate rejects them. Optional body.action limits to one action.
+      // the consume gate rejects them. An action on a target limits it to that
+      // one action.
       const loaded = await loadState(env)
-      const existing = loaded.actionGrants?.[actionGrantKey(agentName, itemId)]
-      if (!existing) return fail('grant not found', 404)
-      if (existing.accountId && String(existing.accountId).toLowerCase() !== String(session.email).toLowerCase()) return fail('grant belongs to another account', 403)
-      const onlyAction = String(body.action ?? '')
-      if (onlyAction && !SECRET_ACTIONS.has(onlyAction)) return fail('unknown action', 400)
-      const revokedActions = onlyAction ? [onlyAction] : (existing.actions ?? [])
+      for (const entry of wantedTargets) {
+        // A capability minted by the consent page has no actionGrants row of its
+        // own, so "grant not found" used to block the only button that could
+        // take it back. Either record is enough to revoke.
+        const existing = loaded.actionGrants?.[actionGrantKey(agentName, entry.itemId)]
+        const capKeys = (entry.action ? [entry.action] : [...SECRET_ACTIONS])
+          .map((action) => loaded.capabilities?.[capabilityKey(agentName, entry.itemId, action)])
+          .filter((cap) => cap && !cap.revokedAt)
+        if (!existing && !capKeys.length) return fail('grant not found', 404)
+        const owner = (existing || capKeys[0])?.accountId
+        if (owner && String(owner).toLowerCase() !== String(session.email).toLowerCase()) return fail('grant belongs to another account', 403)
+      }
+      const revoked = []
       await updateState(env, (state) => {
         const now = new Date().toISOString()
-        for (const action of revokedActions) {
-          const ckey = capabilityKey(agentName, itemId, action)
-          const cap = state.capabilities?.[ckey]
-          if (cap) { cap.revokedAt = now; cap.revokedBy = 'admin:' + session.email }
-        }
-        if (!onlyAction && state.actionGrants?.[actionGrantKey(agentName, itemId)]) delete state.actionGrants[actionGrantKey(agentName, itemId)]
-        else if (onlyAction && state.actionGrants?.[actionGrantKey(agentName, itemId)]) {
-          const rest = (state.actionGrants[actionGrantKey(agentName, itemId)].actions ?? []).filter((a) => a !== onlyAction)
-          if (rest.length) state.actionGrants[actionGrantKey(agentName, itemId)].actions = rest
-          else delete state.actionGrants[actionGrantKey(agentName, itemId)]
+        for (const entry of wantedTargets) {
+          const key = actionGrantKey(agentName, entry.itemId)
+          const grant = state.actionGrants?.[key]
+          const revokedActions = entry.action ? [entry.action] : (grant?.actions ?? [...SECRET_ACTIONS])
+          for (const action of revokedActions) {
+            const ckey = capabilityKey(agentName, entry.itemId, action)
+            const cap = state.capabilities?.[ckey]
+            if (cap) { cap.revokedAt = now; cap.revokedBy = 'admin:' + session.email }
+            revoked.push({ itemId: entry.itemId, action, found: Boolean(cap), ckey, n: Object.keys(state.capabilities || {}).length })
+          }
+          if (!grant) continue
+          if (!entry.action) delete state.actionGrants[key]
+          else {
+            const rest = (grant.actions ?? []).filter((a) => a !== entry.action)
+            if (rest.length) grant.actions = rest
+            else delete state.actionGrants[key]
+          }
         }
         return state
       })
-      await addAudit(env, { event: 'action-grant.revoke', agent: agentName, itemId, actions: revokedActions })
-      return json({ ok: true, revoked: revokedActions })
+      await addAudit(env, { event: 'action-grant.revoke', agent: agentName, itemId: wantedTargets.length === 1 ? wantedTargets[0].itemId : '', items: wantedTargets.length, actions: revoked.map((entry) => entry.action) })
+      return json({ ok: true, revoked, count: revoked.length })
     }
     // Admin-only read of geo events. Returns already-sanitised records from the
     // DO ring buffer; raw IPs, tokens and secret values are never stored, so
@@ -6227,11 +6251,20 @@ export default {
           if (entry.grantPlaintext === true) {
             next.plaintextReadPolicies[itemId] = { itemId, accountId: account, expiresAt: Date.now() + livedMs, updatedAt: nowIso() }
           }
+          // Without the plaintext tick the operator granted scope, not a read:
+          // the Agent may ask for this item, and the answer comes from the
+          // approval page. Minting the capability anyway is what made "I never
+          // allowed plaintext" and "everything was readable" both true.
+          if (entry.grantPlaintext !== true) continue
           const ckey = capabilityKey(agentName, itemId, 'secret.read')
           if (!next.capabilities[ckey]?.revokedAt) {
             next.capabilities[ckey] = {
               id: ckey, subjectId: agentName, accountId: account, itemId, itemName: name, action: 'secret.read',
               mode: 'preapproved', createdAt: nowIso(), createdBy: 'oauth-consent:' + account,
+              // The operator's own answer to "may this Agent read the value".
+              // Without the tick a grant only lets the Agent ask: reading
+              // still goes through the approval page.
+              plaintext: entry.grantPlaintext === true,
               expiresAt: Date.now() + (entry.grantPlaintext === true ? livedMs : 24 * 3600e3),
               maxUses: null, usedCount: 0,
               revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1,

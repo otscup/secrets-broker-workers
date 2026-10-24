@@ -133,12 +133,11 @@ const exchange = async (location) => {
 }
 
 // O1b: ticking scope WITHOUT the plaintext opt-in grants the ability to ask but
-// not to read, which is the safer default the operator asked for. The state is
-// reset first: O1 already wrote a policy for this agent and item.
+// not to read. The state is reset first: O1 already wrote a policy for this agent.
 {
   const reset = (await (await stub.fetch('https://do/state')).json()).state
   reset.oauthCodes = {}; reset.oauthTokens = {}; reset.oauthAgentProfiles = {}
-  reset.plaintextReadPolicies = {}; reset.capabilities = {}
+  reset.plaintextReadPolicies = {}; reset.capabilities = {}; reset.pending = {}
   await stub.fetch('https://do/state', { method: 'PUT', body: JSON.stringify(reset) })
   const res = await allowWith({ grant_items: API })
   const tokenBody = await exchange(res.headers.get('location') || '')
@@ -150,8 +149,10 @@ const exchange = async (location) => {
   const text = JSON.stringify(await r.json().catch(() => ({})))
   const state = (await (await stub.fetch('https://do/state')).json()).state
   const policy = (state.plaintextReadPolicies || {})[API_ID]
-  if (text.includes(SECRET_VALUE) && !policy) pass('O1b a consent grant reads without writing a plaintext policy')
-  else fail('O1b', JSON.stringify({ leaked: text.includes(SECRET_VALUE), policy }))
+  const caps = Object.values(state.capabilities || {}).filter((entry) => entry.itemId === API_ID)
+  const scopeOnly = (state.oauthAgentProfiles || {})[Object.keys(state.oauthAgentProfiles || {})[0]]
+  if (!text.includes(SECRET_VALUE) && !policy && caps.length === 0 && scopeOnly && (scopeOnly.allow || []).includes(API)) pass('O1b a consent grant without the plaintext tick grants scope, not a read')
+  else fail('O1b', JSON.stringify({ leaked: text.includes(SECRET_VALUE), policy: Boolean(policy), caps: caps.length, reply: text.slice(0, 120) }))
 }
 
 // O3: ticking a web credential grants no plaintext read policy for it.
@@ -277,6 +278,55 @@ await db.prepare('INSERT OR REPLACE INTO ciphers (id,user_id,type,folder_id,name
   const audited = (state.audit || []).some((entry) => entry.event === 'grant.prune-foreign')
   if (unlock.status === 200 && pruned && keptOwn && audited) pass('O9 unlocking drops grants bound to another vault and keeps its own')
   else fail('O9', JSON.stringify({ status: unlock.status, pruned, keptOwn, audited, caps }))
+}
+
+// O10: "allow every item" without the plaintext tick mints no read capability,
+// which is why the operator's earlier "I never allowed plaintext" and the
+// reads that still worked could not both be true.
+{
+  const current = (await (await stub.fetch('https://do/state')).json()).state
+  await stub.fetch('https://do/state', { method: 'PUT', body: JSON.stringify({
+    ...current, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {}, capabilities: {}, actionGrants: {}, plaintextReadPolicies: {}, pending: {},
+  }) })
+  const res = await allowWith({ grant_all: '1', grant_hours: '24' })
+  const tokenBody = await exchange(res.headers.get('location') || '')
+  const token = tokenBody.access_token || ''
+  const reply = JSON.stringify(await (await mf.dispatchFetch('https://broker.test/mcp', {
+    method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_secret', arguments: { name: API } } }),
+  })).json().catch(() => ({})))
+  const state = (await (await stub.fetch('https://do/state')).json()).state
+  const caps = Object.keys(state.capabilities || {})
+  const policies = Object.keys(state.plaintextReadPolicies || {})
+  const asksLater = /not allowed|没有|缺少/.test(reply) && !/PLAINTEXT/.test(reply)
+  if (!caps.length && !policies.length && asksLater) pass('O10 allowing every item without the plaintext tick mints no capability at all')
+  else fail('O10', JSON.stringify({ caps, policies, reply: reply.slice(0, 140) }))
+}
+
+// O11: revoking several rows takes one request and leaves one audit line.
+{
+  const current = (await (await stub.fetch('https://do/state')).json()).state
+  const grant = (itemId, name) => ({ id: 'ag:' + itemId, subjectId: 'multi', accountId: ACCT, itemId, itemName: name, actions: ['secret.read', 'secret.fill'] })
+  const capKey = (itemId, action) => 'multi' + String.fromCharCode(0) + itemId + String.fromCharCode(0) + action
+  const cap = (itemId, name, action) => ({ id: capKey(itemId, action), subjectId: 'multi', accountId: ACCT, itemId, itemName: name, action, mode: 'preapproved', createdAt: '2024-01-01', expiresAt: 0, maxUses: null, usedCount: 0, revokedAt: null })
+  const grantKey = (itemId) => 'multi' + String.fromCharCode(0) + itemId
+  const keys = { [grantKey(API_ID)]: grant(API_ID, API), [grantKey(GHOST_ID)]: grant(GHOST_ID, GHOST) }
+  const caps = {}
+  for (const [id, name] of [[API_ID, API], [GHOST_ID, GHOST]]) for (const action of ['secret.read', 'secret.fill']) caps[capKey(id, action)] = cap(id, name, action)
+  await stub.fetch('https://do/state', { method: 'PUT', body: JSON.stringify({ ...current, actionGrants: keys, capabilities: caps }) })
+  const res = await mf.dispatchFetch('https://broker.test/api/action-grants/revoke', {
+    method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ agent: 'multi', targets: [{ itemId: API_ID, action: 'secret.read' }, { itemId: GHOST_ID, action: 'secret.fill' }] }),
+  })
+  const body = await res.json()
+  const state = (await (await stub.fetch('https://do/state')).json()).state
+  const readGone = Boolean(state.capabilities[capKey(API_ID, 'secret.read')]?.revokedAt)
+  const fillGone = Boolean(state.capabilities[capKey(GHOST_ID, 'secret.fill')]?.revokedAt)
+  const otherKept = !state.capabilities[capKey(API_ID, 'secret.fill')]?.revokedAt
+  const grantsTrimmed = JSON.stringify(state.actionGrants[grantKey(API_ID)]?.actions) === '["secret.fill"]'
+    && JSON.stringify(state.actionGrants[grantKey(GHOST_ID)]?.actions) === '["secret.read"]'
+  if (res.status === 200 && body.count === 2 && readGone && fillGone && otherKept && grantsTrimmed) pass('O11 revoking several rows is one request and one state write')
+  else fail('O11', JSON.stringify({ capObj: state.capabilities[capKey(API_ID, 'secret.read')], keys: Object.keys(state.capabilities || {}), status: res.status, body, readGone, fillGone, otherKept, grantsTrimmed, grants: state.actionGrants }))
 }
 
 await mf.dispose()
