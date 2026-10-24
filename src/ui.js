@@ -532,18 +532,29 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 /* In the dashboard the globe grows into whatever height the row already has,
    instead of setting that height and pushing the row past the fold. */
 .dash #globe-card{display:flex;flex-direction:column;min-height:0}
+.globe-split{display:flex;align-items:center;gap:var(--sp-3);flex:1 1 auto;min-height:0;margin-top:var(--sp-2)}
+.dash #globe-card .globe-split .globe-box{width:140px;height:140px;flex:0 0 auto;min-height:0;margin:0}
+.globe-side{display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:0;flex:1 1 auto;height:140px}
+.seg--vert{flex-direction:column;gap:2px;width:92px;max-width:100%;flex:0 0 auto}
+.seg--vert button{width:100%;min-width:0;min-height:24px;padding:2px 8px;font-size:var(--text-sub);line-height:18px;text-align:center}
+.globe-side .globe-pause{width:92px;max-width:100%;margin:0;min-height:26px;padding:2px 8px;font-size:var(--text-sub)}
+.dash #globe-card>#globe-status{margin:var(--sp-2) 0 0;font-size:11px;line-height:1.3}
 .dash #globe-card .globe-box{flex:1 1 0;height:auto;min-height:0}
 .dash #globe-card{overflow:hidden}
 .dash .trend-box svg{height:130px}
 .dash{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3);align-items:stretch;margin-bottom:var(--sp-3)}
 .dash>.card,.dash>.ov-actions{margin:0;min-width:0}
 .dash #chart-box svg{display:block;width:100%;height:auto}
-.dash>.ov-actions{display:flex}
+.dash>.ov-actions{display:flex;flex-direction:column;gap:var(--sp-2)}
 .dash>.ov-actions>.card{flex:1 1 auto}
 .dash .span2{grid-column:span 2}
 .dash .span3{grid-column:span 3}
 .dash .trend-box{height:auto}
-.dash .rank-box{max-height:160px;overflow:auto}
+/* Five rows is what the card shows; the height is exactly what five compact
+   rows need, so the list ends where the card does instead of leaving a strip
+   of empty card (or scrolling the fifth row out of sight). */
+.dash .rank-box{max-height:206px;overflow:auto}
+.dash .rank{gap:10px}
 .dash #recent-box{max-height:260px;overflow-y:auto}
 @media(max-width:900px){.dash{grid-template-columns:1fr}.dash .span2,.dash .span3{grid-column:auto}}
 /* Restored: dbdacd6 dropped this rule but three wrappers still use the class,
@@ -600,21 +611,24 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
     <div class="dash">
       <div class="card span2"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
       <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="rank-box"></div></div>
-      <div id="ov-actions" class="ov-actions"></div>
+      <div id="ov-actions" class="card ov-actions"></div>
       <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
       <div class="card" id="globe-card">
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
           <h2 style="margin:0">Agent Live Globe</h2>
           <span class="hint globe-note" title="IP 估算位置，不代表实际物理位置">IP 估算</span>
         </div>
-        <div id="globe-box" class="globe-box">
-          <button class="small globe-expand" id="globe-full" title="放大地球">⤢</button>
-          <div class="globe-empty" id="globe-empty"></div>
+        <div class="globe-split">
+          <div id="globe-box" class="globe-box">
+            <button class="small globe-expand" id="globe-full" title="放大地球">⤢</button>
+            <div class="globe-empty" id="globe-empty"></div>
+          </div>
+          <div class="globe-side">
+            <div class="seg seg--vert" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button></div>
+            <button class="globe-pause" id="globe-pause" title="暂停动画">⏸</button>
+          </div>
         </div>
-        <div class="row" style="justify-content:space-between;align-items:center;margin-top:8px;gap:8px">
-          <div class="seg" id="globe-range"><button data-grange="1h">1h</button><button data-grange="24h" class="on">24h</button><button data-grange="7d">7d</button><button class="small globe-pause" id="globe-pause" title="暂停动画">⏸</button></div>
-        </div>
-        <div class="hint" id="globe-status" style="margin-top:4px"></div>
+        <div class="hint" id="globe-status"></div>
       </div>
       <div class="card span3"><h2>最近活动</h2><div id="recent-box" class="recent"></div></div>
     <div id="chart-tip" class="chart-tip"></div>
@@ -806,7 +820,6 @@ async function api(path, options = {}) {
   }
   return body
 }
-const DEFAULT_LOGO = '/logo.png'
 let app = { me: null, data: { agents: [], policies: {}, grants: [], pending: [], audit: [] }, items: [], stats: null, range: '24h', token: '' }
 const selectedItems = new Set()
 // Selection is an explicit mode: iOS lists do not show checkboxes until you ask
@@ -829,7 +842,9 @@ function toast(text, error = false) {
   if (statusEl && !$('view-items').classList.contains('hidden')) status(statusEl.id, text, error ? 'error' : 'ok')
 }
 
-function renderAvatar(name, avatarUrl) { const el = $('avatar'); if (!el) return; const url = avatarUrl || DEFAULT_LOGO; if (url) { el.innerHTML = '<img src="' + esc(url) + '" alt="">'; el.firstChild.onerror = () => { el.textContent = String(name || 'SB').slice(0, 2).toUpperCase() } } else el.textContent = String(name || 'SB').slice(0, 2).toUpperCase() }
+function renderAvatar(name, avatarUrl) { const el = $('avatar'); if (!el) return; el.textContent = String(name || 'SB').trim().slice(0, 2).toUpperCase(); // Initials are the default. A picture is only used when the profile names one,
+  // so the header never shows the site logo twice.
+  const url = avatarUrl; if (!url) return; const img = document.createElement('img'); img.alt = ''; img.decoding = 'async'; img.onerror = () => img.remove(); el.appendChild(img); img.src = url }
 async function boot() { try { app.me = await api('/api/me'); show('login-card', false); $('who').textContent = app.me.name || String(app.me.email || '').split('@')[0] || ''; $('site-title').textContent = app.me.siteName || 'Secrets Broker'; renderAvatar(app.me.name || app.me.email, app.me.avatarUrl); show('lock', true); if (app.me.unlocked) { show('dashboard', true); show('unlock-card', false); await loadAll(); if (new URLSearchParams(location.search).get('view') === 'profile') { document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-profile')); document.querySelectorAll('#nav button').forEach((button) => button.classList.remove('active')); await loadProfile(); history.replaceState({}, '', '/') } } else { show('dashboard', false); show('unlock-card', true) } } catch { show('login-card', true); show('dashboard', false); show('unlock-card', false); loadOidcLogin() } }
 $('page-refresh').onclick = refreshCurrent
 $('site-title').onclick = () => { location.href = '/' }
@@ -1638,7 +1653,7 @@ function renderOverviewActions() {
   if (expiring) rows.push([expiring + ' 条授权 24 小时内到期', '到期后 Agent 要重新申请', '去续期', 'grants', ''])
   if (denied) rows.push([denied + ' 个 Agent 被拦下过', '点开能看原因，确认后再放行', '查看', 'items', 'bad'])
   if (!rows.length) { box.innerHTML = ''; return }
-  box.innerHTML = '<div class="card"><h2>需要你处理</h2>' + rows.map((row) => '<div class="ios-field ov-action"><div><b>' + row[0] + '</b><div class="ios-sub">' + row[1] + '</div></div><button class="ios-chip ' + row[4] + '" data-goto="' + row[3] + '">' + row[2] + '</button></div>').join('') + '</div>'
+  box.innerHTML = '<h2>需要你处理</h2>' + rows.map((row) => '<div class="ios-field ov-action"><div><b>' + row[0] + '</b><div class="ios-sub">' + row[1] + '</div></div><button class="ios-chip ' + row[4] + '" data-goto="' + row[3] + '">' + row[2] + '</button></div>').join('') + '</div>'
   box.querySelectorAll('[data-goto]').forEach((button) => { button.onclick = () => { const nav = document.querySelector('#nav button[data-view="' + button.dataset.goto + '"]'); if (nav) nav.click() } })
 }
 function renderStats() {
@@ -1679,7 +1694,8 @@ function renderStats() {
   if (prevBtn) prevBtn.onclick = () => { legendPage = Math.max(0, legendPage - 1); renderStats() }
   if (nextBtn) nextBtn.onclick = () => { legendPage = legendPage + 1; renderStats() }
   $('donut-box').querySelectorAll('[data-donut],[data-legend]').forEach((el) => { el.addEventListener('click', () => selectDonut(el)); el.addEventListener('mouseenter', (event) => { if (el.dataset.count) showTip(event, el.dataset.agent, el.dataset.count) }); el.addEventListener('mouseleave', hideTip) })
-  const top = stats.topItems || []; const totalTop = top.reduce((sum, item) => sum + item.count, 0) || 1; const maxTop = Math.max(1, ...top.map((item) => item.count))
+  // Five is what the card has room for; the server sends up to twenty.
+  const top = (stats.topItems || []).slice(0, 5); const totalTop = top.reduce((sum, item) => sum + item.count, 0) || 1; const maxTop = Math.max(1, ...top.map((item) => item.count))
   $('top-box').innerHTML = top.length ? '<div class="rank">' + top.map((item, index) => { const pct = Math.max(4, Math.round(item.count / maxTop * 100)); return '<div class="rank__row"><div class="rank__head"><span class="rank__name">' + (index + 1) + '. ' + esc(item.name) + '</span><span class="rank__count">' + item.count + ' 次</span></div><div class="rank__track"><div class="rank__fill" style="width:' + pct + '%"></div></div></div>' }).join('') + '</div>' : '<div class="hint">这个区间还没有读取记录。</div>'
   $('updated').textContent = '最后更新 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false })
 }

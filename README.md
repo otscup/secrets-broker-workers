@@ -120,6 +120,30 @@ leaving it in the agent's context.
 | `BROKER_TOKEN_STORE` | `file` or `keychain`, to force a backend |
 | `BROKER_NO_BROWSER=1` | print URLs instead of opening a browser |
 
+### Three ways to connect an agent
+
+Pick by what the client can do, not by what is easiest to paste:
+
+| The client… | Hand it | What happens |
+|---|---|---|
+| speaks MCP over HTTP **and** OAuth | just the URL: `{"url": "https://your-worker.example/mcp"}` | the client registers itself, you approve once in the browser, it stores its own token (24h) |
+| speaks MCP over HTTP, **no** OAuth | `{"url": "…/mcp", "headers": {"Authorization": "Bearer <agent token>"}}` | token created in the panel under **Agents**; revocable there, expires when you say |
+| only speaks stdio (Codex, older Hermes, most CLIs) | `{"command": "npx", "args": ["-y", "@otscup/secrets-broker"], "env": {"BROKER_URL": "https://your-worker.example"}}` | the bridge logs in through your browser once, keeps the token in the OS store, and opens approval links itself |
+
+The three end at the same place: one agent identity, one set of scopes, the same
+audit trail. What differs is only who stores the token.
+
+Rules that apply to all three:
+
+- an agent only sees the items you put in scope for it; everything else is a 403
+  and an audit line, not a hint that the item exists;
+- `get_secret` needs a read grant; an approval for it is one read, not a
+  standing right, unless the item is marked no-approval;
+- website logins are fill-only. Neither `get_secret` nor `materialize` will hand
+  one over, because writing it to disk is a plaintext read;
+- revoking the agent (or the grant) takes effect on the next call; there is no
+  cached permission.
+
 ## Agent skill
 
 A portable skill is included at [`skills/secrets-broker`](skills/secrets-broker).
