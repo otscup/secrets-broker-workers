@@ -162,11 +162,16 @@ Tools:
   allowlisted (`设置 → 安全 → 本地写入白名单`); an approval records a one-shot job,
   not a standing read grant;
 - `materialize_redeem` — redeems that job once; the local bridge writes the
-  `KEY=value` line (0600) and the broker only records `secret.materialize`.
+  `KEY=value` line (0600) and the broker only records `secret.materialize`. It
+  hands the value over MCP, so it also needs `MCP_ALLOW_READ=1`; with reads off,
+  this path cannot hand plaintext out.
 
 `materialize` refuses a path that is not on the allowlist, and re-checks the
 list at redemption, so removing a path also revokes approvals made while it was
-listed. A website login stays fill-only and cannot be materialised.
+listed. Both checks compare the path after collapsing `.` and `..`, because the
+bridge writes with `path.resolve()` — a raw prefix test would let
+`/srv/app/../../etc/passwd` keep an allowlisted `/srv/app/` prefix. A website
+login stays fill-only and cannot be materialised.
 
 Example Codex/HTTP MCP config:
 

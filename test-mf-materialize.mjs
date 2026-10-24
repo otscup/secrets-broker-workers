@@ -23,25 +23,27 @@ const WEB_ITEM = 'web-item'
 const WEB_ITEM_ID = 'item-web'
 
 const vars = { SESSION_KEK, MCP_ALLOW_READ: '1', ADMIN_PASSWORD: 'p' }
-const mf = new Miniflare({
-  modules: true,
-  modulesRules: [{ type: 'ESModule', include: ['**/*.js'] }],
-  compatibilityDate: '2024-01-01',
-  scriptPath: 'src/index.js',
-  durableObjects: { BROKER_STATE: 'BrokerState' },
-  vars,
-  bindings: vars,
-  serviceBindings: { NODEWARDEN: async () => new Response('{}') },
-  d1Databases: { NODEWARDEN_DB: 'mat-db' },
-})
 
-const db = await mf.getD1Database('NODEWARDEN_DB')
-for (const sql of [
-  `CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, key TEXT, kdf_type INTEGER, kdf_iterations INTEGER, created_at TEXT)`,
-  `CREATE TABLE IF NOT EXISTS ciphers (id TEXT PRIMARY KEY, user_id TEXT, type INTEGER, folder_id TEXT, name TEXT, notes TEXT, data TEXT, key TEXT, favorite INTEGER, reprompt INTEGER, created_at TEXT, updated_at TEXT, deleted_at TEXT, archived_at TEXT, organization_id TEXT)`,
-  `INSERT OR REPLACE INTO users (id, email, key, kdf_type, kdf_iterations, created_at) VALUES ('u1', 'vault@example.invalid', 'k', 0, 600000, '2024-01-01')`,
-]) await db.exec(sql)
-{
+// M13 needs the Worker with reads switched off, and Miniflare cannot change vars
+// after construction, so the whole harness is a factory.
+async function boot(extra) {
+  const mf = new Miniflare({
+    modules: true,
+    modulesRules: [{ type: 'ESModule', include: ['**/*.js'] }],
+    compatibilityDate: '2024-01-01',
+    scriptPath: 'src/index.js',
+    durableObjects: { BROKER_STATE: 'BrokerState' },
+    vars: { ...vars, ...extra },
+    bindings: { ...vars, ...extra },
+    serviceBindings: { NODEWARDEN: async () => new Response('{}') },
+    d1Databases: { NODEWARDEN_DB: 'mat-db' },
+  })
+  const db = await mf.getD1Database('NODEWARDEN_DB')
+  for (const sql of [
+    `CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, key TEXT, kdf_type INTEGER, kdf_iterations INTEGER, created_at TEXT)`,
+    `CREATE TABLE IF NOT EXISTS ciphers (id TEXT PRIMARY KEY, user_id TEXT, type INTEGER, folder_id TEXT, name TEXT, notes TEXT, data TEXT, key TEXT, favorite INTEGER, reprompt INTEGER, created_at TEXT, updated_at TEXT, deleted_at TEXT, archived_at TEXT, organization_id TEXT)`,
+    `INSERT OR REPLACE INTO users (id, email, key, kdf_type, kdf_iterations, created_at) VALUES ('u1', 'vault@example.invalid', 'k', 0, 600000, '2024-01-01')`,
+  ]) await db.exec(sql)
   const E = Buffer.alloc(32, 1), M = Buffer.alloc(32, 2)
   const rows = [
     { id: ITEM_ID, name: ITEM, password: VALUE },
@@ -53,13 +55,16 @@ for (const sql of [
       .bind(row.id, 'u1', 1, null, await encryptStr(row.name, E, M), await encryptStr('', E, M), JSON.stringify(data), null, 0, 0, '2024-01-01', '2024-01-01', null)
       .run()
   }
+  const ns = await mf.getDurableObjectNamespace('BROKER_STATE')
+  const stub = ns.get(ns.idFromName('global'))
+  return { mf, stub }
 }
+
+const { mf, stub } = await boot({})
 
 const sha = async (text) => Buffer.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))).toString('base64')
 const hash = await sha(AUTH)
 const otherHash = await sha(OTHER_AUTH)
-const ns = await mf.getDurableObjectNamespace('BROKER_STATE')
-const stub = ns.get(ns.idFromName('global'))
 const getState = () => stub.fetch('https://state/state').then((r) => r.json()).then((p) => p.state)
 const putState = (s) => stub.fetch('https://state/state', { method: 'PUT', body: JSON.stringify(s) })
 
@@ -73,8 +78,8 @@ function agent(name, tokenHash) {
   return { hash: tokenHash, allow: [ITEM, WEB_ITEM], groups: [], allowAll: false, write: false, legacy: false, account: ACCT, createdAt: '2024-01-01' }
 }
 
-async function seedState({ allowlist = [TARGET] } = {}) {
-  const s = {
+function stateOf({ allowlist = [TARGET] } = {}) {
+  return {
     agents: { [AGENT]: agent(AGENT, hash), [OTHER_AGENT]: agent(OTHER_AGENT, otherHash) },
     oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {},
     policies: {}, grants: {}, pending: {}, audit: [], itemGroups: {}, security: {},
@@ -85,7 +90,10 @@ async function seedState({ allowlist = [TARGET] } = {}) {
     plaintextReadPolicies: { [ITEM_ID]: { account: ACCT, createdAt: '2024-01-01', expiresAt: Date.now() + 3600e3 } },
     adminSessions: {}, fillRateCounters: {}, materializeJobs: {},
   }
-  await putState(s)
+}
+
+async function seedState(options) {
+  await putState(stateOf(options))
 }
 
 const mcp = (tool, args, token = AUTH) => mf.dispatchFetch('https://broker.test/mcp', {
@@ -225,6 +233,76 @@ let jobId = ''
   const state = await getState()
   if (!state.materializeJobs?.[id]) pass('M9 a denial creates no job')
   else fail('M9', JSON.stringify(state.materializeJobs))
+}
+
+// ── M10 ".." cannot climb out of an allowlisted directory ────────────────
+// The bridge writes with path.resolve(), which collapses ".."; comparing the
+// raw string let "/srv/app/../../etc/passwd" keep the allowlisted "/srv/app/"
+// prefix and land outside it.
+{
+  await seedState({ allowlist: ['/srv/app/'] })
+  await putSession()
+  const before = await getState()
+  const escaped = await mcp('materialize', { name: ITEM, path: '/srv/app/../../../etc/passwd', key: 'K5' })
+  const after = await getState()
+  const queued = Object.keys(after.pending ?? {}).length - Object.keys(before.pending ?? {}).length
+  if (toolError(escaped) && queued === 0) pass('M10 a traversal path is refused and queues nothing')
+  else fail('M10', JSON.stringify({ text: toolText(escaped), queued }))
+}
+
+// ── M11 a normalised path still works, and stores the collapsed form ─────
+// The fix must not simply refuse everything that contains "..": a path that
+// stays inside the directory is legitimate and the stored target has to be the
+// collapsed one, because that is the file the bridge opens.
+{
+  await seedState({ allowlist: ['/srv/app/'] })
+  await putSession()
+  const ok = await mcp('materialize', { name: ITEM, path: '/srv/app/sub/../secrets.env', key: 'K6' })
+  const state = await getState()
+  const id = JSON.parse(toolText(ok)).id
+  const stored = state.pending?.[id]?.target?.path
+  if (!toolError(ok) && stored === '/srv/app/secrets.env') pass('M11 a traversal that stays inside is stored collapsed')
+  else fail('M11', JSON.stringify({ text: toolText(ok), stored }))
+}
+
+// ── M12 a directory entry does not match a sibling with the same prefix ──
+{
+  await seedState({ allowlist: ['/srv/app/'] })
+  await putSession()
+  const sibling = await mcp('materialize', { name: ITEM, path: '/srv/app-evil/x', key: 'K7' })
+  if (toolError(sibling)) pass('M12 "/srv/app-evil/x" is not inside "/srv/app/"')
+  else fail('M12', toolText(sibling))
+}
+
+// ── M13 MCP_ALLOW_READ=0 keeps the plaintext in the broker ───────────────
+// Redeeming hands the value over MCP, so it is a read. A deployment that turned
+// reads off must not regain them through materialize.
+{
+  const off = await boot({ MCP_ALLOW_READ: '0' })
+  const offStub = off.stub
+  const offMcp = (tool, args) => off.mf.dispatchFetch('https://broker.test/mcp', {
+    method: 'POST',
+    headers: { authorization: 'Bearer ' + AUTH, 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } }),
+  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }))
+  await offStub.fetch('https://state/state', { method: 'PUT', body: JSON.stringify(stateOf()) })
+  const plain = JSON.stringify({ email: ACCT, symEncKey: Buffer.alloc(32, 1).toString('base64'), symMacKey: Buffer.alloc(32, 2).toString('base64'), expiresAt: 0 })
+  const wrapped = await wrapWithKek(new TextEncoder().encode(plain), Buffer.from(SESSION_KEK, 'base64'))
+  await offStub.fetch('https://state/session', { method: 'PUT', body: JSON.stringify({ wrapped, expiresAt: 0 }) })
+  const res = await offMcp('materialize', { name: ITEM, path: TARGET, key: 'K8' })
+  const id = JSON.parse(toolText(res)).id
+  const login = await off.mf.dispatchFetch('https://broker.test/api/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'p' }),
+  })
+  const cookie = String(login.headers.get('set-cookie') || '').split(';')[0]
+  await off.mf.dispatchFetch('https://broker.test/api/pending/decide', {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ id, decision: 'once' }),
+  })
+  const redeemed = await offMcp('materialize_redeem', { id })
+  const body = toolText(redeemed)
+  if (toolError(redeemed) && /MCP_ALLOW_READ/.test(body) && !body.includes(VALUE)) pass('M13 redeeming is refused when reads are disabled')
+  else fail('M13', JSON.stringify({ text: body, isError: toolError(redeemed) }))
+  await off.mf.dispose()
 }
 
 await mf.dispose()

@@ -1647,21 +1647,52 @@ const APPROVAL_DURATIONS = { once: 0, '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86
 const MATERIALIZE_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
 const MATERIALIZE_ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\/)/
 
+// Collapse "." and ".." before the allowlist is consulted, so the path that is
+// checked is the path that gets written. The bridge calls path.resolve(), which
+// collapses too; comparing the raw string let "/srv/app/../../etc/passwd" keep
+// an allowlisted "/srv/app/" prefix and land outside it. Climbing above the root
+// yields null and is refused, never clamped.
+function normalizeMaterializePath(raw) {
+  const text = String(raw).split('\\').join('/')
+  const drive = /^[A-Za-z]:/.exec(text)?.[0] ?? ''
+  const rest = text.slice(drive.length)
+  const parts = []
+  for (const segment of rest.split('/')) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') {
+      if (!parts.length) return null
+      parts.pop()
+      continue
+    }
+    parts.push(segment)
+  }
+  if (!parts.length) return null
+  return drive.toLowerCase() + (rest.startsWith('/') ? '/' : '') + parts.join('/')
+}
+
 function materializeTarget(state, raw) {
   const targetPath = typeof raw?.path === 'string' ? raw.path.trim() : ''
   const key = typeof raw?.key === 'string' ? raw.key.trim() : ''
   if (!targetPath || targetPath.length > 512 || targetPath.includes('\u0000')) return null
   if (!MATERIALIZE_ABSOLUTE.test(targetPath)) return null
   if (!MATERIALIZE_KEY.test(key)) return null
+  const normalized = normalizeMaterializePath(targetPath)
+  if (!normalized) return null
   const allowed = Array.isArray(state?.settings?.materializePaths) ? state.settings.materializePaths : []
   const hit = allowed.some((entry) => {
     const prefix = typeof entry === 'string' ? entry : entry?.path
     if (typeof prefix !== 'string' || !prefix) return false
     // A trailing separator means "anything under this directory"; otherwise the
-    // entry names one exact file.
-    return prefix.endsWith('/') || prefix.endsWith('\\') ? targetPath.startsWith(prefix) : targetPath === prefix
+    // entry names one exact file. The prefix is normalised the same way, so
+    // "/srv/app/../private/" compares as "/srv/private" in both places.
+    const isDirectory = /[\\/]$/.test(prefix)
+    const normalizedPrefix = normalizeMaterializePath(prefix)
+    if (!normalizedPrefix) return false
+    return isDirectory ? normalized === normalizedPrefix || normalized.startsWith(normalizedPrefix + '/') : normalized === normalizedPrefix
   })
-  return hit ? { path: targetPath, key } : null
+  // The job stores the normalised path, so the file the bridge writes is exactly
+  // the path that was checked here.
+  return hit ? { path: normalized, key } : null
 }
 
 async function decidePending(env, id, decision, source = 'web') {
@@ -6246,6 +6277,10 @@ export default {
             return result(text(JSON.stringify({ status: 'approved', path: dest.path, key: dest.key })))
           }
           if (name === 'materialize_redeem') {
+            // Redeeming hands the plaintext to the bridge over MCP, so it is a
+            // read: the switch that says "no tool returns a value" must gate it
+            // too, or materialize becomes a way around that switch.
+            if (env.MCP_ALLOW_READ !== '1') return result(text('materialize_redeem is disabled; set MCP_ALLOW_READ=1 to expose values', true))
             const jobId = String(args.id ?? '').trim()
             const live = await loadState(env)
             const job = live.materializeJobs?.[jobId]
