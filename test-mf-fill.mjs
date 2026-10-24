@@ -129,11 +129,31 @@ const EXEC_SECRET = execReg.body.secret ?? ''
 }
 
 // ── F3: the exact origin is accepted ─────────────────────────────────────
+// The branch used to answer to 'secret.fill' only, and tools/list never offered
+// that name, so no MCP client could reach it: an agent had no advertised way to
+// ask for a fill. It is now advertised as request_fill and still answers to the
+// old name.
+{
+  const list = await mf.dispatchFetch('https://broker.test/mcp', {
+    method: 'POST',
+    headers: { authorization: 'Bearer ' + AUTH, 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+  }).then((r) => r.json())
+  const names = (list.result?.tools ?? []).map((tool) => tool.name)
+  if (names.includes('request_fill')) pass('F3a tools/list advertises request_fill')
+  else fail('F3a', JSON.stringify(names))
+}
+{
+  const res = await mcp('request_fill', { name: ITEM, origin: 'https://example.com' })
+  const text = toolText(res)
+  if (text.includes('taskId')) pass('F3 an advertised request_fill for the exact origin is authorized')
+  else fail('F3', text.slice(0, 200))
+}
 {
   const res = await mcp('secret.fill', { name: ITEM, origin: 'https://example.com' })
   const text = toolText(res)
-  if (text.includes('taskId')) pass('F3 a fill for the exact origin is authorized')
-  else fail('F3', text.slice(0, 200))
+  if (text.includes('taskId')) pass('F3b the old secret.fill name still works')
+  else fail('F3b', text.slice(0, 200))
 }
 
 // ── F4: near-miss origins are refused ────────────────────────────────────

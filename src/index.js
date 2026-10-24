@@ -6018,6 +6018,7 @@ export default {
           { name: 'request_access', description: 'Request approval to read a secret by name. Returns an approval URL if pending.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'get_secret', description: 'Read a secret value after approval. Disabled unless MCP_ALLOW_READ=1.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'get_credential', description: 'Read username, password and TOTP for a login item after approval.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
+          { name: 'request_fill', description: 'Ask a browser executor to fill a stored website login into an allowed origin. The agent never receives the value; it learns whether the request was approved and, if so, the task id.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Item name' }, origin: { type: 'string', description: 'Exact https origin the credential may be filled into' }, action: { type: 'string', description: 'Fill action, currently login', enum: ['login'] } }, required: ['name', 'origin'], additionalProperties: false } },
           { name: 'request_credential', description: 'Create a secure one-time link for a human to fill in a missing credential; the broker stores it and grants this agent access.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Suggested item name' }, description: { type: 'string', description: 'What the credential is for' } }, required: ['name'] } },
           { name: 'http_request', description: 'Make an HTTPS request with a secret injected server-side. Method allowlist (default GET/POST, extend via HTTP_ALLOW_METHODS; max 16 chars). Path prefix allowlist via HTTP_ALLOW_PATHS (empty = no path restriction). headerName allowlist: Authorization, X-Api-Key, Api-Key, X-Auth-Token (case-insensitive); authPrefix max 32 chars, no CR/LF. Custom headers sanitized (name /^[A-Za-z0-9-]+$/, value <=4KB, max 20; host/content-length/connection/cookie/set-cookie/authorization and other sensitive hops filtered). Body <=64KB as string; GET/HEAD must not send body. Only https, no userinfo, default port 443 or HTTP_ALLOWED_PORTS. The secret is never returned to the caller.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' }, url: { type: 'string', description: 'HTTPS target URL (no userinfo; path must match HTTP_ALLOW_PATHS prefixes when set; port 443 or HTTP_ALLOWED_PORTS)' }, method: { type: 'string', description: 'HTTP method, uppercased (default GET; non-GET/POST requires HTTP_ALLOW_METHODS; max 16 chars)' }, headers: { type: 'object', description: 'Extra headers (sanitized: name /^[A-Za-z0-9-]+$/, value <=4KB, max 20; sensitive/hop headers filtered and cannot override the injected secret header)' }, body: { type: 'string', description: 'Request body as string (<=64KB; GET/HEAD must not include body)' }, headerName: { type: 'string', description: 'Header to inject the secret into (allowlist: Authorization, X-Api-Key, Api-Key, X-Auth-Token; default Authorization)' }, authPrefix: { type: 'string', description: 'Prefix before the secret (default "Bearer ", max 32 chars, no CR/LF)' } }, required: ['name', 'url'] } },
         ] })
@@ -6104,12 +6105,13 @@ export default {
             await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: true })
             return result(text(JSON.stringify({ username: found.username, password: found.value, totp: found.totp })))
           }
-          // secret.fill: ask for a website credential to be filled in. The Agent
+          // request_fill: ask for a website credential to be filled in. The Agent
           // never receives the value; it only learns whether the request was
           // approved and, if so, the short-lived authorization handed to the
           // execution layer. Without a configured execution layer this fails
-          // closed and returns no secret material.
-          if (name === 'secret.fill') {
+          // closed and returns no secret material. The older name is kept so a
+          // client that already calls secret.fill keeps working.
+          if (name === 'request_fill' || name === 'secret.fill') {
             const secretName = String(args.name ?? '').trim()
             if (!secretName) return result(text('name is required', true))
             const requestedOrigin = normalizeOrigin(args.origin)
