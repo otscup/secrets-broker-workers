@@ -150,6 +150,44 @@ const login = async (mf) => {
   await mf.dispose()
 }
 
+// S9 - the panel path: the operator stores the peer, an agent cannot.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const anon = await mf.dispatchFetch('https://broker.test/api/sync/remote', { method: 'POST', body: JSON.stringify({ url: 'https://peer.test', token: 'x'.repeat(20) }) })
+  const cookie = await login(mf)
+  const post = (body) => mf.dispatchFetch('https://broker.test/api/sync/remote', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  const plain = await post({ url: 'http://peer.test', token: 'x'.repeat(20) })
+  const creds = await post({ url: 'https://user:pass@peer.test', token: 'x'.repeat(20) })
+  const short = await post({ url: 'https://peer.test', token: 'short' })
+  anon.status === 401 && plain.status === 400 && creds.status === 400 && short.status === 400
+    ? pass('S9 storing a peer needs the operator, and the address is checked')
+    : fail('S9', JSON.stringify({ anon: anon.status, plain: plain.status, creds: creds.status, short: short.status }))
+  await mf.dispose()
+}
+
+// S10 - comparing before anything is configured is a clear 409, not a 500.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const cookie = await login(mf)
+  const r = await mf.dispatchFetch('https://broker.test/api/sync/compare', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{}' })
+  const text = await r.text()
+  r.status === 409 && /还没有配置远端/.test(text) ? pass('S10 comparing without a peer says so') : fail('S10', r.status + ' ' + text.slice(0, 80))
+  await mf.dispose()
+}
+
+// S11 - a failed save stores nothing, and the token never comes back out.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const cookie = await login(mf)
+  await mf.dispatchFetch('https://broker.test/api/sync/remote', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ url: 'https://127.0.0.1:9', token: 'y'.repeat(24) }) })
+  const settings = await mf.dispatchFetch('https://broker.test/api/settings', { headers: { cookie } }).then((r) => r.json()).catch(() => ({}))
+  const blob = JSON.stringify(settings)
+  settings.remoteBroker?.configured === false && !blob.includes('y'.repeat(24)) && !/tokenWrapped/.test(blob)
+    ? pass('S11 an unreachable peer is not stored, and no token is echoed')
+    : fail('S11', blob.slice(0, 160))
+  await mf.dispose()
+}
+
 const passed = results.filter((r) => r.ok).length
 console.log(String.fromCharCode(10) + '==== sync pull ' + passed + '/' + results.length + ' passed ====')
 if (passed !== results.length) process.exit(1)

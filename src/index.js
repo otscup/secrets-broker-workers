@@ -8,6 +8,7 @@ import {
   hmacSha256, hmacToken, pbkdf2, sha256Base64, unwrapWithKek, wrapWithKek, bytesToB64,
 } from './crypto.js'
 import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, ALLOWED_ALGS } from './oidc.js'
+import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -1592,6 +1593,29 @@ function syncDeviceList(state) {
       revokedAt: device.revokedAt ?? null,
     }))
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+}
+
+async function vaultCipherRows(env, account) {
+  // ciphers.user_id is the vault user id, not the email: resolve it the same way
+  // every other read path does, or a comparison would silently find nothing.
+  const owner = await env.NODEWARDEN_DB.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').bind(account).first().catch(() => null)
+  if (!owner) return null
+  const rows = await env.NODEWARDEN_DB.prepare(
+    'SELECT id, type, folder_id, name, notes, data, key, created_at, updated_at, deleted_at, archived_at FROM ciphers WHERE user_id = ?',
+  ).bind(owner.id).all()
+  return (rows.results ?? []).map((row) => ({
+    id: row.id,
+    type: row.type,
+    folderId: row.folder_id ?? null,
+    name: row.name,
+    notes: row.notes ?? null,
+    data: row.data,
+    key: row.key ?? null,
+    createdAt: row.created_at ?? null,
+    updatedAt: row.updated_at ?? null,
+    deletedAt: row.deleted_at ?? null,
+    archivedAt: row.archived_at ?? null,
+  }))
 }
 
 async function resolveSyncDevice(request, env, state) {
@@ -5872,6 +5896,62 @@ export default {
       const session = await getSession(env)
       return json({ ok: true, insights: aiInsights(aiSnapshot(state, { vaultUnlocked: Boolean(session), scope: await vaultItemNames(env, env.NODEWARDEN_DB) })) })
     }
+    // ── The other broker, as the panel sees it ─────────────────────────────
+    // Pasting a token into a terminal is a workaround, not the design. The
+    // operator stores the peer here once; the token is wrapped with SESSION_KEK
+    // and never comes back out — the panel only learns that one exists.
+    if (url.pathname === '/api/sync/remote' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const raw = String(body.url ?? '').trim().replace(/\/+$/, '')
+      if (!raw) return fail('需要一个地址，例如 https://broker.example.com', 400)
+      let parsed
+      try { parsed = new URL(raw) } catch { return fail('地址不合法', 400) }
+      if (parsed.username || parsed.password) return fail('地址里不要带账号密码，令牌单独填', 400)
+      const local = parsed.hostname === 'localhost' || isPrivateHost(parsed.hostname)
+      if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && local)) {
+        return fail('只接受 https（本机地址可以用 http）', 400)
+      }
+      const token = String(body.token ?? '').trim()
+      if (token.length < 16) return fail('令牌看起来不完整（至少 16 个字符）', 400)
+      // Prove it works before storing anything: a 401 from the other side is a
+      // better answer now than a mystery later.
+      let reached
+      try { reached = await pullRemote(raw, token) } catch (error) { return fail('连不上对面：' + error.message, 400) }
+      await mutateState(env, [{ op: 'set', path: ['settings', 'remoteBroker'], value: { url: raw, label: String(body.label ?? '').trim().slice(0, 48), tokenWrapped: await wrapWithKek(encoder.encode(token), await kekBytes(env)), addedAt: nowIso(), lastCount: reached.count ?? 0, lastCompareAt: null } }])
+      await addAudit(env, { event: 'sync.remote.set', url: raw, count: reached.count ?? 0 })
+      return json({ ok: true, url: raw, count: reached.count ?? 0 })
+    }
+    if (url.pathname === '/api/sync/remote' && request.method === 'DELETE') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      await mutateState(env, [{ op: 'delete', path: ['settings', 'remoteBroker'] }])
+      await addAudit(env, { event: 'sync.remote.clear' })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/sync/compare' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const remote = state.settings?.remoteBroker
+      if (!remote?.url || !remote?.tokenWrapped) return fail('还没有配置远端，先填地址和令牌', 409)
+      const session = await getSession(env)
+      let account = session?.email || ''
+      if (session && account !== (state.settings?.vaultEmail ?? '')) account = ''
+      if (!account) account = await vaultEmail(env, env.NODEWARDEN_DB, state).catch(() => '')
+      if (!account) return fail('这台 broker 还没有配置 vault 账户', 409)
+      const mine = await vaultCipherRows(env, account)
+      if (!mine) return fail('vault 数据库里没有这个用户（是不是还没初始化？）', 409)
+      let peerToken = ''
+      try { peerToken = decoder.decode(await unwrapWithKek(remote.tokenWrapped, await kekBytes(env))) } catch (error) { return fail('保存的远端令牌解不开（SESSION_KEK 换过？），请重新填一次', 409) }
+      let theirs
+      try { theirs = await pullRemote(remote.url, peerToken) } catch (error) {
+        await addAudit(env, { event: 'sync.compare-deny', url: remote.url, reason: error.message.slice(0, 120) })
+        return fail('远端没有给出结果：' + error.message, 502)
+      }
+      const summary = diffSummary(diffVaults(mine, theirs.items))
+      await mutateState(env, [{ op: 'set', path: ['settings', 'remoteBroker', 'lastCount'], value: theirs.count ?? theirs.items.length }, { op: 'set', path: ['settings', 'remoteBroker', 'lastCompareAt'], value: nowIso() }])
+      await addAudit(env, { event: 'sync.compare', url: remote.url, counts: summary.counts })
+      return json({ ok: true, local: { count: mine.length }, remote: { count: (theirs.items ?? []).length, account: theirs.account ?? '' }, ...summary })
+    }
     // ── Sync devices ───────────────────────────────────────────────────────
     // The token below belongs to another broker installation, not to an agent.
     // It is handed out once (the panel shows it a single time), stored as a
@@ -5936,6 +6016,7 @@ export default {
         // Where the local bridge may write a credential. Absolute paths only;
         // a trailing separator means "anything under this directory".
         materializePaths: Array.isArray(state.settings?.materializePaths) ? state.settings.materializePaths : [],
+        remoteBroker: state.settings?.remoteBroker ? { url: state.settings.remoteBroker.url, label: state.settings.remoteBroker.label ?? '', addedAt: state.settings.remoteBroker.addedAt ?? '', lastCount: state.settings.remoteBroker.lastCount ?? 0, lastCompareAt: state.settings.remoteBroker.lastCompareAt ?? null, configured: true } : { configured: false },
         // The key itself is never returned; only whether one is stored.
         ai: {
           enabled: state.settings?.ai?.enabled !== false,
@@ -6462,24 +6543,8 @@ export default {
       if (!account) return fail('no vault account is configured on this broker', 409)
       // ciphers.user_id is the vault user id, not the email: resolve it the same
       // way every other read path does, or sync would silently compare nothing.
-      const owner = await env.NODEWARDEN_DB.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').bind(account).first().catch(() => null)
-      if (!owner) return fail('no vault user matches ' + account + ' (is the vault database initialised?)', 409)
-      const rows = await env.NODEWARDEN_DB.prepare(
-        'SELECT id, type, folder_id, name, notes, data, key, created_at, updated_at, deleted_at, archived_at FROM ciphers WHERE user_id = ?',
-      ).bind(owner.id).all()
-      const items = (rows.results ?? []).map((row) => ({
-        id: row.id,
-        type: row.type,
-        folderId: row.folder_id ?? null,
-        name: row.name,
-        notes: row.notes ?? null,
-        data: row.data,
-        key: row.key ?? null,
-        createdAt: row.created_at ?? null,
-        updatedAt: row.updated_at ?? null,
-        deletedAt: row.deleted_at ?? null,
-        archivedAt: row.archived_at ?? null,
-      }))
+      const items = await vaultCipherRows(env, account)
+      if (!items) return fail('no vault user matches ' + account + ' (is the vault database initialised?)', 409)
       await addAudit(env, { event: 'sync.pull', agent: device ? 'device:' + device.name : 'admin', device: device?.id, count: items.length, account })
       return json({ ok: true, account, count: items.length, items })
     }

@@ -768,6 +768,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
     <div class="card"><h2>两步验证（TOTP）</h2><div id="totp-status" class="hint"></div><div id="totp-setup-box" class="hidden"><div class="hint">用验证器扫码/手动输入下面的密钥，然后输入 6 位验证码启用。</div><div class="secret" id="totp-secret"></div><label class="field">验证码</label><input id="totp-enable-code" inputmode="numeric" placeholder="6 位验证码"><div style="margin-top:10px"><button class="primary" id="totp-enable">启用两步验证</button></div></div><div class="row" style="margin-top:10px"><button id="totp-setup">生成/重新生成密钥</button><button class="danger hidden" id="totp-disable">关闭两步验证</button></div><div class="status" id="totp-message"></div></div>
 
     <div class="card"><h2>本地写入白名单</h2><p class="hint">允许「把某个条目写进本地文件」的目标路径，一行一个。以 <code>/</code> 结尾表示整个目录。</p><textarea id="mat-paths" rows="3" placeholder="/srv/app/secrets.env"></textarea><div class="row" style="margin-top:10px"><button class="primary" id="mat-save">保存白名单</button></div><div class="status" id="mat-status"></div></div>
+    <div class="card"><h2>远端同步</h2><p class="hint">填对面 broker 的地址和它「同步设备」里发的令牌，点「比对」看两个库差在哪。令牌在这里用 SESSION_KEK 加密保存，只用于请求对面的 <code>/sync/pull</code>，不会回显；两边都只搬密文，比对不写任何一边。</p><div id="rb-current"></div><div class="row" style="margin-top:10px"><input id="rb-url" placeholder="https://broker.example.com"><input id="rb-token" type="password" placeholder="对面生成的同步设备令牌"></div><div class="row" style="margin-top:10px"><button class="primary" id="rb-save">保存并测试</button><button id="rb-compare">比对</button><button class="danger" id="rb-clear">移除</button></div><div class="status" id="rb-status"></div><div id="rb-result"></div></div>
     <div class="card"><h2>同步设备</h2><p class="hint">这里发的是给<b>另一个 broker</b> 用的令牌，不是给 Agent 的。对面装上 CLI 后跑 <code>secrets-broker sync --remote &lt;本站地址&gt;</code>，用这把令牌拉取<b>密文</b>做比对：读不到值，也读不到名字。Agent 的 token 不适用。</p><div id="sdev-list"></div><div class="row" style="margin-top:10px"><input id="sdev-name" placeholder="设备名，例如 home-laptop"><button class="primary" id="sdev-create">新建设备</button></div><div class="secret hidden" id="sdev-token"></div><div class="status" id="sdev-status"></div></div>
     <div class="card"><h2>行为安全</h2><p class="hint">每一项的默认值都是最保守的答案。单独给某个 Agent 或某个条目配过权限的，以那条配置为准。</p>
       <div class="ios-field"><label>允许读取网页登录的明文<div class="hint">关闭时，网站密码只能被填充进指定站点，任何 Agent 都拿不到明文。</div></label><input type="checkbox" class="ios-switch" id="bs-web"></div>
@@ -949,6 +950,50 @@ function when(value) {
   if (!value) return '-'
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false })
+}
+function renderRemoteBroker(config) {
+  const box = $('rb-current')
+  if (!box) return
+  if (!config || config.configured !== true) { box.innerHTML = '<p class="hint">还没有配置远端。</p>'; return }
+  box.innerHTML = '<div class="ios-row"><div class="ios-main"><div class="ios-title"><b>' + esc(config.url) + '</b><span class="ios-pill on">已配置</span></div><div class="ios-sub">' + (config.lastCompareAt ? '上次比对 ' + esc(when(config.lastCompareAt)) + ' · 远端 ' + (config.lastCount ?? 0) + ' 条' : '还没比对过') + '</div></div></div>'
+}
+function renderCompareResult(result) {
+  const box = $('rb-result')
+  if (!box) return
+  const counts = result.counts ?? {}
+  const rows = result.rows ?? []
+  const line = (label, value) => '<div class="health-row"><span class="health-label">' + label + '</span><span class="health-hint"></span><span class="health-value">' + value + '</span></div>'
+  box.innerHTML = '<div class="health">' + line('将上传', counts.push ?? 0) + line('将下载', counts.pull ?? 0) + line('将删除', counts.delete ?? 0) + line('冲突', counts.conflict ?? 0) + line('一致', counts.equal ?? 0) + '</div>' + (rows.length ? '<div class="hint" style="margin-top:8px">' + rows.map((row) => esc(String(row.direction) + ' · ' + String(row.id).slice(0, 8) + ' · ' + String(row.updatedAt || '-'))).join('<br>') + '</div>' : '')
+}
+$('rb-save').onclick = async () => {
+  const url = $('rb-url').value.trim()
+  const token = $('rb-token').value.trim()
+  if (!url) { status('rb-status', '先填对面的地址', 'error'); return }
+  if (!token) { status('rb-status', '先粘贴对面的同步设备令牌', 'error'); return }
+  try {
+    const saved = await api('/api/sync/remote', { method: 'POST', body: JSON.stringify({ url, token }) })
+    $('rb-token').value = ''
+    status('rb-status', '已保存，对面现在有 ' + saved.count + ' 条', 'ok')
+    const settings = await api('/api/settings')
+    renderRemoteBroker(settings.remoteBroker)
+  } catch (error) { status('rb-status', error.message, 'error') }
+}
+$('rb-compare').onclick = async () => {
+  status('rb-status', '正在比对…', 'ok')
+  try {
+    const result = await api('/api/sync/compare', { method: 'POST', body: '{}' })
+    status('rb-status', '比对完成：本地 ' + result.local.count + ' 条，远端 ' + result.remote.count + ' 条', 'ok')
+    renderCompareResult(result)
+  } catch (error) { status('rb-status', error.message, 'error') }
+}
+$('rb-clear').onclick = async () => {
+  if (!confirm('移除远端配置？令牌会一起删掉。')) return
+  try {
+    await api('/api/sync/remote', { method: 'DELETE' })
+    status('rb-status', '已移除', 'ok')
+    $('rb-result').innerHTML = ''
+    renderRemoteBroker(null)
+  } catch (error) { status('rb-status', error.message, 'error') }
 }
 async function renderSyncDevices() {
   const box = $('sdev-list')
@@ -3448,6 +3493,7 @@ async function loadSecurity() {
     $('totp-disable').classList.toggle('hidden', !data.totpEnabled)
     const settings = await api('/api/settings').catch(() => ({}))
     $('mat-paths').value = (settings.materializePaths ?? []).join('\n')
+    renderRemoteBroker(settings.remoteBroker)
     await renderSyncDevices()
     $('bs-web').checked = settings.webPlaintext === true
     $('bs-unclassified').checked = settings.unclassifiedPlaintext === true

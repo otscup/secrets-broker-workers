@@ -137,7 +137,15 @@ sync device` — an agent's scope is curated item by item, and letting it enumer
 the vault would undo exactly that promise. A device is revoked on its own, and
 revoking it breaks the other side's next pull immediately.
 
-Stage 1 only previews. Nothing is written to either side:
+Stage 1 only previews. Nothing is written to either side.
+
+**From the panel** (no terminal needed): Settings → Security → Remote sync, paste
+the other broker's URL and one of its sync-device tokens, hit 比对. The token is
+stored wrapped with `SESSION_KEK` on this side, never echoed back, and used only
+to call that broker's `/sync/pull`. The card then shows push/pull/delete/conflict
+counts and the first rows.
+
+**From the CLI**, when there is no browser in reach:
 
 ```bash
 export BROKER_REMOTE_TOKEN=<device token from the other broker>
