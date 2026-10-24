@@ -11,6 +11,19 @@ const script = /<script>([\s\S]*?)<\/script>/.exec(uiHtml)
 if (!script) { console.log('FAIL  L0 no inline script'); process.exit(1) }
 const code = script[1]
 
+// The end anchor for a function used to be a bare 'async function reveal', which
+// silently grew to swallow everything up to revealItemSecret once a function with
+// that prefix was added. End a span at the next top-level declaration instead.
+const nextDecl = (from) => {
+  const rest = code.slice(from + 1)
+  const m = /^(?:async )?function /m.exec(rest)
+  return m ? from + 1 + m.index : code.length
+}
+const span = (startMark) => {
+  const start = code.indexOf(startMark)
+  return start < 0 ? '' : code.slice(start, nextDecl(start))
+}
+
 // L1 - the controls exist in the served markup, inside the logs view.
 {
   const marks = ['logs-item-filter', 'logs-agent-filter', 'logs-event-filter', 'logs-search', 'logs-count', 'logs-reset']
@@ -60,8 +73,8 @@ const code = script[1]
 // Only runtime identifiers are checked; literals and the red-row style are static.
 {
   const start = code.indexOf('function fillLogSelect')
-  const end = code.indexOf('async function reveal')
-  const region = start >= 0 && end > start ? code.slice(start, end) : ''
+  const render = code.indexOf('function renderLogs')
+  const region = start >= 0 && render > start ? code.slice(start, nextDecl(render)) : ''
   const bad = []
   for (const m of region.matchAll(/' \+\s*([^+']+?)\s*\+\s*'/g)) {
     const expr = m[1].trim()
@@ -84,8 +97,9 @@ const code = script[1]
 }
 // L7 - filters AND together and never refetch: the view only reads app.data.
 {
-  const ands = (code.slice(code.indexOf('function renderLogs'), code.indexOf('async function reveal')).match(/return false/g) || []).length
-  const noFetch = !/api\(/.test(code.slice(code.indexOf('function renderLogs'), code.indexOf('async function reveal')))
+  const body = span('function renderLogs')
+  const ands = (body.match(/return false/g) || []).length
+  const noFetch = !/api\(/.test(body)
   if (ands >= 4 && noFetch) pass('L7 filters combine (AND) and re-render from app.data without a refetch')
   else fail('L7', JSON.stringify({ ands, noFetch }))
 }

@@ -395,6 +395,26 @@ async function redeem(task, origin) {
   else fail('N16', 'the value leaked: ' + t.slice(0, 100))
 }
 
+// N16b: with the any-target switch on and no per-item policy, an approved use
+// MUST run. It used to be refused as no-use-policy and, because a capability
+// makes that verdict decisive, approving it could never make it work.
+{
+  await seedState()
+  await putSession()
+  const st = await getState()
+  const key = AGENT + '\u0000' + ITEM_ID + '\u0000secret.use'
+  st.capabilities = st.capabilities ?? {}
+  st.capabilities[key] = { id: key, subjectId: AGENT, accountId: ACCT, itemId: ITEM_ID, itemName: ITEM, action: 'secret.use', mode: 'preapproved', createdAt: new Date().toISOString(), createdBy: 'test', expiresAt: null, maxUses: null, usedCount: 0, revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1 }
+  st.usePolicies = {}
+  st.settings = { ...(st.settings ?? {}), useAnyTarget: true }
+  await stub.fetch('https://state/state', { method: 'PUT', body: JSON.stringify(st) })
+  const res = await mcp('http_request', { name: ITEM, url: 'https://anywhere.example/v1/x' })
+  const t = toolText(res)
+  const ran = !/no-use-policy|awaiting.?approval|denied/i.test(t)
+  if (ran && !t.includes(PASSWORD)) pass('N16b the any-target switch lets an approved use run without a per-item policy')
+  else fail('N16b', t.slice(0, 200))
+}
+
 // N17: another agent does not inherit the authorisation
 {
   await seedState()

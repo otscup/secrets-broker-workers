@@ -2876,6 +2876,11 @@ export function actionGrantFor(state, subjectId, itemId) {
 
 function usePolicyFor(state, itemId, accountId) {
   const policy = state.usePolicies?.[itemId] ?? null
+  // useAnyTarget is the operator's standing answer to "which hosts may this be
+  // used against": any. Reading it here keeps one authority for the target
+  // question — the approval gate and the capability path cannot disagree, which
+  // is what left an approved request permanently denied.
+  if (!policy && behaviourSettings(state).useAnyTarget) return { itemId, anyTarget: true }
   if (!policy) return null
   if (policy.accountId && accountId && String(policy.accountId).toLowerCase() !== String(accountId).toLowerCase()) return null
   return policy
@@ -2883,6 +2888,8 @@ function usePolicyFor(state, itemId, accountId) {
 
 function targetAllowed(policy, target) {
   if (!policy || !target) return false
+  // The whole point of the switch: no host list to consult.
+  if (policy.anyTarget) return true
   const host = String(target.host ?? '').toLowerCase().replace(/\.$/, '')
   const port = String(target.port ?? '443')
   const method = String(target.method ?? 'GET').toUpperCase()
@@ -2973,7 +2980,10 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
     ok = false
     reason = 'awaiting-approval'
   }
-  if (grantEligible && action === 'secret.use') {
+  // Only when the capability did not already authorise this request: an approved,
+  // in-policy use must not be rewritten into "waiting for approval" again, which
+  // is what made an approved request impossible to ever satisfy.
+  if (!ok && grantEligible && !capabilityDecisive && action === 'secret.use') {
     // useAnyTarget is the operator saying "any host is fine"; the request still
     // goes through the approval gate, it just skips the origin allowlist that
     // would otherwise refuse it before anybody is asked.

@@ -139,6 +139,20 @@ const state = {
   else fail('A6', JSON.stringify({ noWorkers, notFetched, needEndpoint, needKey, catalog }))
 }
 
+// A7: the snapshot reports the switches that decide a plaintext read, with the
+// same default as the server. ai.js used `!== false` (default true) while
+// requireClassification() uses `=== true` (default false), so the model was told
+// the opposite of the truth. Assert against the real function, not a copy.
+{
+  const { aiSnapshot: snap } = await import('./src/ai.js')
+  const bare = snap({ settings: {} }, { vaultUnlocked: false })
+  const on = snap({ settings: { requireClassification: true, unclassifiedPlaintext: true, webPlaintext: true } }, { vaultUnlocked: false })
+  const consistent = bare.requireClassification === false && bare.unclassifiedPlaintext === false && bare.webPlaintext === false
+  const tracksSettings = on.requireClassification === true && on.unclassifiedPlaintext === true && on.webPlaintext === true
+  if (consistent && tracksSettings) pass('A7 the snapshot reports the plaintext switches with the safe default and follows the settings')
+  else fail('A7', JSON.stringify({ bare: { rc: bare.requireClassification, up: bare.unclassifiedPlaintext, wp: bare.webPlaintext }, on: { rc: on.requireClassification, up: on.unclassifiedPlaintext, wp: on.webPlaintext } }))
+}
+
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== ai assistant ' + passed + '/' + results.length + ' passed ====')
 if (passed !== results.length) process.exit(1)

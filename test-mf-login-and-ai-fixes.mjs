@@ -1,13 +1,12 @@
 // Three bugs from one report:
 //   L1 switching accounts used to pin the login page to that account, locking the
 //      operator out of their own broker. Every account must be offered.
-//   L2 the free Workers AI plan cannot run the DeepSeek models, and 5035 surfaced
-//      as an opaque code. The default must be a free-plan model, and choosing a
-//      paid one must say so.
+//   L2 a model provider was chosen for the operator. There is one provider now — an
+//      OpenAI-compatible endpoint — so the assistant must name the field it is
+//      missing instead of silently falling back to a binding.
 //   L3 Telegram text messages were dropped because the webhook subscribed to
 //      callback_query only.
 import { Miniflare } from 'miniflare'
-import { WORKERS_AI_MODELS, WORKERS_AI_DEFAULT } from './src/ai.js'
 
 const results = []
 const pass = (n) => { results.push({ n, ok: true }); console.log('PASS  ' + n) }
@@ -79,26 +78,34 @@ await stub.fetch('https://do/state', { method: 'PUT', body: JSON.stringify({
 
 await mf.dispose()
 
-// L2: the default model runs on the free plan, and paid ones are marked.
+// L2: there is no built-in provider to fall back to, so a half-filled form names
+// the missing field instead of failing a call to a binding that is not there.
 {
-  const freeIds = WORKERS_AI_MODELS.filter((m) => !m.paid).map((m) => m.id)
-  const defaultIsFree = freeIds.includes(WORKERS_AI_DEFAULT)
-  const noDeepseekDefault = !WORKERS_AI_DEFAULT.includes('deepseek')
-  const paidMarked = WORKERS_AI_MODELS.filter((m) => m.id.includes('deepseek')).every((m) => m.paid === true)
-  const hasFreeOptions = freeIds.length >= 3
-  if (defaultIsFree && noDeepseekDefault && paidMarked && hasFreeOptions) pass('L2 the default model is a free-plan one, paid models are marked', )
-  else fail('L2', JSON.stringify({ defaultIsFree, noDeepseekDefault, paidMarked, free: freeIds.length }))
+  const { askAi } = await import('./src/ai.js')
+  const none = await askAi({}, { ai: {} }, { question: 'hi', snapshot: {} })
+  const noKey = await askAi({}, { ai: { endpoint: 'https://x.invalid/v1', model: 'm' } }, { question: 'hi', snapshot: {} })
+  const noModel = await askAi({}, { ai: { endpoint: 'https://x.invalid/v1', apiKey: 'k' } }, { question: 'hi', snapshot: {} })
+  const namesField = (out) => out.ok === false && /endpoint|key|model/.test(out.reason)
+  if (namesField(none) && namesField(noKey) && namesField(noModel)) pass('L2 the assistant names the missing provider field')
+  else fail('L2', JSON.stringify({ none, noKey, noModel }).slice(0, 300))
 }
 
-// L2b: a 5035 from the provider is translated, not passed through as a code.
+// L2b: a provider refusal is explained, and an empty reply names what arrived,
+// instead of surfacing a bare status or a shrug.
 {
-  // Exercise the real error path with a fake binding that throws 5035.
   const { askAi } = await import('./src/ai.js')
-  const env = { AI: { run: async () => { throw new Error('5035: Model @cf/deepseek-ai/x is not available on the Workers Free plan. Upgrade to access this model') } } }
-  const out = await askAi(env, { ai: { provider: 'workers-ai', workersModel: '@cf/deepseek-ai/x' } }, { question: 'hi', snapshot: {} })
-  const explained = out.ok === false && out.reason.includes('免费计划') && out.reason.includes('Llama')
-  if (explained) pass('L2b a free-plan refusal explains which model and what to switch to')
-  else fail('L2b', JSON.stringify(out))
+  const realFetch = globalThis.fetch
+  const stub = (body, ok = true) => { globalThis.fetch = async () => ({ ok, json: async () => body }) }
+  try {
+    stub({ error: { message: 'model not available on your plan' } }, false)
+    const refused = await askAi({}, { ai: { endpoint: 'https://x.invalid/v1', apiKey: 'k', model: 'm' } }, { question: 'hi', snapshot: {} })
+    stub({ choices: [{ message: { content: '' }, finish_reason: 'length' }] })
+    const empty = await askAi({}, { ai: { endpoint: 'https://x.invalid/v1', apiKey: 'k', model: 'm' } }, { question: 'hi', snapshot: {} })
+    const explained = refused.ok === false && refused.reason.includes('model not available on your plan')
+    const namesShape = empty.ok === false && empty.reason.includes('finish_reason=length')
+    if (explained && namesShape) pass('L2b a provider refusal is explained, and an empty reply names what arrived')
+    else fail('L2b', JSON.stringify({ refused, empty }).slice(0, 300))
+  } finally { globalThis.fetch = realFetch }
 }
 
 // L3: the webhook subscribes to message as well as callback_query.

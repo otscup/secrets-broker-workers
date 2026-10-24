@@ -44,7 +44,11 @@ export function aiSnapshot(state, extras = {}) {
   return {
     now: new Date(now).toISOString(),
     vaultUnlocked: extras.vaultUnlocked === true,
-    requireClassification: state.settings?.requireClassification !== false,
+    requireClassification: state.settings?.requireClassification === true,
+    // The switches that actually decide a plaintext read. Without these the model
+    // is guessing why a credential was refused.
+    unclassifiedPlaintext: state.settings?.unclassifiedPlaintext === true,
+    webPlaintext: state.settings?.webPlaintext === true,
     executors: Object.values(state.fillExecutors ?? {}).filter((e) => !e.revokedAt).map((e) => e.executorId),
     counts: {
       agents: Object.keys(state.agents ?? {}).length,
