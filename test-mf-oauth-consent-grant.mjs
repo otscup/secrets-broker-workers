@@ -169,6 +169,63 @@ const exchange = async (location) => {
   else fail('O3', JSON.stringify(policy))
 }
 
+// ── O4-O7 the consent POST refuses a cross-site submission ───────────────
+// The admin cookie is SameSite=None so the consent form works from a
+// third-party page, which means any site the operator visits can POST this
+// endpoint with their cookie attached. The property that matters is not the
+// status code: it is that no authorization code is minted, because that code is
+// the only thing that becomes a token.
+const codesBefore = async () => Object.keys(((await (await stub.fetch('https://do/state')).json()).state || {}).oauthCodes || {}).length
+const consentPost = (headers) => mf.dispatchFetch('https://broker.test/oauth/authorize', {
+  method: 'POST', redirect: 'manual',
+  headers: { cookie, 'content-type': 'application/x-www-form-urlencoded', ...headers },
+  body: new URLSearchParams({
+    client_id: clientId, redirect_uri: 'http://127.0.0.1:9999/cb', state: 'xyz',
+    code_challenge: challenge, code_challenge_method: 'S256', scope: 'secrets.read',
+    decision: 'allow', grant_items: API,
+  }).toString(),
+})
+const mintedACode = (res) => Boolean(new URL(res.headers.get('location') || 'http://x/').searchParams.get('code'))
+
+// O4: an origin from another site is refused and mints nothing.
+{
+  const before = await codesBefore()
+  const res = await consentPost({ origin: 'https://evil.example' })
+  const after = await codesBefore()
+  if (res.status === 403 && !mintedACode(res) && after === before) pass('O4 a foreign Origin is refused and mints no code')
+  else fail('O4', JSON.stringify({ status: res.status, minted: mintedACode(res), before, after }))
+}
+
+// O5: the browser's own cross-site verdict is enough on its own, with no Origin.
+{
+  const before = await codesBefore()
+  const res = await consentPost({ 'sec-fetch-site': 'cross-site' })
+  const after = await codesBefore()
+  if (res.status === 403 && !mintedACode(res) && after === before) pass('O5 Sec-Fetch-Site: cross-site is refused with no Origin header')
+  else fail('O5', JSON.stringify({ status: res.status, minted: mintedACode(res), before, after }))
+}
+
+// O6: a null Origin is only trusted together with the browser's same-origin
+// verdict. With no verdict at all the request is refused. This is the case that
+// discriminates the fallback: trusting a bare "Origin: null" would approve here,
+// and a bare null origin is what an attacker-supplied request looks like.
+{
+  const before = await codesBefore()
+  const res = await consentPost({ origin: 'null' })
+  const after = await codesBefore()
+  if (res.status === 403 && !mintedACode(res) && after === before) pass('O6 a null Origin with no Sec-Fetch-Site verdict is refused')
+  else fail('O6', JSON.stringify({ status: res.status, minted: mintedACode(res), before, after }))
+}
+
+// O7: the legitimate path still works — the consent page opens in a sandboxed
+// frame or an automated browser, sends "Origin: null" with a same-origin
+// verdict, and must be able to approve.
+{
+  const res = await consentPost({ origin: 'null', 'sec-fetch-site': 'same-origin' })
+  if (mintedACode(res)) pass('O7 Origin: null with a same-origin verdict still approves')
+  else fail('O7', JSON.stringify({ status: res.status, location: res.headers.get('location') || '' }))
+}
+
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== oauth consent grants ' + passed + '/' + results.length + ' passed ====')
