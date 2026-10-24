@@ -524,6 +524,11 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
    grid exists to prevent: at 150px/196px the second row ended 6px low at
    1536x864. Measured in Chrome, not estimated. */
 #globe-card .globe-box{height:150px}
+/* In the dashboard the globe grows into whatever height the row already has,
+   instead of setting that height and pushing the row past the fold. */
+.dash #globe-card{display:flex;flex-direction:column;min-height:0}
+.dash #globe-card .globe-box{flex:1 1 0;height:auto;min-height:0}
+.dash #globe-card{overflow:hidden}
 .dash .trend-box svg{height:130px}
 .dash{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3);align-items:stretch;margin-bottom:var(--sp-3)}
 .dash>.card,.dash>.ov-actions{margin:0;min-width:0}
@@ -539,7 +544,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 /* Restored: dbdacd6 dropped this rule but three wrappers still use the class,
    so the settings pairs and the overview pair silently stacked. */
 .grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:stretch}
-.kpi{background:var(--card);border-radius:var(--r-lg);padding:var(--sp-3) var(--sp-4);min-height:104px;display:flex;flex-direction:column;justify-content:space-between}
+.kpi{background:var(--card);border-radius:var(--r-lg);padding:var(--sp-3) var(--sp-4);min-height:96px;display:flex;flex-direction:column;justify-content:space-between}
 .kpi .value{font-size:34px;line-height:41px;font-weight:700;letter-spacing:-.41px}
 .kpi .label{font-size:var(--text-sub);color:var(--label-2)}
 .kpi .sub{font-size:var(--text-caption);color:var(--label-3)}
