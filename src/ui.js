@@ -526,7 +526,10 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 #globe-card .globe-box{height:150px}
 .dash .trend-box svg{height:130px}
 .dash{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3);align-items:stretch;margin-bottom:var(--sp-3)}
-.dash>.card,.dash>.ov-actions{margin:0}
+.dash>.card,.dash>.ov-actions{margin:0;min-width:0}
+.dash #chart-box svg{display:block;width:100%;height:auto}
+.dash>.ov-actions{display:flex}
+.dash>.ov-actions>.card{flex:1 1 auto}
 .dash .span2{grid-column:span 2}
 .dash .span3{grid-column:span 3}
 .dash .trend-box{height:auto}
@@ -550,6 +553,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 .rank__fill{height:100%;border-radius:3px;background:var(--blue)}
 @media(max-width:720px){#globe-card .globe-box{height:160px;min-height:0}}
 @media(max-width:720px){.ov-controls{flex:1 1 100%;flex-wrap:wrap;justify-content:flex-start}.ov-controls .seg{flex:1 1 100%}.ov-search{flex:1 1 100%;max-width:none}}
+@media(max-width:720px){.kpis{gap:10px}.kpi{min-height:86px;padding:12px 14px}.kpi .value{font-size:28px;line-height:32px}.kpi .label{font-size:12px}.kpi .sub{font-size:11px}.kpi-spark{height:16px;margin:4px 0}}
 </style></head><body><div class="wrap">
 <header><img id="site-logo" src="/logo.png" alt="" style="width:30px;height:30px;border-radius:8px;object-fit:cover;cursor:pointer"><h1 id="site-title" style="cursor:pointer">Secrets Broker</h1><span class="badge">Cloudflare Workers</span>
 <div class="hdr-actions">
