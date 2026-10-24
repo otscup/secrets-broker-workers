@@ -264,6 +264,26 @@ npx wrangler deploy
 5. Open the Worker URL, log in with `ADMIN_PASSWORD`, then unlock with the
    Bitwarden master password. The browser derives the keys locally.
 
+### Run the panel locally
+
+`npx wrangler dev` serves the same Worker on `http://127.0.0.1:8787`, which is
+enough to work on the panel without touching the deployed vault:
+
+```bash
+npx wrangler dev --port 8787 \
+  --var SESSION_KEK:"$(node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")" \
+  --var ADMIN_PASSWORD:local-dev
+```
+
+- `SESSION_KEK` has to be base64 for 32 bytes, or the first cookie write throws
+  `SESSION_KEK must be a base64-encoded 32-byte key`. Any key works locally; use
+  the deployed one only if you want old cookies to keep working.
+- `ADMIN_PASSWORD` is the password you type on the login page.
+- The local D1 starts empty and the `NODEWARDEN` service binding shows as
+  `[not connected]`, so the panel renders and you can log in, but the item list
+  is empty and no real credential can be read. Point `BROKER_URL` at the
+  deployed Worker for that.
+
 ### Headless unlock
 
 ```bash

@@ -286,6 +286,10 @@ button.small{padding:6px 12px;font-size:var(--text-sub);border-radius:var(--r-md
 .seg button{background:transparent;color:var(--label);padding:6px 12px;font-size:var(--text-sub);border-radius:7px;font-weight:500}
 .seg button.on{background:var(--card);color:var(--label);box-shadow:0 3px 8px rgba(0,0,0,.12)}
 html[data-theme="dark"] .seg button.on{background:#636366}
+/* The globe's time range is text on the card in both themes: the dark track
+   turned it into a grey block that competed with the globe. */
+html[data-theme="dark"] .seg--vert{background:transparent}
+html[data-theme="dark"] .globe-side .globe-pause{background:transparent;border:0}
 table{font-size:var(--text-body);border-collapse:separate;border-spacing:0}
 th{font-size:var(--text-sub);font-weight:400;color:var(--label-2);padding:var(--sp-2) var(--sp-3);border-bottom:1px solid var(--separator)}
 td{padding:var(--sp-3);border-bottom:1px solid var(--separator);font-size:var(--text-body)}
@@ -533,11 +537,12 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
    instead of setting that height and pushing the row past the fold. */
 .dash #globe-card{display:flex;flex-direction:column;min-height:0}
 .globe-split{display:flex;align-items:center;gap:var(--sp-3);flex:1 1 auto;min-height:0;margin-top:var(--sp-2)}
-.dash #globe-card .globe-split .globe-box{width:140px;height:140px;flex:0 0 auto;min-height:0;margin:0}
-.globe-side{display:flex;flex-direction:column;justify-content:center;gap:4px;min-width:0;flex:1 1 auto;height:140px}
-.seg--vert{flex-direction:column;gap:2px;width:92px;max-width:100%;flex:0 0 auto}
+.dash #globe-card .globe-split .globe-box{width:196px;height:140px;flex:0 0 auto;min-height:0;margin:0}
+.globe-side{display:flex;flex-direction:column;justify-content:center;align-items:flex-end;gap:4px;min-width:0;flex:1 1 auto;height:140px}
+.seg--vert{flex-direction:column;gap:2px;width:92px;max-width:100%;flex:0 0 auto;background:transparent;padding:0}
 .seg--vert button{width:100%;min-width:0;min-height:24px;padding:2px 8px;font-size:var(--text-sub);line-height:18px;text-align:center}
-.globe-side .globe-pause{width:92px;max-width:100%;margin:0;min-height:26px;padding:2px 8px;font-size:var(--text-sub)}
+.globe-side .globe-pause{width:92px;max-width:100%;margin:0;min-height:26px;padding:2px 8px;font-size:var(--text-sub);background:transparent;border:0;box-shadow:none;color:var(--label-2)}
+.globe-side .globe-pause:hover{color:var(--label);background:transparent}
 .dash #globe-card>#globe-status{margin:var(--sp-2) 0 0;font-size:11px;line-height:1.3}
 .dash #globe-card .globe-box{flex:1 1 0;height:auto;min-height:0}
 .dash #globe-card{overflow:hidden}
@@ -550,9 +555,9 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 .dash .span2{grid-column:span 2}
 .dash .span3{grid-column:span 3}
 .dash .trend-box{height:auto}
-/* Five rows is what the card shows; the height is exactly what five compact
-   rows need, so the list ends where the card does instead of leaving a strip
-   of empty card (or scrolling the fifth row out of sight). */
+/* The card shows five rows and scrolls the rest: the server sends the top 20,
+   and the height is what five compact rows need, so the list fills the card
+   without pushing the row below the fold. */
 .dash .rank-box{max-height:206px;overflow:auto}
 .dash .rank{gap:10px}
 .dash #recent-box{max-height:260px;overflow-y:auto}
@@ -1695,7 +1700,7 @@ function renderStats() {
   if (nextBtn) nextBtn.onclick = () => { legendPage = legendPage + 1; renderStats() }
   $('donut-box').querySelectorAll('[data-donut],[data-legend]').forEach((el) => { el.addEventListener('click', () => selectDonut(el)); el.addEventListener('mouseenter', (event) => { if (el.dataset.count) showTip(event, el.dataset.agent, el.dataset.count) }); el.addEventListener('mouseleave', hideTip) })
   // Five is what the card has room for; the server sends up to twenty.
-  const top = (stats.topItems || []).slice(0, 5); const totalTop = top.reduce((sum, item) => sum + item.count, 0) || 1; const maxTop = Math.max(1, ...top.map((item) => item.count))
+  const top = (stats.topItems || []).slice(0, 20); const totalTop = top.reduce((sum, item) => sum + item.count, 0) || 1; const maxTop = Math.max(1, ...top.map((item) => item.count))
   $('top-box').innerHTML = top.length ? '<div class="rank">' + top.map((item, index) => { const pct = Math.max(4, Math.round(item.count / maxTop * 100)); return '<div class="rank__row"><div class="rank__head"><span class="rank__name">' + (index + 1) + '. ' + esc(item.name) + '</span><span class="rank__count">' + item.count + ' 次</span></div><div class="rank__track"><div class="rank__fill" style="width:' + pct + '%"></div></div></div>' }).join('') + '</div>' : '<div class="hint">这个区间还没有读取记录。</div>'
   $('updated').textContent = '最后更新 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false })
 }
