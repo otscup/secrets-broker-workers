@@ -704,7 +704,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
     </div>
   </section>
 
-  <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读）。点条目打开详情，可改类型、明文读取、免审批和分享；勾选多条可批量操作。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><button id="items-refresh">刷新</button><button id="items-select">选择</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
+  <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读）。点条目打开详情，可改类型、明文读取、免审批和分享；勾选多条可批量操作。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><select id="item-sort" title="排序方式" style="flex:0 0 auto"><option value="name">按名称</option><option value="activity">按最近活动</option><option value="access">按授权数</option><option value="expiry">按到期时间</option></select><button id="items-refresh">刷新</button><button id="items-select">选择</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
     <div class="card hidden" id="card-fill-policies" aria-hidden="true"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。未分类的凭据默认为拒绝读取。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     <div class="card" id="card-denied"><h2>被拦下的请求</h2><div class="hint">Agent 试图读取但没通过权限检查的条目。这里只是记录，没有放行任何东西；点「授权」才会真正放开。</div><div id="denied-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     
@@ -729,6 +729,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
           <option value="expiry">按到期时间</option>
           <option value="activity">按最近活动</option>
           <option value="name">按名称</option>
+          <option value="rights">按可读条数</option>
         </select>
       </div>
       <div id="agents-box" class="scroll-list" style="margin-top:var(--sp-3)"></div>
@@ -1055,12 +1056,13 @@ $('global-search-results').addEventListener('click', (event) => {
   const view = row.dataset.goto
   const tab = document.querySelector('#nav [data-view=' + view + ']')
   if (tab) tab.click()
+  if ($('item-sort')) $('item-sort').value = localStorage.getItem('sb-item-sort') || 'name'
   if (view === 'items') { const filter = $('item-filter'); if (filter) { filter.value = row.dataset.name || ''; renderItems() } }
   if (view === 'agents') openAgentDetail(row.dataset.name)
 })
 $('trend-prev').onclick = () => { trendFace = (trendFace + trendFaces.length - 1) % trendFaces.length; renderTrendFace() }
 $('trend-next').onclick = () => { trendFace = (trendFace + 1) % trendFaces.length; renderTrendFace() }
-$('items-refresh').onclick = loadItems; $('items-select').onclick = () => { itemsSelecting = !itemsSelecting; if (!itemsSelecting) selectedItems.clear(); $('items-select').textContent = itemsSelecting ? '完成' : '选择'; renderItems() }; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('ai-save').onclick = saveAiSettings; $('ai-model-fetch').onclick = fetchCustomModels; $('ai-help').onclick = () => openAiHelp();; $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + ('自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
+$('items-refresh').onclick = loadItems; $('items-select').onclick = () => { itemsSelecting = !itemsSelecting; if (!itemsSelecting) selectedItems.clear(); $('items-select').textContent = itemsSelecting ? '完成' : '选择'; renderItems() }; $('item-filter').oninput = renderItems; $('item-sort').onchange = () => { localStorage.setItem('sb-item-sort', $('item-sort').value); renderItems() }; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('ai-save').onclick = saveAiSettings; $('ai-model-fetch').onclick = fetchCustomModels; $('ai-help').onclick = () => openAiHelp();; $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + ('自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
 // Collapsible settings cards. One delegated handler covers every card, so a
 // new collapsible card needs no extra wiring.
@@ -1862,10 +1864,52 @@ function renderStats() {
   renderTrendFace()
   $('updated').textContent = '最后更新 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false })
 }
+// "How many Agents can use this" and "how many credentials can this Agent
+// read" are the same fact seen from two sides: a live grant. Grants arrive in
+// two shapes — capabilities in agentActions, and legacy rows in grants — and
+// both say the same thing about the pair (subject, item).
+function liveRight(entry, now = Date.now()) {
+  if (!entry || entry.revokedAt) return false
+  if (entry.expiresAt && entry.expiresAt <= now) return false
+  if (entry.maxUses != null && (entry.usedCount ?? entry.reads ?? 0) >= entry.maxUses) return false
+  return true
+}
+function readRightsByItem() {
+  const map = new Map()
+  const add = (name, subject) => { if (!name || !subject) return; if (!map.has(name)) map.set(name, new Set()); map.get(name).add(subject) }
+  for (const action of (app.data && app.data.agentActions) || []) {
+    if (action.action !== 'secret.read') continue
+    if (!liveRight({ revokedAt: action.revokedAt, expiresAt: action.expiresAt, maxUses: action.maxUses, usedCount: action.usedCount, usesLeft: action.usesLeft })) continue
+    if (action.usesLeft === 0) continue
+    add(action.itemName, action.agent)
+  }
+  for (const grant of (app.data && app.data.grants) || []) {
+    if (!liveRight(grant)) continue
+    add(grant.name, grant.agent)
+  }
+  return map
+}
 function renderItems() {
   const query = ($('item-filter')?.value || '').trim().toLowerCase(); const items = (app.items || []).filter((item) => !query || item.name.toLowerCase().includes(query) || String(item.url || '').toLowerCase().includes(query) || String(item.group || '').toLowerCase().includes(query))
   // Which items are already classified, by name, and with which kind. The
   // classified list is keyed by id, so map it back through the item rows.
+  // Sorting is a view of the same list: by name, by the last time anything was
+  // read, or by how many Agents hold a grant for it (the "who can touch this"
+  // question that used to need opening every credential).
+  const sortBy = String(($('item-sort') && $('item-sort').value) || localStorage.getItem('sb-item-sort') || 'name')
+  const rights = readRightsByItem()
+  const rightsOf = (item) => (rights.get(item.name) || new Set()).size
+  const activityOf = (item) => { const at = Date.parse(item.lastActivityAt || ''); return Number.isNaN(at) ? 0 : at }
+  items.sort((a, b) => {
+    if (sortBy === 'activity') return activityOf(b) - activityOf(a) || String(a.name).localeCompare(String(b.name))
+    if (sortBy === 'access') return rightsOf(b) - rightsOf(a) || String(a.name).localeCompare(String(b.name))
+    if (sortBy === 'expiry') {
+      const ae = typeof a.expiresAt === 'number' && a.expiresAt > 0 ? a.expiresAt : Infinity
+      const be = typeof b.expiresAt === 'number' && b.expiresAt > 0 ? b.expiresAt : Infinity
+      return ae - be || String(a.name).localeCompare(String(b.name))
+    }
+    return String(a.name).localeCompare(String(b.name))
+  })
   const kindByName = new Map()
   for (const entry of fillPolicyState().items || []) {
     if (entry.itemName) kindByName.set(entry.itemName, entry.kind)
@@ -1891,7 +1935,8 @@ function renderItems() {
   const row = (item) => {
     const kind = kindByName.get(item.name)
     const when = item.lastActivityAt ? relativeTime(Date.parse(item.lastActivityAt)) : '无读取记录'
-    const meta = [item.group, when, item.lastActor].filter(Boolean).map((part) => esc(part)).join(' · ')
+    const granted = rightsOf(item)
+    const meta = [item.group, when, item.lastActor, granted ? granted + ' 个 Agent 可用' : ''].filter(Boolean).map((part) => esc(part)).join(' · ')
     // 0 means "no expiry" in state.secretExpiry, so a plain numeric test made
   // every credential without a date read as expired.
   const expired = typeof item.expiresAt === 'number' && item.expiresAt > 0 && item.expiresAt <= Date.now()
@@ -2388,6 +2433,16 @@ function renderAgents() {
     agents = agents.slice().sort((a, b) => lastActivityFor(b.name) - lastActivityFor(a.name))
   } else if (sortBy === 'name') {
     agents = agents.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))
+  } else if (sortBy === 'rights') {
+    // The other side of the same ledger: how many credentials this Agent can
+    // read right now. allowAll means "everything in scope", so it counts the
+    // items it could read rather than the grants it happens to have.
+    const byItem = readRightsByItem()
+    const readableBy = new Map()
+    for (const [name, subjects] of byItem) for (const subject of subjects) readableBy.set(subject, (readableBy.get(subject) || 0) + 1)
+    const apiItems = (app.items || []).filter((item) => (app.data && app.data.fillPolicies && app.data.fillPolicies.items || []).some((entry) => entry.itemName === item.name && entry.kind === 'api')).length
+    const count = (agent) => (agent.allowAll === true ? Math.max(apiItems, readableBy.get(agent.name) || 0) : (readableBy.get(agent.name) || 0))
+    agents = agents.slice().sort((a, b) => count(b) - count(a) || String(a.name).localeCompare(String(b.name)))
   }
   const box = $('agents-box')
   if (!box) return

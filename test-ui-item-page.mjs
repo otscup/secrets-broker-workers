@@ -45,7 +45,7 @@ const items = {
     group: 'ai', expiresAt: 0, noApproval: true,
     lastActivityAt: '2026-10-23T20:00:00.000Z', lastActor: 'dsh',
   }, {
-    id: 'item-2', type: 1, name: 'unread-api-key', url: 'https://example.com', folderId: null,
+    id: 'item-2', type: 1, name: 'aaa-unread-key', url: 'https://example.com', folderId: null,
     createdAt: '2026-10-01T00:00:00.000Z', creator: 'vault@example.invalid', username: 'bot', totp: '',
     group: 'dev', expiresAt: 0, noApproval: false,
     lastActivityAt: '', lastActor: '',
@@ -218,6 +218,11 @@ try {
   const healthRows = await evaluate("document.querySelectorAll('#ov-actions .health-row').length")
   const health = /密钥健康/.test(String(healthCard)) && /免审批/.test(String(healthCard)) && /可直接读取明文/.test(String(healthCard)) && healthRows === 5
   health ? pass('A7 the health card lists five counts') : fail('A7', 'ov-actions=' + JSON.stringify({ healthRows, text: String(healthCard).slice(0, 120) }))
+
+  // A17 - sorting by grant count puts the credential the Agents can actually
+  // reach first, and the row says how many of them there are.
+  const byAccess = await evaluate("(function(){var s=document.getElementById('item-sort');if(!s)return 'no-select';s.value='access';s.onchange();var n=document.querySelectorAll('#items-box .ios-title b');return [].map.call(n,function(e){return e.textContent}).join(',')})()")
+  byAccess === 'tavily-api-key,aaa-unread-key' ? pass('A17 sorting by grant count leads with the credential Agents can reach') : fail('A17', 'order=' + JSON.stringify(byAccess))
 
   // A16 - the first row counts readable credentials (grant or no-approval), not
   // the api classification: two api items, one readable, so 1 and not 2.
