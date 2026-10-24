@@ -2348,6 +2348,14 @@ function renderDenied() {
   const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持调用（http_request）', 'secret.fill': '网页填充' }
   const kinds = (app.data && app.data.fillPolicies && app.data.fillPolicies.items) || []
   const kindOf = (name) => (kinds.find((k) => k.itemName === name) || {}).kind || ''
+  // The row used to print the agent's identifier, which is the name the token
+  // belongs to, not the name the operator gave it. Look the agent up and show
+  // that instead; the identifier stays on the buttons, which post it back.
+  const agents = (app.data && app.data.agents) || []
+  const who = (name) => {
+    const agent = agents.find((entry) => entry.name === name || entry.id === name)
+    return (agent && agentDisplayName(agent)) || name || ''
+  }
   const rowsHtml = rows.map((entry) => {
     const at = entry.lastAt ? new Date(entry.lastAt).toLocaleString('zh-CN', { hour12: false }) : '-'
     const kind = kindOf(entry.name)
@@ -2364,7 +2372,7 @@ function renderDenied() {
       : '<button class="ios-chip" data-allow-use data-agent="' + esc(entry.agent || '') + '" data-name="' + esc(entry.name || '') + '" title="只开代持调用，不给明文">http_request</button>'
     return '<div class="ios-row ios-row--stack">' +
       '<span class="ios-ico" data-kind="' + (kind === 'web' ? 'web' : kind === 'api' ? 'api' : 'none') + '">' + IOS_PERSON + '</span>' +
-      '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(entry.agent || '') + '</span>' + kindTag +
+      '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(who(entry.agent)) + '</span>' + kindTag +
       '<span class="ios-pill bad">' + esc(actionLabel[entry.action] || entry.action || '') + '</span></div>' +
       '<div class="ios-sub">条目 ' + esc(entry.name || '') + '</div>' +
       '<div class="ios-sub">被拦原因 ' + esc(entry.reason || '') + ' · ' + (entry.count ?? 1) + ' 次 · ' + esc(at) + '</div>' +

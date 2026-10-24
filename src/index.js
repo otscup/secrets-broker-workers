@@ -2984,15 +2984,13 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
   // in-policy use must not be rewritten into "waiting for approval" again, which
   // is what made an approved request impossible to ever satisfy.
   if (!ok && grantEligible && !capabilityDecisive && action === 'secret.use') {
-    // useAnyTarget is the operator saying "any host is fine"; the request still
-    // goes through the approval gate, it just skips the origin allowlist that
-    // would otherwise refuse it before anybody is asked.
-    if (behaviourSettings(state).useAnyTarget) { ok = false; reason = 'awaiting-approval' } else {
-      const policy = usePolicyFor(state, itemId, accountId)
-      if (!policy) { ok = false; reason = 'no-use-policy'; grantEligible = false }
-      else if (!targetAllowed(policy, target)) { ok = false; reason = 'target-denied'; grantEligible = false }
-      else { ok = false; reason = 'awaiting-approval' }
-    }
+    // One authority for the target question: usePolicyFor reads the switch and
+    // targetAllowed honours it, so the approval gate and the capability path
+    // cannot disagree about whether a host was allowed.
+    const policy = usePolicyFor(state, itemId, accountId)
+    if (!policy) { ok = false; reason = 'no-use-policy'; grantEligible = false }
+    else if (!targetAllowed(policy, target)) { ok = false; reason = 'target-denied'; grantEligible = false }
+    else { ok = false; reason = 'awaiting-approval' }
   }
   if (grantEligible && action === 'secret.fill') {
     // An action grant exists but the operator has not approved this fill yet.

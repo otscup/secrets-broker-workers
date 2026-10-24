@@ -43,6 +43,17 @@ issued. Do not try to use an agent token against a different vault account.
   task id, or with an approval URL when a human has to agree first. It only
   works for items classified as `web` with that exact origin in their fill
   policy.
+- `materialize` — ask to write one credential into one file the operator has
+  pre-approved, so a local process can read it without the model ever seeing the
+  value. Use `{ "name": "openai-key", "path": "/srv/app/secrets.env", "key": "OPENAI_API_KEY" }`.
+  The path must appear in the operator's allowlist (设置 → 安全 → 本地写入白名单);
+  anything else is refused before a human is asked. Classification still applies:
+  a `web` login can never be materialized. Approval does not hand back a read
+  grant — it creates a one-shot job.
+- `materialize_redeem` — `{ "id": "<job id from materialize>" }` returns
+  `{ path, key, value }` exactly once, within ten minutes of approval. Anything
+  else answers the same "unknown materialize request", including another agent's
+  job. It needs `MCP_ALLOW_READ=1`, because it does return the value.
 - `http_request` — make an HTTPS request with the secret injected server-side
   (header or bearer prefix). Use this instead of `get_secret` whenever possible;
   the model never receives the secret.

@@ -28,6 +28,10 @@ const state = {
   // the row could never appear.
 }
 state.grants = [{ agent: 'dsh', name: 'tavily-api-key', mode: '24h', createdAt: new Date().toISOString(), expiresAt: Date.now() + 3600e3, reads: 0, maxReads: null, revokedAt: null }]
+// One refused read, keyed by the agent's identifier. The row has to show the
+// name the operator gave that agent (`DSH 桌面助手`), not `dsh`: the identifier
+// is what the token belongs to, and nobody recognises it in a list.
+state.deniedAttempts = [{ agent: 'dsh', name: 'tavily-api-key', action: 'secret.read', reason: 'no-grant', count: 2, firstAt: '2026-10-23T20:00:00.000Z', lastAt: '2026-10-23T20:00:00.000Z' }]
 const items = {
   items: [{
     id: 'item-1', type: 1, name: 'tavily-api-key', url: 'https://tavily.com', folderId: null,
@@ -208,6 +212,17 @@ try {
   // A12 - a credential with no expiry date must not be drawn as expired.
   const expiry = await evaluate("(() => { const rows = [...document.querySelectorAll('#items-box .ios-row')]; return { rows: rows.length, expired: /已过期/.test(rows.map((r) => r.textContent).join(' ')) } })()")
   expiry.rows > 0 && !expiry.expired ? pass('A12 a credential with no expiry is not marked expired') : fail('A12', JSON.stringify(expiry))
+
+  // A13 - the refused-request row prints the display name, and the chips keep
+  // the identifier they post back.
+  const denied = await evaluate(`(() => {
+    const row = document.querySelector('#denied-list .ios-name')
+    const chip = document.querySelector('#denied-list [data-allow-denied]')
+    return { name: row ? row.textContent.trim() : '', agent: chip ? chip.getAttribute('data-agent') : '', rows: document.querySelectorAll('#denied-list .ios-row').length }
+  })()`)
+  denied.rows > 0 && denied.name === 'DSH 桌面助手' && denied.agent === 'dsh'
+    ? pass('A13 the denied row shows the display name and keeps the identifier on its buttons')
+    : fail('A13', JSON.stringify(denied).slice(0, 200))
 
   // A11 - nothing threw while all of that happened.
   problems.length === 0 ? pass('A11 no runtime errors') : fail('A11', problems.slice(0, 3).join(' | '))

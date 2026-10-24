@@ -264,6 +264,56 @@ npx wrangler deploy
 5. Open the Worker URL, log in with `ADMIN_PASSWORD`, then unlock with the
    Bitwarden master password. The browser derives the keys locally.
 
+### Environment
+
+Everything below is optional except `VAULT_EMAIL`; a missing variable means the
+feature it guards is off, never that it silently allows something.
+
+| Variable | What it does |
+| --- | --- |
+| `ADMIN_PASSWORD` | Console password when no custom password has been saved in the Durable Object. |
+| `AGENT_TOKEN` | Seeds the first agent (`dsh`) on a fresh deployment. Tokens are stored hashed afterwards. |
+| `SESSION_KEK` | base64 of 32 bytes. Wraps the vault session and signs the admin cookie. **Changing it logs everybody out and makes stored TOTP secrets unreadable.** |
+| `VAULT_EMAIL` | The NodeWarden account this broker reads. |
+| `PUBLIC_ORIGIN` | Absolute origin used when building approval links (default `https://sb.otscup.com`). |
+| `MCP_ALLOW_READ` | `1` exposes `get_secret` and `materialize_redeem` over MCP. Off, an agent can still ask for a fill but never receives a value. |
+| `OAUTH_ALLOW_REGISTER` | `0` / `false` / `off` refuses `POST /oauth/register`, so only pre-existing clients can connect. |
+| `HTTP_ALLOWED_HOSTS` | Comma-separated extra hosts `http_request` may reach. Without it, the built-in private/loopback blocklist is the only filter. |
+| `POLICY_SHADOW` | `1` turns policy decisions into audit-only (shadow) records. |
+| `FILL_EXECUTION_TOKEN` | Shared secret the legacy execute endpoint accepts. |
+| `FILL_LEGACY_EXECUTE_ENABLED` | `1` re-enables that legacy execute path (off by default). |
+| `FILL_TASK_SIGNING_KEY` | base64 key for task credentials. Generated per Durable Object when absent, so set it to survive a state reset. |
+| `FILL_AUTH_TTL_MS` | Lifetime of a fill authorization (default 10 min, capped at 15). |
+| `DSH_PLUGIN_TOKEN` | Bearer token for the plugin endpoints (`/api/plugin/*`). |
+| `AI_API_KEY` | Default key for the assistant's OpenAI-compatible endpoint; a key saved in 设置 → AI wins. |
+| `OIDC_ISSUER` | Issuer URL; discovery fills the four endpoints below when they are unset. |
+| `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET` | Client credentials for the xid login. No secret means public client + PKCE. |
+| `OIDC_REDIRECT_URI` | Must be registered with the provider, e.g. `https://<host>/oidc/callback`. |
+| `OIDC_SCOPE` | Requested scopes (default `openid email profile`). |
+| `OIDC_AUTHORIZATION_ENDPOINT` / `OIDC_TOKEN_ENDPOINT` / `OIDC_USERINFO_ENDPOINT` / `OIDC_JWKS_URI` | Override discovery. |
+| `OIDC_ALLOWED_SUB` / `OIDC_ALLOWED_EMAIL` | Optional allowlist; when set, only these identities may log in. |
+| `GEO_ENABLED` | `1` records the operator's location per request and renders the globe. |
+
+### Deploy it against D1 alone
+
+The broker only ever reads `NODEWARDEN_DB`. The `NODEWARDEN` service binding that
+older examples carried is not called anywhere, so a deployment that owns its own
+D1 needs nothing else:
+
+```sh
+npx wrangler secret put SESSION_KEK      # base64, 32 bytes
+npx wrangler secret put ADMIN_PASSWORD
+# then edit wrangler.jsonc: drop the "services" block, point d1_databases at your
+# own database id, and create the three tables the panel reads (users, ciphers,
+# folders) — see "Run the panel locally" for the schema that `scripts/` seeds.
+npx wrangler deploy
+```
+
+What you lose without NodeWarden: cross-account transfers stay inside this D1
+(they copy ciphers between two `user_id`s in the same database), and there is no
+second vault to reconcile against. Everything else — agents, approvals, grants,
+capabilities, fill tasks, materialize, audit — is local to the broker's own state.
+
 ### Run the panel locally
 
 `npx wrangler dev` serves the same Worker on `http://127.0.0.1:8787`, which is
