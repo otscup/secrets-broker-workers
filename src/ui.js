@@ -546,6 +546,30 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 #updated{margin-top:2px;font-size:var(--text-caption);color:var(--label-3)}
 .ov-controls{display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-2);flex:1 1 260px;margin-bottom:var(--sp-3)}
 .ov-search{margin:0;flex:1 1 180px;max-width:320px;min-width:0}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2)}
+.trend-nav{display:flex;align-items:center;gap:2px;flex:0 0 auto}
+.trend-arrow{width:28px;height:28px;min-height:0;padding:0;border:0;border-radius:50%;background:var(--fill);color:var(--label-2);font-size:15px;line-height:1;display:grid;place-items:center;cursor:pointer}
+.trend-arrow:hover{color:var(--label)}
+.trend-count{font-size:11px;color:var(--label-3);font-variant-numeric:tabular-nums;min-width:22px;text-align:center}
+.heat{display:grid;grid-template-columns:44px repeat(24,minmax(0,1fr));gap:3px;align-items:center}
+.heat__corner{grid-column:1}
+.heat__hour{font-size:10px;color:var(--label-3);text-align:center;font-variant-numeric:tabular-nums}
+.heat__day{font-size:12px;color:var(--label-2);padding-right:6px;text-align:right}
+.heat__cell{height:auto;min-height:14px;aspect-ratio:1;border-radius:4px;background:var(--fill);display:grid;place-items:center;font-size:10px;color:#fff;font-weight:600}
+.heat__legend{display:flex;align-items:center;gap:5px;margin-top:10px;font-size:11px;color:var(--label-2)}
+.heat__legend i{width:12px;height:12px;border-radius:3px;display:block}
+.heat__total{margin-left:auto}
+.health-item{display:flex;flex-direction:column}
+.health-row .health-chev{grid-column:4;grid-row:1/3;color:var(--label-3);font-size:15px;transition:transform .2s var(--ease)}
+.health-row.open .health-chev{transform:rotate(90deg)}
+.health-row{grid-template-columns:52px 1fr auto 14px}
+.health-list{display:flex;flex-direction:column;padding:0 0 var(--sp-2) 0}
+.health-cred{display:flex;align-items:baseline;gap:var(--sp-2);background:none;border:0;border-top:1px solid var(--separator);padding:6px 0 6px 52px;font:inherit;font-size:var(--text-sub);color:inherit;text-align:left;cursor:pointer}
+.health-cred:hover{color:var(--blue)}
+.health-cred b{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.health-cred span{color:var(--label-2);font-size:var(--text-caption);flex:0 0 auto;margin-left:auto}
+.health-more{padding:6px 0 6px 52px;font-size:var(--text-caption);color:var(--label-2)}
+@media(max-width:720px){.health-row{grid-template-columns:40px 1fr auto 12px}}
 .ov-actions{margin-bottom:var(--sp-3)}
 .ov-actions:empty{display:none}
 .ov-action{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3)}
@@ -573,6 +597,11 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 .dash .trend-box svg{height:130px}
 .dash{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--sp-3);align-items:stretch;margin-bottom:var(--sp-3)}
 .dash>.card,.dash>.ov-actions{margin:0;min-width:0}
+.dash>#ov-actions>.health{margin:auto 0}
+.dash>#ov-actions .health-row:first-child{border-top:1px solid var(--separator)}
+.dash>#ov-actions .health{padding-top:var(--sp-2)}
+.dash>.card>#donut-box{margin:auto 0}
+.dash>#globe-card .globe-split{margin:auto 0}
 .dash #chart-box svg{display:block;width:100%;height:auto}
 .dash>.ov-actions{display:flex;flex-direction:column;gap:var(--sp-2)}
 .dash>.ov-actions>.card{flex:1 1 auto}
@@ -638,7 +667,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
     <div id="notice-bar" class="notice-bar hidden" role="button" tabindex="0" title="点击查看全部通知"></div>
     <div id="kpis" class="kpis"></div>
     <div class="dash">
-      <div class="card span2"><h2>读取趋势</h2><div class="hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div></div>
+      <div class="card span2"><div class="card-head"><h2 id="trend-title">读取趋势</h2><div class="trend-nav"><button class="trend-arrow" id="trend-prev" title="上一张" aria-label="上一张">‹</button><span class="trend-count" id="trend-count">1/2</span><button class="trend-arrow" id="trend-next" title="下一张" aria-label="下一张">›</button></div></div><div class="hint" id="trend-hint" style="margin-bottom:6px">按时间聚合 · 悬停查看数值</div><div id="chart-box" class="trend-box"></div><div id="heat-box" class="hidden"></div></div>
       <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="rank-box"></div></div>
       <div id="ov-actions" class="card ov-actions"></div>
       <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
@@ -1018,6 +1047,8 @@ $('global-search-results').addEventListener('click', (event) => {
   if (view === 'items') { const filter = $('item-filter'); if (filter) { filter.value = row.dataset.name || ''; renderItems() } }
   if (view === 'agents') openAgentDetail(row.dataset.name)
 })
+$('trend-prev').onclick = () => { trendFace = (trendFace + trendFaces.length - 1) % trendFaces.length; renderTrendFace() }
+$('trend-next').onclick = () => { trendFace = (trendFace + 1) % trendFaces.length; renderTrendFace() }
 $('items-refresh').onclick = loadItems; $('items-select').onclick = () => { itemsSelecting = !itemsSelecting; if (!itemsSelecting) selectedItems.clear(); $('items-select').textContent = itemsSelecting ? '完成' : '选择'; renderItems() }; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('ai-save').onclick = saveAiSettings; $('ai-model-fetch').onclick = fetchCustomModels; $('ai-help').onclick = () => openAiHelp();; $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + ('自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
 // Collapsible settings cards. One delegated handler covers every card, so a
@@ -1645,7 +1676,16 @@ function renderOverviewActions() {
     sub.textContent = bits.filter(Boolean).join(' · ')
   }
   box.innerHTML = '<h2>密钥健康</h2>' + healthRowsHtml()
-  box.querySelectorAll('[data-goto]').forEach((button) => { button.onclick = () => { const nav = document.querySelector('#nav button[data-view="' + button.dataset.goto + '"]'); if (nav) nav.click() } })
+  box.querySelectorAll('[data-health]').forEach((button) => {
+    button.onclick = () => {
+      const list = button.parentElement.querySelector('.health-list')
+      if (!list) return
+      const open = list.classList.toggle('hidden') === false
+      button.setAttribute('aria-expanded', String(open))
+      button.classList.toggle('open', open)
+    }
+  })
+  box.querySelectorAll('[data-item-menu]').forEach((button) => { button.onclick = () => openItemMenu(button.dataset.itemMenu) })
 }
 
 // What the vault holds, as opposed to how often it was read: how many
@@ -1677,19 +1717,82 @@ function healthRowsHtml() {
     else if (item.expiresAt > 0) past += 1
   }
   const total = items.length || 1
-  const row = (label, value, hint, tone) => '<button class="health-row" data-goto="items">'
+  const bucketsOf = { api: [], web: [], none: [], noApproval: [], expiry: [] }
+  for (const item of items) {
+    const kind = kinds[item.id] || ''
+    const bucket = kind === 'web' ? 'web' : kind === 'api' ? 'api' : 'none'
+    bucketsOf[bucket].push(item)
+    if ((policies[item.name] && policies[item.name].noApproval) || item.noApproval) bucketsOf.noApproval.push(item)
+    if (item.expiresAt > 0 && item.expiresAt - now < 7 * 86400e3) bucketsOf.expiry.push(item)
+  }
+  // A row is a summary you can open: the credentials behind the number are one
+  // tap away, in place, so checking "which ones are unclassified" does not throw
+  // away the dashboard to go and look.
+  const row = (key, label, value, hint, tone) => '<div class="health-item">'
+    + '<button class="health-row" data-health="' + key + '" aria-expanded="false">'
     + '<span class="health-bar"><i style="width:' + Math.round((value / total) * 100) + '%" data-tone="' + tone + '"></i></span>'
     + '<span class="health-label">' + label + '</span>'
     + '<span class="health-value">' + value + '</span>'
-    + '<span class="health-hint">' + hint + '</span></button>'
+    + '<span class="health-hint">' + hint + '</span>'
+    + (value ? '<span class="health-chev">›</span>' : '')
+    + '</button>'
+    + (value ? '<div class="health-list hidden">' + bucketsOf[key].slice(0, 8).map((item) => '<button class="health-cred" data-item-menu="' + esc(item.name) + '">'
+      + '<b>' + esc(item.name) + '</b><span>' + esc(item.group || '') + '</span></button>').join('')
+      + (bucketsOf[key].length > 8 ? '<div class="health-more">还有 ' + (bucketsOf[key].length - 8) + ' 条</div>' : '')
+      + '</div>' : '')
+    + '</div>'
   return '<div class="health">'
-    + row('可直接读取明文', api, api ? 'api 类，Agent 拿得到值' : '没有 api 类凭据', 'blue')
-    + row('只能填充', web, web ? '网页登录，值不出站' : '没有网页登录', 'purple')
-    + row('未分类', none, none ? '默认拒绝读取' : '都分类了', none ? 'orange' : 'green')
-    + row('免审批', noApproval, noApproval ? 'Agent 读它不用问' : '全部需要批准', 'green')
-    + row('7 天内到期', soon + past, past ? past + ' 条已过期' : '近期没有到期', soon || past ? 'orange' : 'green')
+    + row('api', '可直接读取明文', api, api ? 'api 类，Agent 拿得到值' : '没有 api 类凭据', 'blue')
+    + row('web', '只能填充', web, web ? '网页登录，值不出站' : '没有网页登录', 'purple')
+    + row('none', '未分类', none, none ? '默认拒绝读取' : '都分类了', none ? 'orange' : 'green')
+    + row('noApproval', '免审批', noApproval, noApproval ? 'Agent 读它不用问' : '全部需要批准', 'green')
+    + row('expiry', '7 天内到期', soon + past, past ? past + ' 条已过期' : '近期没有到期', soon || past ? 'orange' : 'green')
     + '</div>'
 }
+// Week × hour, for the same reason the trend exists but at a scale a single
+// day hides: "read a lot on Tuesday morning" is the pattern people act on.
+function heatGridHtml() {
+  const entries = (app.data && app.data.audit) || []
+  const days = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+  const grid = Array.from({ length: 7 }, () => new Array(24).fill(0))
+  for (const entry of entries) {
+    if (!/^secret\.(read|use|fill)/.test(String(entry.event || ''))) continue
+    const at = new Date(entry.time)
+    if (Number.isNaN(at.getTime())) continue
+    const day = (at.getDay() + 6) % 7
+    grid[day][at.getHours()] += 1
+  }
+  const max = Math.max(1, ...grid.flat())
+  const head = '<div class="heat__corner"></div>' + grid[0].map((_, hour) => '<div class="heat__hour">' + (hour % 3 === 0 ? String(hour).padStart(2, '0') : '') + '</div>').join('')
+  const rows = grid.map((row, day) => '<div class="heat__day">' + days[day] + '</div>' + row.map((count, hour) => {
+    const level = count / max
+    return '<div class="heat__cell" data-count="' + count + '"' + (count ? ' style="background:color-mix(in srgb,var(--blue) ' + Math.round(12 + level * 88) + '%,transparent)"' : '')
+      + ' title="' + days[day] + ' ' + String(hour).padStart(2, '0') + ':00 · ' + count + ' 次">' + (count && level > 0.72 ? count : '') + '</div>'
+  }).join('')).join('')
+  const total = grid.flat().reduce((sum, n) => sum + n, 0)
+  return '<div class="heat">' + head + rows + '</div>'
+    + '<div class="heat__legend"><span>少</span>' + [12, 30, 50, 70, 100].map((a) => '<i style="background:color-mix(in srgb,var(--blue) ' + a + '%,transparent)"></i>').join('') + '<span>多</span><span class="heat__total">审计里的 ' + entries.length + ' 条记录 · 共 ' + total + ' 次读取</span></div>'
+}
+
+const trendFaces = [
+  { id: 'chart', title: '读取趋势', hint: '按时间聚合 · 悬停查看数值' },
+  { id: 'heat', title: '读取热力图', hint: '星期 × 小时 · 越深越频繁' },
+]
+let trendFace = 0
+
+function renderTrendFace() {
+  const face = trendFaces[trendFace]
+  const title = $('trend-title')
+  const hint = $('trend-hint')
+  const count = $('trend-count')
+  if (title) title.textContent = face.title
+  if (hint) hint.textContent = face.hint
+  if (count) count.textContent = (trendFace + 1) + '/' + trendFaces.length
+  show('chart-box', face.id === 'chart')
+  show('heat-box', face.id === 'heat')
+  if (face.id === 'heat') { const box = $('heat-box'); if (box) box.innerHTML = heatGridHtml() }
+}
+
 function renderStats() {
   const stats = app.stats || { totalReads: 0, activeAgents: 0, pending: 0, activeGrants: 0, buckets: [], topItems: [], topAgents: [] }
   const cards = [{ l: '读取次数', v: stats.totalReads, sub: '当前区间 · 点开查看', view: 'reads' }, { l: '活跃 Agent', v: stats.activeAgents, sub: '有读取记录', view: 'agents' }, { l: '待审批 / 通知', v: stats.pending, sub: '点开处理', warn: stats.pending > 0, view: 'pending' }, { l: '有效授权', v: stats.activeGrants, sub: '含免审批', view: 'grants' }]
@@ -1731,6 +1834,7 @@ function renderStats() {
   // Five is what the card has room for; the server sends up to twenty.
   const top = (stats.topItems || []).slice(0, 20); const totalTop = top.reduce((sum, item) => sum + item.count, 0) || 1; const maxTop = Math.max(1, ...top.map((item) => item.count))
   $('top-box').innerHTML = top.length ? '<div class="rank">' + top.map((item, index) => { const pct = Math.max(4, Math.round(item.count / maxTop * 100)); return '<div class="rank__row"><div class="rank__head"><span class="rank__name">' + (index + 1) + '. ' + esc(item.name) + '</span><span class="rank__count">' + item.count + ' 次</span></div><div class="rank__track"><div class="rank__fill" style="width:' + pct + '%"></div></div></div>' }).join('') + '</div>' : '<div class="hint">这个区间还没有读取记录。</div>'
+  renderTrendFace()
   $('updated').textContent = '最后更新 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false })
 }
 function renderItems() {
