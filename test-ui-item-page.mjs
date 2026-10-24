@@ -45,6 +45,7 @@ const routes = {
   '/api/items': () => items,
   '/api/stats': () => stats,
   '/api/settings': () => ({ settings: {}, profile: {} }),
+  '/api/security': () => ({ totpEnabled: false, sessions: [] }),
 }
 
 // Saving from the detail page used to close #modal, which is hidden while the
@@ -166,13 +167,44 @@ try {
   const pageGone = await evaluate("document.getElementById('item-page').classList.contains('in')")
   saved && !pageGone ? pass('A5 save posts and closes the detail page') : fail('A5', JSON.stringify({ saved, pageGone, writes }))
 
-  // A6 - the work queue surfaces a grant that expires inside 24h.
+  // A7 - the work queue surfaces a grant that expires inside 24h.
   const workCard = await evaluate("document.getElementById('ov-actions').textContent")
   const expiringRow = /条授权 24 小时内到期/.test(String(workCard))
-  expiringRow ? pass('A6 work queue shows the expiring grant') : fail('A6', 'ov-actions=' + JSON.stringify(workCard))
+  expiringRow ? pass('A7 work queue shows the expiring grant') : fail('A7', 'ov-actions=' + JSON.stringify(workCard))
 
-  // A7 - nothing threw while all of that happened.
-  problems.length === 0 ? pass('A7 no runtime errors') : fail('A7', problems.slice(0, 3).join(' | '))
+  // A8 - 编辑 turns the read-only page into a form without leaving it, and
+  // 完成 puts it back. The form card is display:none until the page says so.
+  await evaluate("document.querySelector('[data-item-menu]').click()")
+  await wait(700)
+  const beforeEdit = await evaluate("getComputedStyle(document.querySelector('#item-page .card.edit-only')).display")
+  await evaluate("document.getElementById('item-page-edit').click()")
+  await wait(300)
+  const afterEdit = await evaluate("getComputedStyle(document.querySelector('#item-page .card.edit-only')).display")
+  const editLabel = await evaluate("document.getElementById('item-page-edit').textContent")
+  beforeEdit === 'none' && afterEdit !== 'none' && editLabel.includes('完成')
+    ? pass('A8 编辑 reveals the form and turns into 完成')
+    : fail('A8', JSON.stringify({ beforeEdit, afterEdit, editLabel }))
+
+  // A9 - asking for a password with no second factor enrolled must explain the
+  // way out instead of silently failing, because the endpoint answers 428.
+  await evaluate("document.getElementById('item-reveal').click()")
+  await wait(700)
+  const revealText = await evaluate("document.getElementById('modal').textContent")
+  const guide = /两步验证/.test(String(revealText)) && /设置/.test(String(revealText))
+  guide ? pass('A9 reveal without TOTP points at the security settings') : fail('A9', JSON.stringify(revealText).slice(0, 160))
+  await evaluate("document.querySelector('#modal .modal-x')?.click()")
+  await wait(400)
+
+  // A10 - share targets are checkboxes people can tap, not a multiple select.
+  await evaluate("document.getElementById('item-page-edit').click()")
+  await wait(300)
+  const pickCount = await evaluate("document.querySelectorAll('.pick-row [data-share-agent]').length")
+  await evaluate("document.querySelector('.pick-row [data-share-agent]').click()")
+  const picked = await evaluate("document.querySelector('.pick-row [data-share-agent]').checked")
+  pickCount > 0 && picked ? pass('A10 share list offers ' + pickCount + ' tappable target(s)') : fail('A10', JSON.stringify({ pickCount, picked }))
+
+  // A11 - nothing threw while all of that happened.
+  problems.length === 0 ? pass('A11 no runtime errors') : fail('A11', problems.slice(0, 3).join(' | '))
 } finally {
   try { ws?.close() } catch {}
   child.kill()
