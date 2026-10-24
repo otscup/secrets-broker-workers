@@ -1140,6 +1140,27 @@ async function totpSecret(env, state) {
   return new TextDecoder().decode(await unwrapWithKek(state.security.totpSecretWrapped, await kekBytes(env)))
 }
 
+// The one place a browser session may hand out plaintext. Reading a stored
+// password and dumping the whole vault in one file are the same risk, so they
+// share a gate: a cookie proves who is asking, a code proves the account holder
+// is present. Throttled through the login counters, so guessing is not free.
+// Returns a Response when refused, or null when the caller may continue. The
+// code is passed in because the caller has already parsed the body; reading the
+// request twice locks the stream and turns a refusal into a 500.
+async function secondFactorWall(request, env, event, code) {
+  const ip = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-forwarded-for') ?? 'unknown'
+  const state = await loadState(env)
+  if (loginBlocked(state, ip)) return fail('尝试次数过多，请 15 分钟后再试', 429)
+  if (state.security?.totpEnabled !== true) return fail('totp not configured', 428)
+  if (!(await verifyTotp(await totpSecret(env, state), code))) {
+    await recordLoginFailure(env, ip)
+    await addAudit(env, { event: event + '-deny', reason: 'bad-totp', via: 'web' })
+    return fail('验证码错误', 401)
+  }
+  await clearLoginFailures(env, ip)
+  return null
+}
+
 async function getSession(env) {
   const response = await stateStub(env).fetch('https://state/session')
   const payload = await response.json()
@@ -1301,7 +1322,10 @@ async function listCiphers(env, db, session) {
       items.push({
         id: row.id, type: decrypted.type, name, url: cipherUrl(decrypted.data), folderId: row.folder_id ?? null,
         createdAt: row.created_at ?? '', creator: session.email,
-        username: extractUsername(decrypted), totp: extractTotp(decrypted),
+        username: extractUsername(decrypted),
+        // The TOTP seed is not listed. It is the very factor that guards the
+        // plaintext read, so handing it to whoever holds the cookie defeats
+        // that gate. The editor treats the field as "leave blank to keep".
         group: state.itemGroups?.[name] ?? '',
  expiresAt: state.secretExpiry?.[name]?.expiresAt ?? 0,
         noApproval: state.policies[name]?.noApproval === true,
@@ -1404,10 +1428,12 @@ async function updateCipher(env, db, session, currentName, changes) {
     data.login = data.login && typeof data.login === 'object' ? data.login : {}
     data.login.username = changes.username ? await encryptStr(changes.username, keys.itemEnc, keys.itemMac) : ''
   }
-  if (typeof changes.totp === 'string') {
+  // Blank means "keep", like the value field: the editor no longer receives the
+  // stored seed (the list hides it), so a blank field must not wipe it.
+  if (typeof changes.totp === 'string' && changes.totp.length > 0) {
     if (!data || typeof data !== 'object') data = {}
     data.login = data.login && typeof data.login === 'object' ? data.login : {}
-    data.login.totp = changes.totp ? await encryptStr(changes.totp, keys.itemEnc, keys.itemMac) : ''
+    data.login.totp = await encryptStr(changes.totp, keys.itemEnc, keys.itemMac)
   }
   if (typeof changes.url === 'string') {
     if (!data || typeof data !== 'object') data = {}
@@ -4263,10 +4289,16 @@ export default {
       }
       return json({ ok: true, created, skipped })
     }
-    if (url.pathname === '/api/items/export') {
+    // The export hands over every password in one file, so it is the widest door
+    // a stolen cookie could walk through — wider than reading a single item. It
+    // takes the same second factor as /api/secret/reveal for that reason.
+    if (url.pathname === '/api/items/export' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
       if (!session) return fail('locked', 423)
+      const { code } = await request.json().catch(() => ({}))
+      const refused = await secondFactorWall(request, env, 'items.export', code)
+      if (refused) return refused
       try {
         const user = await vaultUser(env, env.NODEWARDEN_DB, session)
         const rows = await env.NODEWARDEN_DB.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
@@ -4276,6 +4308,7 @@ export default {
           const decrypted = await decryptCipherRow(row, session)
           items.push({ name: decrypted.name, url: cipherUrl(decrypted.data), notes: decrypted.notes, value: extractSecret(decrypted), group: state.itemGroups?.[decrypted.name] ?? '', noApproval: state.policies?.[decrypted.name]?.noApproval === true })
         }
+        await addAudit(env, { event: 'items.export', via: 'web', totp: true, count: items.length })
         return json({ exportedAt: nowIso(), items })
       } catch (error) { return fail(String(error.message ?? error), 500) }
     }
@@ -6371,64 +6404,50 @@ export default {
     // there is nothing to gate on, and the panel tells the operator to enrol it.
     if (url.pathname === '/api/secret/reveal' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
-      // A six-digit code is only worth something while guesses are slow, so this
-      // shares the login throttle: eight wrong codes lock the address out for
-      // fifteen minutes, and a good code clears the counter.
-      const revealIp = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-forwarded-for') ?? 'unknown'
-      const state = await loadState(env)
-      if (loginBlocked(state, revealIp)) return fail('尝试次数过多，请 15 分钟后再试', 429)
-      if (state.security?.totpEnabled !== true) return fail('totp not configured', 428)
       const session = await getSession(env)
       if (!session) return fail('vault locked', 423)
       const body = await request.json().catch(() => ({}))
       const name = String(body.name ?? '').trim()
       if (!name) return fail('name required', 400)
-      const secret = new TextDecoder().decode(await unwrapWithKek(state.security.totpSecretWrapped, await kekBytes(env)))
-      if (!(await verifyTotp(secret, body.code))) {
-        await recordLoginFailure(env, revealIp)
-        await addAudit(env, { event: 'secret.view-deny', name, reason: 'bad-totp', via: 'web' })
-        return fail('验证码错误', 401)
-      }
-      await clearLoginFailures(env, revealIp)
+      const refused = await secondFactorWall(request, env, 'secret.view', body.code)
+      if (refused) return refused
       const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
       if (!result) return fail('not found', 404)
       await addAudit(env, { event: 'secret.view', name, via: 'web', totp: true })
       return json({ value: result.value, username: result.username, totp: result.totp })
     }
     if (url.pathname === '/secret') {
-      const admin = await adminAuthorized(request, env)
-      const resolved = admin ? null : await resolveAgent(request, env)
-      if (!admin && !resolved) return fail('unauthorized', 401)
+      // Agents only. The panel reads a password through /api/secret/reveal,
+      // which asks for a second factor; this route never did, so a stolen
+      // session cookie could read any plaintext here and the second factor
+      // protected nothing. A browser cookie is not an agent token, and the
+      // README only ever documents the Bearer form for this route.
+      const resolved = await resolveAgent(request, env)
+      if (!resolved) return fail('unauthorized', 401)
       const session = await getSession(env)
       if (!session) return fail('vault locked', 423)
       const name = url.searchParams.get('name') ?? ''
       if (!name) return fail('name required', 400)
       try {
-        if (resolved) {
-          const access = await agentAccess(env, {
-            session, agentName: resolved.name, agent: resolved.agent, state: resolved.state,
-            name, origin: url.origin, ctx,
-          })
-          if (access.status === 'pending') return json({ status: 'pending', requestId: access.requestId, approvalUrl: access.approvalUrl }, 202)
-          if (access.status === 'forbidden') return fail(access.error, 403)
-          if (access.status === 'notfound') return fail(access.error, 404)
-          // Second layer: the same guard already ran inside agentAccess. A
-          // website login is refused; only an api credential with an explicit
-          // read policy passes, unless the item is marked no-approval.
-          // The item name here is `name`; `secretName` only exists in the /mcp
-          // tools scope, and referring to it made every successful /secret call
-          // throw a ReferenceError and answer 500.
-          const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[name]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
-          if (!readGuard.ok) {
-            await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name, reason: readGuard.reason })
-            return fail('plaintext read is not allowed for this credential: ' + readGuard.reason, 403)
-          }
-          return json({ value: access.value })
+        const access = await agentAccess(env, {
+          session, agentName: resolved.name, agent: resolved.agent, state: resolved.state,
+          name, origin: url.origin, ctx,
+        })
+        if (access.status === 'pending') return json({ status: 'pending', requestId: access.requestId, approvalUrl: access.approvalUrl }, 202)
+        if (access.status === 'forbidden') return fail(access.error, 403)
+        if (access.status === 'notfound') return fail(access.error, 404)
+        // Second layer: the same guard already ran inside agentAccess. A
+        // website login is refused; only an api credential with an explicit
+        // read policy passes, unless the item is marked no-approval.
+        // The item name here is `name`; `secretName` only exists in the /mcp
+        // tools scope, and referring to it made every successful /secret call
+        // throw a ReferenceError and answer 500.
+        const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { noApproval: resolved.state.policies?.[name]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
+        if (!readGuard.ok) {
+          await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name, reason: readGuard.reason })
+          return fail('plaintext read is not allowed for this credential: ' + readGuard.reason, 403)
         }
-        const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name)
-        if (!result) return fail('not found', 404)
-        await addAudit(env, { event: 'secret.read', name, via: 'web' })
-        return json({ value: result.value, username: result.username, totp: result.totp })
+        return json({ value: access.value })
       } catch (error) { return fail(String(error.message ?? error), 500) }
     }
     return fail('not found', 404)
