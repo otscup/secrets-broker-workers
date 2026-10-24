@@ -42,37 +42,38 @@ export async function login(brokerUrl, options = {}) {
   const timeoutMs = options.timeoutMs ?? 5 * 60 * 1000
   const opener = options.open ?? openBrowser
   const server = await discover(brokerUrl)
+  /** @type {{resolve: (code: string) => void, reject: (error: Error) => void}} */
+  let settle = { resolve: () => {}, reject: () => {} }
 
   const codePromise = new Promise((resolve, reject) => {
-    const listener = http.createServer((req, res) => {
-      const url = new URL(req.url, 'http://127.0.0.1')
-      if (url.pathname !== '/oauth/callback') {
-        res.writeHead(404)
-        res.end('not found')
-        return
-      }
-      const error = url.searchParams.get('error')
-      const code = url.searchParams.get('code')
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-      res.end(
-        '<meta charset="utf-8"><title>Secrets Broker</title><h2>Secrets Broker</h2><p>' +
-          (error ? '授权失败：' + error : '授权完成，可以关闭此页面，回到 Agent。') +
-          '</p>',
-      )
-      if (error) reject(new Error(error))
-      else if (code) resolve(code)
-      else reject(new Error('missing authorization code'))
-    })
-    listener.keepAlive = true
-    codePromise.server = listener
-    listener.listen(0, '127.0.0.1')
+    settle = { resolve, reject }
   })
 
-  const port = await new Promise((resolve, reject) => {
-    const listener = codePromise.server
-    listener.once('listening', () => resolve(listener.address().port))
-    listener.once('error', reject)
+  const listener = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1')
+    if (url.pathname !== '/oauth/callback') {
+      res.writeHead(404)
+      res.end('not found')
+      return
+    }
+    const error = url.searchParams.get('error')
+    const code = url.searchParams.get('code')
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(
+      '<meta charset="utf-8"><title>Secrets Broker</title><h2>Secrets Broker</h2><p>' +
+        (error ? '授权失败：' + error : '授权完成，可以关闭此页面，回到 Agent。') +
+        '</p>',
+    )
+    if (error) settle.reject(new Error(error))
+    else if (code) settle.resolve(code)
+    else settle.reject(new Error('missing authorization code'))
   })
+
+  await new Promise((resolve, reject) => {
+    listener.once('error', reject)
+    listener.listen(0, '127.0.0.1', resolve)
+  })
+  const port = listener.address().port
   const redirectUri = `http://127.0.0.1:${port}/oauth/callback`
 
   try {
@@ -131,7 +132,7 @@ export async function login(brokerUrl, options = {}) {
     return { token: token.data.access_token, store: saved.store }
   } finally {
     try {
-      codePromise.server.close()
+      listener.close()
     } catch {}
   }
 }

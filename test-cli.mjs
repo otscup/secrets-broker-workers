@@ -182,6 +182,72 @@ await asyncCheck('C6 approval link is handed to the opener', async () => {
   assert.equal(opened, signed, 'opener should receive the signed approval URL')
 })
 
+// C7 the login flow stores a token it obtained with PKCE
+await asyncCheck('C7 login completes against a stub authorization server', async () => {
+  const file = path.join(tmp, 'oauth.json')
+  let verifierSeen = ''
+  let base = ''
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, base)
+    if (url.pathname === '/.well-known/oauth-authorization-server') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ authorization_endpoint: base + '/oauth/authorize', token_endpoint: base + '/oauth/token' }))
+      return
+    }
+    if (url.pathname === '/oauth/register') {
+      req.resume()
+      res.writeHead(201, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ client_id: 'mcp_stub' }))
+      return
+    }
+    if (url.pathname === '/oauth/authorize') {
+      const redirect = new URL(url.searchParams.get('redirect_uri'))
+      redirect.searchParams.set('code', 'code-1')
+      redirect.searchParams.set('state', url.searchParams.get('state'))
+      res.writeHead(302, { location: redirect.toString() })
+      res.end()
+      return
+    }
+    if (url.pathname === '/oauth/token') {
+      let body = ''
+      req.on('data', (chunk) => (body += chunk))
+      req.on('end', () => {
+        const form = new URLSearchParams(body)
+        verifierSeen = form.get('code_verifier') || ''
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ access_token: 'tok-from-oauth', expires_in: 3600 }))
+      })
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  base = `http://127.0.0.1:${server.address().port}`
+
+  process.env.BROKER_TOKEN_FILE = file
+  process.env.BROKER_TOKEN_STORE = 'file'
+  delete process.env.BROKER_TOKEN
+  const { login } = await import('./cli/oauth.mjs')
+  const store = await import('./cli/store.mjs')
+
+  // Stand in for the browser: follow the consent redirect back to loopback.
+  const result = await login(base, {
+    open: (authUrl) => {
+      void (async () => {
+        const authorize = await fetch(authUrl, { redirect: 'manual' })
+        await fetch(new URL(authorize.headers.get('location')))
+      })()
+      return true
+    },
+  })
+  server.close()
+
+  assert.equal(result.token, 'tok-from-oauth')
+  assert.equal(store.loadToken(), 'tok-from-oauth', 'token is persisted after login')
+  assert.ok(verifierSeen.length > 20, 'code_verifier is sent on exchange')
+})
+
 fs.rmSync(tmp, { recursive: true, force: true })
 const failed = results.filter((entry) => !entry.ok)
 console.log(`==== cli bridge ${results.length - failed.length}/${results.length} passed ====`)
