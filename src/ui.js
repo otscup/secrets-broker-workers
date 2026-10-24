@@ -19,7 +19,7 @@ nav button{border:0;background:transparent;color:var(--muted);border-radius:9px;
 nav button.active{background:#fff;color:var(--text);box-shadow:0 2px 8px rgba(20,40,80,.07)}
 .user{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px}
 .user-wrap{position:relative;margin-left:auto}
-.avatar{width:30px;height:30px;border-radius:50%;background:var(--card);color:var(--text);display:grid;place-items:center;font-size:11px;border:1px solid var(--line);padding:0;line-height:0;cursor:pointer;overflow:hidden;flex:0 0 auto}
+.avatar{width:30px;height:30px;border-radius:50%;background:var(--card);color:var(--text);display:grid;place-items:center;font-size:11px;font-weight:600;border:1px solid var(--line);padding:0;line-height:1;cursor:pointer;overflow:hidden;flex:0 0 auto}
 .avatar img{display:block;width:100%;height:100%;object-fit:cover;border-radius:50%}
 .theme-cycle{border:0;background:transparent;font-size:16px;line-height:1;padding:4px 6px;border-radius:8px;cursor:pointer;flex:0 0 auto;opacity:.7}
 .theme-cycle:hover{background:var(--btn);opacity:1}
@@ -719,9 +719,6 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
       <div class="card-body">
       <div class="hint">用来自动解释「为什么这个 Agent 读不到」「哪条授权过期了」。它只读汇总信息（Agent、条目名、授权状态、日志），<b>永远拿不到密钥值、用户名或 TOTP</b>，也<b>不能修改任何东西</b>——所有修复仍由你在界面上点。</div>
       <label class="chk" style="margin-top:10px"><input type="checkbox" id="ai-enabled"> 启用 AI 助手</label>
-      <label class="field">优先使用</label>
-      <select id="ai-provider"><option value="custom">自建 / 第三方 API（OpenAI 兼容）</option><option value="workers-ai">Cloudflare Workers AI</option></select>
-      <div class="hint" id="ai-workers-note" style="margin-top:4px"></div>
       <div id="ai-custom-box">
         <label class="field">接口地址（Base URL）</label><input id="ai-endpoint" placeholder="https://api.openai.com/v1">
         <div class="hint">填到 <code>/v1</code> 即可，会自动加 <code>/chat/completions</code>；也可以直接填完整路径。</div>
@@ -735,12 +732,6 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
         <datalist id="ai-model-list"></datalist>
         <div class="hint" id="ai-model-status">先填好地址和 key，点「拉取模型」会向该接口请求 GET /models。</div>
       </div>
-      <label class="field">Workers AI 模型</label>
-      <div class="row" style="gap:6px;margin-top:4px">
-        <select id="ai-workers-model" style="flex:1;min-width:0"></select>
-      </div>
-      <div class="hint" id="ai-workers-status">上面的列表来自内置目录；也可以用下面的输入框填任意模型 ID。</div>
-      <input id="ai-workers-model-custom" placeholder="也可以直接写模型 ID，例如 @cf/meta/llama-3.1-8b-instruct-fp8">
       <label class="field">超时（毫秒）</label><input id="ai-timeout" type="number" min="5000" max="60000" value="25000">
       <div class="row" style="margin-top:12px"><button class="primary" id="ai-save">保存 AI 设置</button><button id="ai-test">测试</button></div>
       <div class="status" id="ai-status"></div>
@@ -856,7 +847,9 @@ function toast(text, error = false) {
 
 function renderAvatar(name, avatarUrl) { const el = $('avatar'); if (!el) return; el.textContent = String(name || 'SB').trim().slice(0, 2).toUpperCase(); // Initials are the default. A picture is only used when the profile names one,
   // so the header never shows the site logo twice.
-  const url = avatarUrl; if (!url) return; const img = document.createElement('img'); img.alt = ''; img.decoding = 'async'; img.onerror = () => img.remove(); el.appendChild(img); img.src = url }
+  const url = avatarUrl; if (!url) return; const img = document.createElement('img'); img.alt = ''; img.decoding = 'async'; // Only swap the initials for a picture once one actually decoded: a URL that
+  // answers 200 with an empty body would otherwise cover them with nothing.
+  img.onload = () => { if (img.naturalWidth > 0) el.appendChild(img) }; img.onerror = () => img.remove(); img.src = url }
 async function boot() { try { app.me = await api('/api/me'); show('login-card', false); $('who').textContent = app.me.name || String(app.me.email || '').split('@')[0] || ''; $('site-title').textContent = app.me.siteName || 'Secrets Broker'; renderAvatar(app.me.name || app.me.email, app.me.avatarUrl); show('lock', true); if (app.me.unlocked) { show('dashboard', true); show('unlock-card', false); await loadAll(); if (new URLSearchParams(location.search).get('view') === 'profile') { document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-profile')); document.querySelectorAll('#nav button').forEach((button) => button.classList.remove('active')); await loadProfile(); history.replaceState({}, '', '/') } } else { show('dashboard', false); show('unlock-card', true) } } catch { show('login-card', true); show('dashboard', false); show('unlock-card', false); loadOidcLogin() } }
 $('page-refresh').onclick = refreshCurrent
 $('site-title').onclick = () => { location.href = '/' }
@@ -1002,7 +995,7 @@ $('global-search-results').addEventListener('click', (event) => {
   if (view === 'items') { const filter = $('item-filter'); if (filter) { filter.value = row.dataset.name || ''; renderItems() } }
   if (view === 'agents') openAgentDetail(row.dataset.name)
 })
-$('items-refresh').onclick = loadItems; $('items-select').onclick = () => { itemsSelecting = !itemsSelecting; if (!itemsSelecting) selectedItems.clear(); $('items-select').textContent = itemsSelecting ? '完成' : '选择'; renderItems() }; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('require-classification-save').onclick = saveRequireClassification; $('ai-save').onclick = saveAiSettings; $('ai-model-fetch').onclick = fetchCustomModels; $('ai-help').onclick = () => openAiHelp(); $('ai-provider').onchange = () => $('ai-custom-box').classList.toggle('hidden', $('ai-provider').value !== 'custom'); $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + (d.provider === 'workers-ai' ? 'Workers AI' : '自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
+$('items-refresh').onclick = loadItems; $('items-select').onclick = () => { itemsSelecting = !itemsSelecting; if (!itemsSelecting) selectedItems.clear(); $('items-select').textContent = itemsSelecting ? '完成' : '选择'; renderItems() }; $('item-filter').oninput = renderItems; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('require-classification-save').onclick = saveRequireClassification; $('ai-save').onclick = saveAiSettings; $('ai-model-fetch').onclick = fetchCustomModels; $('ai-help').onclick = () => openAiHelp();; $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + ('自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
 // Collapsible settings cards. One delegated handler covers every card, so a
 // new collapsible card needs no extra wiring.
@@ -1439,12 +1432,10 @@ async function saveAiSettings() {
     const key = $('ai-apikey').value.trim()
     await api('/api/settings', { method: 'POST', body: JSON.stringify({ ai: {
       enabled: $('ai-enabled').checked,
-      provider: $('ai-provider').value,
       endpoint: $('ai-endpoint').value.trim(),
       model: $('ai-model').value.trim(),
       // The dropdown wins unless the free-text box has content, so a model that
       // is not in the catalogue can still be used.
-      workersModel: ($('ai-workers-model-custom').value.trim() || $('ai-workers-model').value || '').trim(),
       timeoutMs: Number($('ai-timeout').value) || 25000,
       // A blank field keeps the stored key; only a typed value replaces it.
       ...(key ? { apiKey: key } : {}),
@@ -1457,34 +1448,10 @@ async function saveAiSettings() {
 function renderAiSettings(ai) {
   if (!ai) return
   $('ai-enabled').checked = ai.enabled !== false
-  $('ai-provider').value = ai.provider || 'custom'
   $('ai-endpoint').value = ai.endpoint || ''
   $('ai-model').value = ai.model || ''
   $('ai-timeout').value = ai.timeoutMs || 25000
   $('ai-key-status').textContent = ai.hasApiKey ? '已保存一个 key（留空则沿用）' : '还没有 key'
-  $('ai-workers-note').textContent = ai.workersAiAvailable
-    ? '这个 Worker 已绑定 Workers AI，可以不填 key 直接用它。'
-    : '这个 Worker 没有绑定 Workers AI；要用它需要在 wrangler 里加 AI binding。'
-  $('ai-custom-box').classList.toggle('hidden', (ai.provider || 'custom') !== 'custom')
-  loadWorkerModels(ai.workersModel)
-}
-// Workers AI models come from the server's bundled catalogue, so the list is a
-// real dropdown. A model not in the list can still be typed below it.
-async function loadWorkerModels(current) {
-  try {
-    const data = await api('/api/ai/models')
-    const select = $('ai-workers-model')
-    const chosen = current || data.workersModel || data.workersDefault || '@cf/meta/llama-3.1-8b-instruct-fp8'
-    select.innerHTML = (data.workersModels || []).map((model) =>
-      '<option value="' + esc(model.id) + '"' + (model.id === chosen ? ' selected' : '') + '>' + esc(model.label) + '</option>'
-    ).join('')
-    if (!(data.workersModels || []).some((model) => model.id === chosen)) {
-      select.insertAdjacentHTML('afterbegin', '<option value="' + esc(chosen) + '" selected>' + esc(chosen) + '（自定义）</option>')
-    }
-    $('ai-workers-status').textContent = data.workersAiAvailable
-      ? '这个 Worker 已绑定 Workers AI，可以直接用。'
-      : '这个 Worker 还没有绑定 Workers AI，选哪个都调不通；需要在 wrangler 里加 AI binding 并重新部署。'
-  } catch (error) { $('ai-workers-status').textContent = error.message }
 }
 // Fetch the custom endpoint's own model list into the datalist, so the field
 // suggests real ids instead of making the operator spell them.

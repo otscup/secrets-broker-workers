@@ -125,19 +125,18 @@ const state = {
   else fail('A5', JSON.stringify({ opinionated, questionLast }))
 }
 
-// A6: the model catalog. Workers AI comes from the bundled list (a binding can
-// run a model but cannot enumerate them); the custom list is only fetched when
-// asked, and a missing endpoint/key says which one is missing.
+// A6: the model catalog. There is one provider, so the catalog only reports what
+// a custom fetch still needs. Workers AI was removed: it bound the panel to one
+// host and could not be listed, only guessed at.
 {
-  const { aiModelCatalog, WORKERS_AI_MODELS } = await import('./src/ai.js')
-  const catalog = await aiModelCatalog({ /* no AI binding */ }, { ai: { endpoint: '', apiKey: '' } }, { fetchCustom: false })
-  const listed = Array.isArray(catalog.workersModels) && catalog.workersModels.length > 10
-  const hasDeepseek = catalog.workersModels.some((m) => m.id.includes('deepseek'))
-  const noBinding = catalog.workersAiAvailable === false
+  const { aiModelCatalog } = await import('./src/ai.js')
+  const catalog = await aiModelCatalog({}, { ai: { endpoint: '', apiKey: '' } }, { fetchCustom: false })
+  const noWorkers = catalog.workersModels === undefined && catalog.workersAiAvailable === undefined
   const notFetched = catalog.custom.models.length === 0
   const needEndpoint = (await aiModelCatalog({}, { ai: {} }, { fetchCustom: true })).custom.reason.includes('接口地址')
-  if (listed && hasDeepseek && noBinding && notFetched && needEndpoint) pass('A6 the catalog lists Workers AI models and says what a custom fetch still needs')
-  else fail('A6', JSON.stringify({ listed, hasDeepseek, noBinding, notFetched, needEndpoint, count: WORKERS_AI_MODELS.length }))
+  const needKey = (await aiModelCatalog({}, { ai: { endpoint: 'https://api.example.com/v1' } }, { fetchCustom: true })).custom.reason.includes('API Key')
+  if (noWorkers && notFetched && needEndpoint && needKey) pass('A6 the catalog is custom-only and says which field is missing')
+  else fail('A6', JSON.stringify({ noWorkers, notFetched, needEndpoint, needKey, catalog }))
 }
 
 const passed = results.filter((r) => r.ok).length

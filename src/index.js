@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { uiHtml } from './ui.js'
-import { aiSnapshot, askAi, aiInsights, aiModelCatalog, WORKERS_AI_DEFAULT } from './ai.js'
+import { aiSnapshot, askAi, aiInsights, aiModelCatalog } from './ai.js'
 import { parseCommand, TELEGRAM_HELP, formatPendingList, formatGrants, formatStatus, resolvePending, autoRuleActive, describeAutoRule } from './telegram.js'
 import { LOGO_PNG_B64, FAVICON_ICO_B64 } from './logo.js'
 import {
@@ -5655,7 +5655,7 @@ export default {
       const state = await loadState(env)
       const fetchCustom = url.searchParams.get('fetch') === '1'
       const catalog = await aiModelCatalog(env, state.settings, { fetchCustom })
-      return json({ ok: true, workersDefault: WORKERS_AI_DEFAULT, ...catalog })
+      return json({ ok: true, ...catalog })
     }
     // The assistant, and the facts it is given. Read-only: it can explain and
     // suggest, and it cannot change a thing. The snapshot is built here, on the
@@ -5713,13 +5713,10 @@ export default {
         // The key itself is never returned; only whether one is stored.
         ai: {
           enabled: state.settings?.ai?.enabled !== false,
-          provider: state.settings?.ai?.provider === 'workers-ai' ? 'workers-ai' : 'custom',
           endpoint: state.settings?.ai?.endpoint ?? '',
           model: state.settings?.ai?.model ?? '',
-          workersModel: state.settings?.ai?.workersModel ?? WORKERS_AI_DEFAULT,
           timeoutMs: state.settings?.ai?.timeoutMs ?? 25000,
           hasApiKey: Boolean(state.settings?.ai?.apiKey || env.AI_API_KEY),
-          workersAiAvailable: Boolean(env.AI),
         } })
       }
       if (request.method === 'POST') {
@@ -5736,10 +5733,8 @@ export default {
             state.settings.ai ??= {}
             const ai = state.settings.ai
             if (typeof inc.enabled === 'boolean') ai.enabled = inc.enabled
-            if (inc.provider === 'workers-ai' || inc.provider === 'custom') ai.provider = inc.provider
             if (typeof inc.endpoint === 'string') ai.endpoint = inc.endpoint.trim().slice(0, 300)
             if (typeof inc.model === 'string') ai.model = inc.model.trim().slice(0, 200)
-            if (typeof inc.workersModel === 'string') ai.workersModel = inc.workersModel.trim().slice(0, 200)
             if (inc.timeoutMs != null) {
               const ms = Number(inc.timeoutMs)
               if (Number.isFinite(ms)) ai.timeoutMs = Math.max(5000, Math.min(60000, Math.floor(ms)))

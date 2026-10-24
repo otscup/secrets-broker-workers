@@ -141,79 +141,25 @@ async function askCustom({ endpoint, apiKey, model, messages, timeoutMs }) {
   } finally { clearTimeout(timer) }
 }
 
-// Ask Workers AI. Its chat interface is the same shape as OpenAI's, so the
-// messages array is reused unchanged.
-async function askWorkersAi(env, { model, messages, timeoutMs }) {
-  if (!env.AI || typeof env.AI.run !== 'function') return { ok: false, reason: 'AI binding not configured' }
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const result = await env.AI.run(model || WORKERS_AI_DEFAULT, { messages, max_tokens: 900 }, { signal: controller.signal })
-    const text = typeof result === 'string' ? result : (result?.response ?? '')
-    if (!String(text).trim()) return { ok: false, reason: 'Workers AI returned no text' }
-    return { ok: true, text: String(text).trim(), provider: 'workers-ai' }
-  } catch (error) {
-    const message = String(error.message ?? error)
-    // 5035 is Cloudflare's "this model is not on your plan". Say which model and
-    // what to do, instead of surfacing a bare code.
-    if (/5035|not available on the Workers Free plan|upgrade/i.test(message)) {
-      return { ok: false, reason: '模型 ' + (model || WORKERS_AI_DEFAULT) + ' 不在免费计划内；在设置里换成 Llama 3.1 8B 或 Llama 3.2 3B' }
-    }
-    return { ok: false, reason: message.slice(0, 160) }
-  } finally { clearTimeout(timer) }
-}
-
-// The one entry point. `settings.ai` decides the order: an explicit custom
-// provider wins when configured; otherwise Workers AI; when neither is
-// available the caller gets a clear reason instead of a stack trace.
+// The one entry point. There is one provider: an OpenAI-compatible endpoint the
+// operator configured themselves. The Workers AI binding is gone on purpose, so
+// the assistant works the same whether this runs on Cloudflare, in a container
+// or on a laptop.
 export async function askAi(env, settings, { question, snapshot, history = [] }) {
   const ai = settings?.ai ?? {}
   if (ai.enabled === false) return { ok: false, reason: 'AI 助手已在设置里关闭' }
+  const apiKey = ai.apiKey || env.AI_API_KEY
+  if (!ai.endpoint) return { ok: false, reason: '自建 API 未配置（需要 endpoint / key / model）' }
+  if (!apiKey) return { ok: false, reason: '自建 API 未配置（需要 endpoint / key / model）' }
+  if (!ai.model) return { ok: false, reason: '自建 API 未配置（需要 endpoint / key / model）' }
   const messages = aiMessages(question, snapshot, history)
   const timeoutMs = Math.max(5000, Math.min(60000, Number(ai.timeoutMs) || 25000))
-  const failures = []
-
-  const customReady = ai.endpoint && ai.apiKey && ai.model
-  const order = ai.provider === 'workers-ai' ? ['workers-ai', 'custom'] : ['custom', 'workers-ai']
-  for (const provider of order) {
-    if (provider === 'custom') {
-      if (!customReady) { failures.push('自建 API 未配置（需要 endpoint / key / model）'); continue }
-      const result = await askCustom({ endpoint: ai.endpoint, apiKey: ai.apiKey, model: ai.model, messages, timeoutMs })
-      if (result.ok) return result
-      failures.push('自建 API：' + result.reason)
-      continue
-    }
-    const result = await askWorkersAi(env, { model: ai.workersModel, messages, timeoutMs })
-    if (result.ok) return result
-    failures.push('Workers AI：' + result.reason)
-  }
-  return { ok: false, reason: failures.join('；') || '没有可用的 AI 提供方' }
+  const result = await askCustom({ endpoint: ai.endpoint, apiKey, model: ai.model, messages, timeoutMs })
+  if (result.ok) return result
+  return { ok: false, reason: '自建 API：' + result.reason }
 }
 
-// Workers AI text-generation models. The default must be one the Free plan can
-// actually run: the DeepSeek V4 models are paid-only and answer 5035 on a free
-// account, which is what made the assistant look broken.
-export const WORKERS_AI_DEFAULT = '@cf/meta/llama-3.1-8b-instruct-fp8'
-export const WORKERS_AI_MODELS = [
-  { id: '@cf/meta/llama-3.1-8b-instruct-fp8', label: 'Llama 3.1 8B（免费计划可用，推荐）' },
-  { id: '@cf/meta/llama-3.2-3b-instruct', label: 'Llama 3.2 3B（最快，免费可用）' },
-  { id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: 'Llama 3.3 70B（更强，免费额度内可用）' },
-  { id: '@cf/qwen/qwen3-30b-a3b-fp8', label: 'Qwen3 30B' },
-  { id: '@cf/zai-org/glm-4.7-flash', label: 'GLM-4.7 Flash' },
-  { id: '@cf/openai/gpt-oss-20b', label: 'GPT-OSS 20B' },
-  { id: '@cf/mistralai/mistral-small-3.1-24b-instruct', label: 'Mistral Small 3.1 24B' },
-  // Paid-plan models, listed but marked: choosing one on a free account answers
-  // 5035 and the settings page says why rather than leaving a mystery.
-  { id: '@cf/deepseek-ai/deepseek-v4.1-flash-1017', label: 'DeepSeek V4.1 Flash（需付费计划）', paid: true },
-  { id: '@cf/deepseek-ai/deepseek-v4-flash-0731', label: 'DeepSeek V4 Flash（需付费计划）', paid: true },
-  { id: '@cf/deepseek-ai/deepseek-v4-pro-0813', label: 'DeepSeek V4 Pro（需付费计划）', paid: true },
-  { id: '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b', label: 'DeepSeek R1 Distill 32B（需付费计划）', paid: true },
-]
-
-// Ask an OpenAI-compatible endpoint what it serves. GET /models is the one part
-// of that API every provider implements, and it is what makes the model a picker
-// rather than a field you must spell from memory.
-export async function listCustomModels({ endpoint, apiKey, timeoutMs = 15000 }) {
+async function listCustomModels({ endpoint, apiKey, timeoutMs = 15000 }) {
   const base = String(endpoint || '').replace(/\/$/, '')
   if (!base) return { ok: false, reason: '还没有填接口地址' }
   const url = /\/chat\/completions$/.test(base) ? base.replace(/\/chat\/completions$/, '/models') : base + '/models'
@@ -233,16 +179,11 @@ export async function listCustomModels({ endpoint, apiKey, timeoutMs = 15000 }) 
   } finally { clearTimeout(timer) }
 }
 
-// What the settings page offers. Workers AI is always listed (the binding may be
-// absent, in which case asking is refused with that reason); the custom list is
-// only fetched when asked, because it costs a request to someone else's API.
+// What the settings page offers. The list is only fetched when asked, because it
+// costs a request to someone else's API.
 export async function aiModelCatalog(env, settings, { fetchCustom = false } = {}) {
   const ai = settings?.ai ?? {}
-  const out = {
-    workersAiAvailable: Boolean(env.AI),
-    workersModels: WORKERS_AI_MODELS,
-    custom: { ok: false, models: [], reason: '' },
-  }
+  const out = { custom: { ok: false, models: [], reason: '' } }
   if (fetchCustom) {
     const key = ai.apiKey || env.AI_API_KEY
     if (!ai.endpoint) out.custom.reason = '先填接口地址'
