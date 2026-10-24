@@ -174,10 +174,13 @@ try {
   const pageGone = await evaluate("document.getElementById('item-page').classList.contains('in')")
   saved && !pageGone ? pass('A5 save posts and closes the detail page') : fail('A5', JSON.stringify({ saved, pageGone, writes }))
 
-  // A7 - the work queue surfaces a grant that expires inside 24h.
-  const workCard = await evaluate("document.getElementById('ov-actions').textContent")
-  const expiringRow = /条授权 24 小时内到期/.test(String(workCard))
-  expiringRow ? pass('A7 work queue shows the expiring grant') : fail('A7', 'ov-actions=' + JSON.stringify(workCard))
+  // A7 - the left card reports credential health: the fixture has one
+  // no-approval credential and no classified kinds, so it must say 免审批 1 and
+  // 未分类 1 rather than leaving the card blank.
+  const healthCard = await evaluate("document.getElementById('ov-actions').textContent")
+  const healthRows = await evaluate("document.querySelectorAll('#ov-actions .health-row').length")
+  const health = /密钥健康/.test(String(healthCard)) && /免审批/.test(String(healthCard)) && /可直接读取明文/.test(String(healthCard)) && healthRows === 5
+  health ? pass('A7 the health card lists five counts') : fail('A7', 'ov-actions=' + JSON.stringify({ healthRows, text: String(healthCard).slice(0, 120) }))
 
   // A8 - 编辑 turns the read-only page into a form without leaving it, and
   // 完成 puts it back. The form card is display:none until the page says so.
@@ -225,19 +228,20 @@ try {
     ? pass('A13 the denied row shows the display name and keeps the identifier on its buttons')
     : fail('A13', JSON.stringify(denied).slice(0, 200))
 
-  // A14 - the reminder bar carries a 已读 control, and pressing it hides the bar
-  // instead of opening the list behind it.
-  const notice = await evaluate(`(() => {
+  // A14 - the bar is for approvals only, so a reminder alone leaves it hidden,
+  // and the 待审批 / 通知 sheet offers the action that reminder needs (延期).
+  const notice = await evaluate(`(async () => {
     const bar = document.querySelector('#notice-bar')
-    const button = bar && bar.querySelector('[data-notice-dismiss]')
-    if (!button) return { found: false }
-    const before = bar.classList.contains('hidden')
-    button.click()
-    const after = bar.classList.contains('hidden')
-    return { found: true, tone: bar.dataset.tone || '', before, after }
+    const hidden = bar.classList.contains('hidden')
+    document.querySelector('[data-kpi="pending"]').click()
+    await new Promise((r) => setTimeout(r, 300))
+    const modal = document.getElementById('modal')
+    const extend = modal.querySelector('[data-notice-extend]')
+    const open = modal.querySelector('[data-notice-open]')
+    return { hidden, extend: Boolean(extend), open: Boolean(open), shown: !modal.classList.contains('hidden') }
   })()`)
-  notice.found && !notice.before && notice.after && notice.tone
-    ? pass('A14 the notice bar can be marked read, and it carries a tone')
+  notice.hidden && notice.shown && notice.extend
+    ? pass('A14 reminders stay out of the bar and carry 延期 in the sheet')
     : fail('A14', JSON.stringify(notice).slice(0, 200))
 
   // A11 - nothing threw while all of that happened.

@@ -57,6 +57,18 @@ html[data-theme="dark"] .notice-bar[data-tone="red"]{background:color-mix(in srg
 html[data-theme="dark"] .notice-bar[data-tone="orange"]{background:color-mix(in srgb,var(--orange) 18%,transparent);border-color:color-mix(in srgb,var(--orange) 40%,transparent);color:#ffd08a}
 html[data-theme="dark"] .notice-bar[data-tone="blue"]{background:color-mix(in srgb,var(--blue) 18%,transparent);border-color:color-mix(in srgb,var(--blue) 40%,transparent);color:#a9c8ff}
 .notice-bar .notice-more{background:none;border:0;font:inherit;color:inherit;cursor:pointer;padding:0 2px}
+.health{display:flex;flex-direction:column;gap:2px}
+.health-row{display:grid;grid-template-columns:52px 1fr auto;gap:2px var(--sp-2);align-items:center;background:none;border:0;border-top:1px solid var(--separator);padding:var(--sp-2) 0;font:inherit;color:inherit;text-align:left;cursor:pointer}
+.health-row:first-child{border-top:0}
+.health-bar{grid-column:1;grid-row:1/3;display:block;height:6px;border-radius:3px;background:var(--fill);overflow:hidden}
+.health-bar i{display:block;height:100%;border-radius:3px;background:var(--blue)}
+.health-bar i[data-tone="purple"]{background:var(--purple)}
+.health-bar i[data-tone="orange"]{background:var(--orange)}
+.health-bar i[data-tone="green"]{background:var(--green)}
+.health-label{grid-column:2;grid-row:1;font-size:var(--text-body);font-weight:500}
+.health-value{grid-column:3;grid-row:1;font-size:var(--text-headline);font-weight:600;font-variant-numeric:tabular-nums}
+.health-hint{grid-column:2/4;grid-row:2;font-size:var(--text-caption);color:var(--label-2)}
+@media(max-width:720px){.health-row{grid-template-columns:40px 1fr auto}}
 .ov-clear{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-2) 0}
 .ov-clear-mark{flex:0 0 auto;display:flex;width:34px;height:34px;align-items:center;justify-content:center;border-radius:50%;background:color-mix(in srgb,var(--green) var(--mix-badge),transparent);color:var(--green)}
 .ov-clear-mark svg{width:22px;height:22px}
@@ -1179,6 +1191,9 @@ function openExtendMenu(name) {
 }
 $('kpis').addEventListener('click', (event) => {
   const card = event.target.closest('[data-kpi]'); if (!card) return
+  // 待审批 / 通知 is not a view: it opens the sheet that lists every reminder and
+  // every waiting approval, each row acting on the thing it names.
+  if (card.dataset.kpi === 'pending') { openNoticeModal(); return }
   openKpiModal(card.dataset.kpi)
 })
 document.addEventListener('click', async (event) => {
@@ -1629,28 +1644,47 @@ function renderOverviewActions() {
     const bits = [me.email || '', me.unlocked ? '已解锁' : '未解锁', (app.items || []).length + ' 条密钥', ((app.data && app.data.agents) || []).length + ' 个 Agent']
     sub.textContent = bits.filter(Boolean).join(' · ')
   }
+  box.innerHTML = '<h2>密钥健康</h2>' + healthRowsHtml()
+  box.querySelectorAll('[data-goto]').forEach((button) => { button.onclick = () => { const nav = document.querySelector('#nav button[data-view="' + button.dataset.goto + '"]'); if (nav) nav.click() } })
+}
+
+// What the vault holds, as opposed to how often it was read: how many
+// credentials an agent can hand over in plaintext, how many are unclassified,
+// how many are about to stop working. Read counts already have a trend, a
+// ranking and a donut; this is the dimension nobody could see.
+function healthRowsHtml() {
+  const items = app.items || []
   const data = app.data || {}
   const now = Date.now()
-  const pending = (data.pending || []).length
-  const denied = (data.deniedAttempts || []).length
-  // grant.expiresAt is a number (Date.now()+ttl, 0 = permanent); Date.parse on
-  // a number is NaN, which silently made this row unreachable.
-  const expiring = (data.grants || []).filter((g) => g.expiresAt > now && g.expiresAt - now < 86400000 && !g.revokedAt).length
-  const rows = []
-  if (pending) rows.push(['有 ' + pending + ' 条请求等你批准', 'Agent 正等着读密钥，超时就自动失效', '去处理', 'grants', 'warn'])
-  if (expiring) rows.push([expiring + ' 条授权 24 小时内到期', '到期后 Agent 要重新申请', '去续期', 'grants', ''])
-  if (denied) rows.push([denied + ' 个 Agent 被拦下过', '点开能看原因，确认后再放行', '查看', 'items', 'bad'])
-  if (!rows.length) {
-    const soonest = (data.reminders || []).filter((item) => item.expiresAt).sort((a, b) => a.expiresAt - b.expiresAt)[0]
-    const hint = soonest
-      ? '下一个到期：' + esc(soonest.name || soonest.agent || '') + ' · ' + Math.max(1, Math.ceil((soonest.expiresAt - now) / 86400e3)) + ' 天后'
-      : '没有到期的凭据或授权'
-    box.innerHTML = '<h2>需要你处理</h2><div class="ov-clear"><span class="ov-clear-mark">' + IOS_CHECK.replace(/currentColor/g, 'var(--green)') + '</span>'
-      + '<div><b>都处理完了</b><div class="ios-sub">' + hint + '</div></div></div>'
-    return
+  const kinds = ((data.fillPolicies && data.fillPolicies.items) || []).reduce((map, entry) => {
+    if (entry && entry.itemId) map[entry.itemId] = entry.kind || ''
+    return map
+  }, {})
+  const policies = data.policies || {}
+  let web = 0, api = 0, none = 0, noApproval = 0, soon = 0, past = 0
+  for (const item of items) {
+    const kind = kinds[item.id] || ''
+    if (kind === 'web') web += 1
+    else if (kind === 'api') api += 1
+    else none += 1
+    if ((policies[item.name] && policies[item.name].noApproval) || item.noApproval) noApproval += 1
+    // expiresAt is a number, 0 means "no expiry"; Date.parse on a number is NaN.
+    if (item.expiresAt > now) { if (item.expiresAt - now < 7 * 86400e3) soon += 1 }
+    else if (item.expiresAt > 0) past += 1
   }
-  box.innerHTML = '<h2>需要你处理</h2>' + rows.map((row) => '<div class="ios-field ov-action"><div><b>' + row[0] + '</b><div class="ios-sub">' + row[1] + '</div></div><button class="ios-chip ' + row[4] + '" data-goto="' + row[3] + '">' + row[2] + '</button></div>').join('') + '</div>'
-  box.querySelectorAll('[data-goto]').forEach((button) => { button.onclick = () => { const nav = document.querySelector('#nav button[data-view="' + button.dataset.goto + '"]'); if (nav) nav.click() } })
+  const total = items.length || 1
+  const row = (label, value, hint, tone) => '<button class="health-row" data-goto="items">'
+    + '<span class="health-bar"><i style="width:' + Math.round((value / total) * 100) + '%" data-tone="' + tone + '"></i></span>'
+    + '<span class="health-label">' + label + '</span>'
+    + '<span class="health-value">' + value + '</span>'
+    + '<span class="health-hint">' + hint + '</span></button>'
+  return '<div class="health">'
+    + row('可直接读取明文', api, api ? 'api 类，Agent 拿得到值' : '没有 api 类凭据', 'blue')
+    + row('只能填充', web, web ? '网页登录，值不出站' : '没有网页登录', 'purple')
+    + row('未分类', none, none ? '默认拒绝读取' : '都分类了', none ? 'orange' : 'green')
+    + row('免审批', noApproval, noApproval ? 'Agent 读它不用问' : '全部需要批准', 'green')
+    + row('7 天内到期', soon + past, past ? past + ' 条已过期' : '近期没有到期', soon || past ? 'orange' : 'green')
+    + '</div>'
 }
 function renderStats() {
   const stats = app.stats || { totalReads: 0, activeAgents: 0, pending: 0, activeGrants: 0, buckets: [], topItems: [], topAgents: [] }
@@ -2063,14 +2097,7 @@ function noticeItems() {
   if (pending.length) {
     return pending.map((entry) => ({ id: 'pending:' + (entry.id || entry.name), tone: 'red', level: 'pending', text: '待审批：' + (entry.agent || 'Agent') + ' 请求读取「' + entry.name + '」', kind: 'pending', entry }))
   }
-  return (data.reminders || []).map((item) => ({
-    id: 'reminder:' + (item.kind || 'note') + ':' + (item.name || item.agent || ''),
-    tone: item.severity === 'critical' || item.severity === 'warning' ? 'orange' : 'blue',
-    level: item.severity,
-    text: (item.kind && item.kind.indexOf('secret-') === 0 ? '密钥 ' : '') + (item.agent || '') + '：' + (item.message || ''),
-    kind: item.kind,
-    entry: item,
-  }))
+  return []
 }
 function renderNoticeBar() {
   const bar = $('notice-bar')
@@ -2106,17 +2133,26 @@ function renderNoticeBar() {
   }
 }
 function openNoticeModal() {
-  const items = noticeItems()
-  if (!items.length) return
   const pending = (app.data && app.data.pending) || []
   const reminders = (app.data && app.data.reminders) || []
+  // The sheet is the only place reminders live now, so it must open even when
+  // nothing is waiting for approval.
+  if (!pending.length && !reminders.length) return
 
   const pendingBlock = pending.length ? pending.map((entry) => '<div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px">'
     + pendingDetailHtml(entry)
     + '<div class="row" style="margin-top:8px"><button class="small primary" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="once">仅本次</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="24h">24 小时</button><button class="small" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="always">永久</button><button class="small danger" data-kpi-decide data-id="' + esc(entry.id) + '" data-decision="deny">拒绝</button></div></div>').join('') : ''
   const reminderBlock = reminders.length ? reminders.map((item) => {
-    const color = item.severity === 'critical' ? 'var(--danger)' : (item.severity === 'warning' ? '#c2760b' : '#2b4f8a')
-    return '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid var(--line);padding:8px 0"><div><b style="color:' + color + '">' + esc(item.agent || '') + '</b> <span class="pill">' + (item.oauth ? 'OAuth' : 'Token') + '</span><div class="hint" style="color:' + color + '">' + esc(item.message || '') + '</div></div><div class="nowrap"><button class="small" data-notice-extend="' + esc(item.agent) + '">延长</button></div></div>'
+    const tone = item.severity === 'critical' ? 'bad' : (item.severity === 'warning' ? 'warn' : 'plain')
+    const isSecret = Boolean(item.kind && item.kind.indexOf('secret-') === 0)
+    return '<div class="ios-row ios-row--stack"><div class="ios-main"><div class="ios-title">'
+      + '<span class="ios-name">' + esc((isSecret ? '密钥 ' : '') + (item.agent || '')) + '</span>'
+      + '<span class="ios-pill ' + tone + '">' + esc(item.message || '') + '</span></div>'
+      + '<div class="ios-sub">' + esc(item.kind === 'idle' ? '很久没有读取记录' : '到期后会拒绝，需要重新授权') + '</div>'
+      + '<div class="ios-actions">'
+      + (item.expiresAt ? '<button class="ios-chip" data-notice-extend="' + esc(item.agent || '') + '">延期</button>' : '')
+      + (item.name ? '<button class="ios-chip" data-notice-open="' + esc(item.name) + '">查看凭据</button>' : '')
+      + '</div></div></div>'
   }).join('') : ''
   const body = (pending.length ? '<div class="hint" style="margin-bottom:8px">有待审批请求时，仅显示待审批内容。</div>' + pendingBlock : '') +
     (!pending.length && reminders.length ? reminderBlock : '') +
@@ -2124,6 +2160,9 @@ function openNoticeModal() {
   openModal('待审批 / 通知', body)
   document.querySelectorAll('[data-notice-extend]').forEach((button) => {
     button.onclick = () => { show('modal', false); openExtendMenu(button.dataset.noticeExtend) }
+  })
+  document.querySelectorAll('[data-notice-open]').forEach((button) => {
+    button.onclick = () => { show('modal', false); openItemMenu(button.dataset.noticeOpen) }
   })
 }
 // Last read opportunity per agent, derived from the audit trail the server
