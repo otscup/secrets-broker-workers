@@ -32,7 +32,9 @@ const items = {
   items: [{
     id: 'item-1', type: 1, name: 'tavily-api-key', url: 'https://tavily.com', folderId: null,
     createdAt: '2026-10-01T00:00:00.000Z', creator: 'vault@example.invalid', username: 'bot', totp: '',
-    group: 'ai', expiresAt: null, noApproval: true,
+    // expiresAt: 0 is what /api/items sends for "no expiry". The stub used
+    // to say null, which is why A12 never bit.
+    group: 'ai', expiresAt: 0, noApproval: true,
     lastActivityAt: '2026-10-23T20:00:00.000Z', lastActor: 'dsh',
   }],
   completedTransfers: [],
@@ -202,6 +204,10 @@ try {
   await evaluate("document.querySelector('.pick-row [data-share-agent]').click()")
   const picked = await evaluate("document.querySelector('.pick-row [data-share-agent]').checked")
   pickCount > 0 && picked ? pass('A10 share list offers ' + pickCount + ' tappable target(s)') : fail('A10', JSON.stringify({ pickCount, picked }))
+
+  // A12 - a credential with no expiry date must not be drawn as expired.
+  const expiry = await evaluate("(() => { const rows = [...document.querySelectorAll('#items-box .ios-row')]; return { rows: rows.length, expired: /已过期/.test(rows.map((r) => r.textContent).join(' ')) } })()")
+  expiry.rows > 0 && !expiry.expired ? pass('A12 a credential with no expiry is not marked expired') : fail('A12', JSON.stringify(expiry))
 
   // A11 - nothing threw while all of that happened.
   problems.length === 0 ? pass('A11 no runtime errors') : fail('A11', problems.slice(0, 3).join(' | '))

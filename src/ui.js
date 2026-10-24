@@ -1731,7 +1731,9 @@ function renderItems() {
     const kind = kindByName.get(item.name)
     const when = item.lastActivityAt ? relativeTime(Date.parse(item.lastActivityAt)) : '无读取记录'
     const meta = [item.group, when, item.lastActor].filter(Boolean).map((part) => esc(part)).join(' · ')
-    const expired = typeof item.expiresAt === 'number' && item.expiresAt <= Date.now()
+    // 0 means "no expiry" in state.secretExpiry, so a plain numeric test made
+  // every credential without a date read as expired.
+  const expired = typeof item.expiresAt === 'number' && item.expiresAt > 0 && item.expiresAt <= Date.now()
     // The pill is the approval state and nothing else: it used to read 已过期
     // whenever the credential expired, which hid the state the click changes and
     // made a successful toggle look like it did nothing. Expiry is a separate fact,
@@ -1763,7 +1765,7 @@ function renderItems() {
 function updateBulkBar() { const bar = $('bulk-bar'); if (!bar) return; bar.classList.toggle('hidden', selectedItems.size === 0); $('bulk-count').textContent = '已选择 ' + selectedItems.size + ' 个条目' }
 // null/undefined = permanent; past = expired; soon (<24h) flagged.
 function expiryLabel(expiresAt) {
-  if (typeof expiresAt !== 'number') return '永久'
+  if (typeof expiresAt !== 'number' || expiresAt <= 0) return '永久'
   const left = expiresAt - Date.now()
   if (left <= 0) return '<span style="color:var(--danger)">已过期</span>'
   const days = Math.floor(left / 86400e3)
@@ -2917,7 +2919,7 @@ async function saveAgentFromModal(originalName) {
       const renamed = await api('/api/agents/rename', { method: 'POST', body: JSON.stringify({ name: originalName, newName: requested }) })
       currentName = renamed.name
     }
-    await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name: currentName, alias: $('ma-alias').value.trim(), note: $('ma-note').value.trim(), allow: pickListValues('ma-allow'), groups: pickListValues('ma-groups'), allowAll: $('ma-allowall').checked, write: $('ma-write').checked }) })
+    await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name: currentName, alias: $('ma-alias').value.trim(), note: $('ma-note').value.trim(), allow: $('ma-allowall').checked ? [] : pickListValues('ma-allow'), groups: pickListValues('ma-groups'), allowAll: $('ma-allowall').checked, write: $('ma-write').checked }) })
     show('modal', false); await loadState(); toast('已保存 Agent')
   } catch (error) { toast(error.message, true) }
 }
@@ -2944,9 +2946,15 @@ function agentActionFields(agent) {
     + '<button class="small primary" id="aa-grant">授予</button></div>'
     + '<div class="status" id="aa-status"></div></div>'
 }
+// "Allow every item" already means every item, so the per-item picker has to
+// show that. Leaving the boxes empty made an operator who ticked 全部条目 on the
+// consent page read the empty list as "the grant was lost".
+function agentPermAllow(agent) {
+  return agent.allowAll === true ? knownItemNames() : (agent.allow || [])
+}
 function agentPermFields(agent) {
   return '<div class="hint" style="margin:2px 0 6px">这里的「可读条目」是<b>范围</b>：决定这个 Agent 有资格申请哪些条目（list_secrets 也按它过滤）。它不等于已经拿到授权——分享/审批产生的是一次具体的<b>授权</b>，在「授权」页能看到。两者都满足才能读到值。</div>'
-    + '<label class="field">可读条目（范围内的条目，不勾=看不到也申请不了）</label>' + pickListHtml('ma-allow', knownItemNames(), agent.allow || [], '密钥库里还没有条目。')
+    + '<label class="field">可读条目（范围内的条目，不勾=看不到也申请不了）</label>' + pickListHtml('ma-allow', knownItemNames(), agentPermAllow(agent), '密钥库里还没有条目。')
     + '<label class="field">可读分组（范围内按分组放行）</label>' + pickListHtml('ma-groups', knownGroups(), agent.groups || [], '还没有任何分组。')
     + agentActionFields(agent)
 }
