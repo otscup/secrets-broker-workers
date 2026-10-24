@@ -142,7 +142,10 @@ alone, `--verbose` lists every row instead of the first twenty. `--apply` is
 refused on purpose until the merge rules are agreed.
 
 The endpoint it uses (`GET /sync/pull`) is off unless the deployment sets
-`SYNC_ENABLED=1`, and it accepts only an admin session or an agent token.
+`SYNC_ENABLED=1`. It accepts an admin session, or an agent that the operator
+explicitly marked as **a sync device** (Agents → open an agent → 作为同步设备).
+An ordinary agent is refused: it sees the items in its scope, one decision at a
+time, never the vault. Even a sync device only receives ciphertext.
 
 ### Three ways to connect an agent
 

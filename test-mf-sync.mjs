@@ -16,7 +16,7 @@ const ITEM_ID = 'item-sync-1'
 const ITEM_NAME = 'cloudflare-token'
 const PASSWORD = 'SYNC_TEST_VALUE_41be'
 
-const scenario = async (bindings) => {
+const scenario = async (bindings, agentFlags = {}) => {
   const mf = new Miniflare({
     modules: true,
     modulesRules: [{ type: 'ESModule', include: ['**/*.js'] }],
@@ -43,7 +43,7 @@ const scenario = async (bindings) => {
   const hash = Buffer.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(AUTH)))).toString('base64')
   const ns = await mf.getDurableObjectNamespace('BROKER_STATE')
   const stub = ns.get(ns.idFromName('global'))
-  const state = { agents: { [AGENT]: { hash, allow: [], groups: [], allowAll: false, write: false, legacy: false, account: ACCT, createdAt: '2024-01-01' } }, oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {}, policies: {}, grants: {}, pending: {}, audit: [], itemGroups: {}, security: {}, settings: { vaultEmail: ACCT, notifications: {} }, capabilities: {}, actionGrants: {}, usePolicies: {}, credentialKinds: { [ITEM_ID]: 'api' }, itemIds: { [ITEM_NAME]: ITEM_ID } }
+  const state = { agents: { [AGENT]: { hash, allow: [], groups: [], allowAll: false, write: false, sync: false, legacy: false, account: ACCT, createdAt: '2024-01-01', ...agentFlags } }, oauthClients: {}, oauthCodes: {}, oauthTokens: {}, oauthAgentProfiles: {}, policies: {}, grants: {}, pending: {}, audit: [], itemGroups: {}, security: {}, settings: { vaultEmail: ACCT, notifications: {} }, capabilities: {}, actionGrants: {}, usePolicies: {}, credentialKinds: { [ITEM_ID]: 'api' }, itemIds: { [ITEM_NAME]: ITEM_ID } }
   await stub.fetch('https://state/state', { method: 'PUT', body: JSON.stringify(state) })
   return mf
 }
@@ -68,9 +68,31 @@ const pull = (mf, headers = {}) => mf.dispatchFetch('https://broker.test/sync/pu
   await mf.dispose()
 }
 
-// S3 - an agent token gets the encrypted rows, and only those.
+// S5 - an ordinary agent must not be able to walk the vault.
 {
   const mf = await scenario({ SYNC_ENABLED: '1' })
+  const r = await pull(mf, { authorization: 'Bearer ' + AUTH })
+  const text = await r.text()
+  ;(r.status === 403 && /not a sync device/.test(text))
+    ? pass('S5 an agent without the sync flag is refused')
+    : fail('S5', String(r.status) + ' ' + text.slice(0, 80))
+  await mf.dispose()
+}
+
+// S6 - once marked as a sync device, the same token is allowed.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' }, { sync: true })
+  const r = await pull(mf, { authorization: 'Bearer ' + AUTH })
+  const body = await r.json().catch(() => ({}))
+  ;(r.status === 200 && body.count === 1)
+    ? pass('S6 a marked sync device is allowed')
+    : fail('S6', String(r.status) + ' ' + JSON.stringify(body).slice(0, 80))
+  await mf.dispose()
+}
+
+// S3 - an agent token gets the encrypted rows, and only those.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' }, { sync: true })
   const body = await pull(mf, { authorization: 'Bearer ' + AUTH }).then((r) => r.json())
   const item = (body.items ?? [])[0] ?? {}
   const blob = JSON.stringify(body)
@@ -83,7 +105,7 @@ const pull = (mf, headers = {}) => mf.dispatchFetch('https://broker.test/sync/pu
 
 // S4 - a wrong token is not an empty answer: it is refused.
 {
-  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const mf = await scenario({ SYNC_ENABLED: '1' }, { sync: true })
   const r = await pull(mf, { authorization: 'Bearer not-a-token' })
   r.status === 401 ? pass('S4 a bad token is refused, not answered with nothing') : fail('S4', String(r.status))
   await mf.dispose()

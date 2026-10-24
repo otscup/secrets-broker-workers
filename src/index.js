@@ -1577,7 +1577,7 @@ async function createCipher(env, db, session, fields, folderNameOverride) {
 }
 
 function publicState(state) {
-  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], allowAll: agent.allowAll === true, write: agent.write === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '', expiresAt: typeof agent.expiresAt === 'number' ? agent.expiresAt : null }))
+  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], allowAll: agent.allowAll === true, write: agent.write === true, sync: agent.sync === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '', expiresAt: typeof agent.expiresAt === 'number' ? agent.expiresAt : null }))
   const seen = new Set(agents.map((agent) => agent.name))
   const now = Date.now()
   for (const token of Object.values(state.oauthTokens ?? {})) {
@@ -5311,7 +5311,7 @@ export default {
         if (state.agents[name]) { error = 'agent already exists'; return state }
         // New agents are never legacy: only pre-existing records without an
         // explicit flag are treated as legacy by the loadState default.
-        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), note: String(body.note ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], allowAll: body.allowAll === true, write: body.write === true, legacy: false, account, createdAt: nowIso() }
+        state.agents[name] = { hash: '', tokenWrapped: '', alias: String(body.alias ?? '').trim(), note: String(body.note ?? '').trim(), allow: Array.isArray(body.allow) ? body.allow : [], groups: Array.isArray(body.groups) ? body.groups : [], allowAll: body.allowAll === true, write: body.write === true, sync: body.sync === true, legacy: false, account, createdAt: nowIso() }
         return state
       })
       if (error) return fail(error, 409)
@@ -5432,6 +5432,7 @@ export default {
           if (Array.isArray(body.groups)) agent.groups = body.groups.map(String).filter(Boolean)
           if (typeof body.allowAll === 'boolean') agent.allowAll = body.allowAll
           if (typeof body.write === 'boolean') agent.write = body.write
+          if (typeof body.sync === 'boolean') agent.sync = body.sync
           return state
         }
         const oauthExists = Object.values(state.oauthTokens ?? {}).some((token) => token.agent === name)
@@ -6373,6 +6374,11 @@ export default {
       const puller = await resolveAgent(request, env)
       let account = ''
       if (puller) {
+        // An ordinary agent must not be able to walk the vault: it sees the
+        // items you put in its scope, one decision at a time. A sync device is
+        // a separate thing the operator marks as such, and even then it only
+        // ever sees ciphertext — never a value, never a name.
+        if (puller.agent?.sync !== true) return fail('this agent is not a sync device', 403)
         account = puller.agent?.account || ''
       } else if (await adminAuthorized(request, env)) {
         const session = await getSession(env)
