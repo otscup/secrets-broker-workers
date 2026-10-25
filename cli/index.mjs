@@ -2,12 +2,16 @@
 /**
  * Secrets Broker local bridge.
  *
- *   npx @otscup/secrets-broker            speak MCP over stdio (for stdio-only clients)
- *   npx @otscup/secrets-broker login      log in now
- *   npx @otscup/secrets-broker status     where is the token kept, is it valid
- *   npx @otscup/secrets-broker logout     forget the token
- *   npx @otscup/secrets-broker materialize <item> --path <file> --key NAME
+ *   node cli/index.mjs                    speak MCP over stdio (for stdio-only clients)
+ *   node cli/index.mjs login              log in now
+ *   node cli/index.mjs status             where is the token kept, is it valid
+ *   node cli/index.mjs logout              forget the token
+ *   node cli/index.mjs materialize <item> --path <file> --key NAME
  *                                        write an approved credential into a file
+ *   node cli/index.mjs agents connect     point local agents at this broker
+ *
+ * The package is still private, so there is no published name to npx yet. Run it
+ * from a checkout (`node cli/index.mjs`) until it is published.
  *
  * Environment:
  *   BROKER_URL          broker base URL (default https://sb.otscup.com)
@@ -61,12 +65,13 @@ Example client config (Claude Desktop, Codex, any stdio MCP client)
   {
     "mcpServers": {
       "secrets-broker": {
-        "command": "npx",
-        "args": ["-y", "@otscup/secrets-broker"],
+        "command": "node",
+        "args": ["<checkout>/cli/index.mjs"],
         "env": { "BROKER_URL": "${DEFAULT_URL}" }
       }
     }
   }
+  (or just run: node cli/index.mjs agents connect --apply)
 `
 
 async function status() {

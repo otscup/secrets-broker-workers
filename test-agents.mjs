@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { adapters, detect, plan, applyPlan, parseLoose, entryFor } from './cli/agents.mjs'
+import { adapters, detect, plan, applyPlan, parseLoose, entryFor, CLI_ENTRY } from './cli/agents.mjs'
 
 const results = []
 const pass = (n) => { results.push({ n, ok: true }); console.log('PASS  ' + n) }
@@ -56,7 +56,8 @@ try {
     applyPlan(plan(byId('codex'), BROKER))
     const text = read(file)
     const hasOld = text.includes('[mcp_servers.other]')
-    const hasBlock = /# >>> secrets-broker\n\[mcp_servers\.secrets-broker\]\ncommand = "npx"\nargs = \["-y", "secrets-broker-workers"\]/.test(text)
+    const hasBlock = text.includes('# >>> secrets-broker\n[mcp_servers.secrets-broker]\ncommand = ')
+      && text.includes('args = [' + JSON.stringify(CLI_ENTRY) + ']')
     const hasUrl = text.includes('BROKER_URL = "' + BROKER + '"')
     const backup = fs.existsSync(file + '.secrets-broker.bak')
     hasOld && hasBlock && hasUrl && backup
@@ -81,8 +82,11 @@ try {
     applyPlan(plan(byId('claude-desktop'), BROKER))
     const parsed = JSON.parse(read(file))
     const server = parsed.mcpServers?.['secrets-broker']
-    server?.command === 'npx' && server?.args?.[1] === 'secrets-broker-workers' && server?.env?.BROKER_URL === BROKER
-      ? pass('A5 JSON clients get the entry, and the file still parses')
+    // The command has to exist on this machine. `npx -y secrets-broker-workers`
+    // did not: the package is private, so npm answers 404 and the client cannot
+    // start. Pointing at the CLI's own file is checkable right here.
+    server?.command === process.execPath && server?.args?.[0] === CLI_ENTRY && server?.env?.BROKER_URL === BROKER && fs.existsSync(CLI_ENTRY)
+      ? pass('A5 JSON clients get the entry, and the command actually exists')
       : fail('A5', read(file).slice(0, 200))
   }
 

@@ -15,11 +15,17 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const MARKER_START = '# >>> secrets-broker'
 export const MARKER_END = '# <<< secrets-broker'
 export const ENTRY_NAME = 'secrets-broker'
-export const PACKAGE = 'secrets-broker-workers'
+// What the written entry actually runs. The package is still `private`, so
+// `npx -y <name>` answers 404 and an agent pointed at it would fail to start --
+// which is exactly what the first user of `agents connect --apply` hit. Point
+// the entry at this checkout's own entry point instead: it exists on the machine
+// running the command, so it runs with no publish step.
+export const CLI_ENTRY = fileURLToPath(new URL('./index.mjs', import.meta.url))
 
 const isJson = (kind) => kind === 'json'
 
@@ -213,8 +219,8 @@ export function detect(options = {}) {
 /** The exact object an agent needs. No token: the bridge does its own login. */
 export function entryFor(brokerUrl) {
   return {
-    command: 'npx',
-    args: ['-y', PACKAGE],
+    command: process.execPath,
+    args: [CLI_ENTRY],
     env: { BROKER_URL: brokerUrl },
   }
 }
@@ -223,8 +229,8 @@ export function tomlBlock(brokerUrl) {
   return [
     MARKER_START,
     '[mcp_servers.' + ENTRY_NAME + ']',
-    'command = "npx"',
-    'args = ["-y", "' + PACKAGE + '"]',
+    'command = ' + JSON.stringify(process.execPath),
+    'args = [' + JSON.stringify(CLI_ENTRY) + ']',
     '',
     '[mcp_servers.' + ENTRY_NAME + '.env]',
     'BROKER_URL = "' + brokerUrl + '"',

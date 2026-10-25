@@ -93,11 +93,13 @@ Agents like Codex, or anything without HTTP transport, can run the bundled
 bridge instead:
 
 ```bash
-npx -y @otscup/secrets-broker          # same as: node cli/index.mjs
+node cli/index.mjs          # from a checkout, which is the supported way today
 ```
 
-While the package is still `private`, run it from a checkout (`node cli/index.mjs`)
-or pack it locally: `npm pack` then `npx -y ./secrets-broker-workers-0.0.1.tgz`.
+The package is still `private`, so there is no published name to `npx` yet: both
+`secrets-broker-workers` and `@otscup/secrets-broker` answer 404 on npm. To get a
+tarball you can install elsewhere, run `npm pack` and use
+`npx -y ./secrets-broker-workers-0.0.1.tgz`.
 
 It logs in once through your browser (OAuth 2.1 with PKCE and a loopback
 redirect), keeps the token in the operating system's own store — Keychain on
@@ -141,9 +143,10 @@ What it looks at: `~/.codex/config.toml`, `~/.claude.json`,
 
 What it will not do:
 
-- **No credentials.** The entry is `npx -y secrets-broker-workers` with
-  `BROKER_URL`; the bridge logs itself in through the browser and keeps the
-  token in the OS keychain. Nothing secret is written into an agent config.
+- **No credentials.** The entry holds no token: it runs `node` on this
+  checkout's `cli/index.mjs` and passes `BROKER_URL`; the bridge logs itself in
+  through the browser and keeps the token in the OS keychain. Nothing secret is
+  written into an agent config.
 - **No rewriting.** JSON is spliced as text so comments and key order survive;
   TOML gets one `[mcp_servers.secrets-broker]` block wrapped in
   `# >>> secrets-broker` / `# <<< secrets-broker` comments so a human can find
@@ -203,7 +206,7 @@ Pick by what the client can do, not by what is easiest to paste:
 |---|---|---|
 | speaks MCP over HTTP **and** OAuth | just the URL: `{"url": "https://your-worker.example/mcp"}` | the client registers itself, you approve once in the browser, it stores its own token (24h) |
 | speaks MCP over HTTP, **no** OAuth | `{"url": "…/mcp", "headers": {"Authorization": "Bearer <agent token>"}}` | token created in the panel under **Agents**; revocable there, expires when you say |
-| only speaks stdio (Codex, older Hermes, most CLIs) | `{"command": "npx", "args": ["-y", "@otscup/secrets-broker"], "env": {"BROKER_URL": "https://your-worker.example"}}` | the bridge logs in through your browser once, keeps the token in the OS store, and opens approval links itself |
+| only speaks stdio (Codex, older Hermes, most CLIs) | `{"command": "node", "args": ["<checkout>/cli/index.mjs"], "env": {"BROKER_URL": "https://your-worker.example"}}` — or let `secrets-broker agents connect --apply` write it for you | the bridge logs in through your browser once, keeps the token in the OS store, and opens approval links itself |
 
 The three end at the same place: one agent identity, one set of scopes, the same
 audit trail. What differs is only who stores the token.
