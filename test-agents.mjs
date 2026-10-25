@@ -150,6 +150,40 @@ try {
   fs.rmSync(root, { recursive: true, force: true })
 }
 
+// A11 - the package has to be installable on its own: every relative import in
+// cli/ must be covered by package.json "files", or the published tarball throws
+// ERR_MODULE_NOT_FOUND on a user's machine (found exactly that way).
+{
+  const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+  const covered = (spec) => {
+    const target = path.normalize(spec).replace(/^\.\//, '').replace(/\\/g, '/')
+    return (pkg.files ?? []).some((entry) => {
+      const base = String(entry).replace(/\/$/, '')
+      if (base.includes('.')) return target === base.replace(/\\/g, '/')
+      return target === base || target.startsWith(base + '/')
+    })
+  }
+  const missing = []
+  const seen = new Set()
+  const walk = (file) => {
+    if (seen.has(file)) return
+    seen.add(file)
+    const text = fs.readFileSync(file, 'utf8')
+    for (const match of text.matchAll(/from\s+'(\.[^']+)'/g)) {
+      const spec = match[1]
+      const resolved = path.normalize(path.join(path.dirname(file), spec)).replace(/\\/g, '/')
+      if (!covered(resolved)) missing.push(resolved)
+      else if (fs.existsSync(resolved)) walk(resolved)
+    }
+  }
+  for (const file of fs.readdirSync('cli').filter((name) => name.endsWith('.mjs'))) walk(path.join('cli', file))
+  if (fs.existsSync(path.join('mcp-stdio', 'index.mjs'))) walk('mcp-stdio/index.mjs')
+  missing.length === 0
+    ? pass('A11 every import the CLI needs is in the published file list')
+    : fail('A11', 'not shipped: ' + missing.join(', '))
+}
+
 const failed = results.filter((row) => !row.ok)
 console.log('==== agents detect ' + (results.length - failed.length) + '/' + results.length + ' passed ====')
 if (failed.length) process.exitCode = 1
+

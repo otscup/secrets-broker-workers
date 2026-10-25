@@ -8,6 +8,7 @@ test-*.mjs
 # operator scripts stay ignored.
 !test-oidc.mjs
 !test-ui-item-page.mjs
+*.tgz
 !test-cli.mjs
 !test-agents.mjs
 !test-mf-materialize.mjs

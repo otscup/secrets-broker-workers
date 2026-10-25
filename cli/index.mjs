@@ -25,7 +25,7 @@ import { createBridge } from './bridge.mjs'
 import { login } from './oauth.mjs'
 import { runMaterialize } from './materialize.mjs'
 import { runSync } from './sync.mjs'
-import { detect, adapters, plan, applyPlan } from './agents.mjs'
+import { detect, adapters, plan, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
 
@@ -140,8 +140,10 @@ async function main() {
         }
         if (!write) {
           process.stdout.write('# ' + planned.name + ' (' + planned.file + ') would get:\n')
-          const snippet = planned.content.split('\n').filter((line) => /secrets-broker|BROKER_URL|command|args/.test(line)).slice(0, 6)
-          process.stdout.write(snippet.join('\n') + '\n')
+          const preview = planned.kind === 'toml'
+            ? tomlBlock(url)
+            : JSON.stringify({ [ENTRY_NAME]: entryFor(url) }, null, 2)
+          process.stdout.write(preview + '\n')
           continue
         }
         applyPlan(planned)

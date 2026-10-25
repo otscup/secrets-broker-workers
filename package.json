@@ -9,6 +9,7 @@
   "files": [
     "cli",
     "mcp-stdio",
+    "src/vaultdiff.js",
     "README.md",
     "LICENSE"
   ],
