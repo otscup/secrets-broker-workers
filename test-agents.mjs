@@ -146,6 +146,22 @@ try {
     const clean = !/"(token|apiKey|api_key|password|authorization)"/i.test(blob) && !/Bearer/.test(blob)
     clean ? pass('A10 the entry written into an agent config holds no token') : fail('A10', blob)
   }
+
+  // A12 - an empty "mcpServers": {} is the most common starting point for a
+  // JSON client, and a comma after the only member makes the file invalid.
+  // Clients that parse strictly then refuse to start, which is worse than not
+  // being configured at all.
+  {
+    const file = path.join(appData, 'Cursor', 'User', 'mcp.json')
+    write(file, '{\n  "mcpServers": {}\n}\n')
+    applyPlan(plan(byId('cursor'), BROKER))
+    let parsed = null
+    let error = ''
+    try { parsed = JSON.parse(read(file)) } catch (e) { error = e.message }
+    parsed?.mcpServers?.['secrets-broker']?.env?.BROKER_URL === BROKER && !error
+      ? pass('A12 an empty mcpServers object stays strict JSON after the write')
+      : fail('A12', error || read(file).slice(0, 200))
+  }
 } finally {
   fs.rmSync(root, { recursive: true, force: true })
 }

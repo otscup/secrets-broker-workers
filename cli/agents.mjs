@@ -258,7 +258,11 @@ function jsonWithEntry(text, key, entry) {
   const indentMatch = /\n([ \t]+)"/.exec(after)
   const indent = indentMatch ? indentMatch[1] : '    '
   const body = JSON.stringify(entry, null, 2).split('\n').join('\n' + indent)
-  return text.slice(0, open + 1) + '\n' + indent + '"' + ENTRY_NAME + '": ' + body + ',' + text.slice(open + 1)
+  // "mcpServers": {} is legal and common; a comma after the only member is not,
+  // and Claude Desktop parses this file strictly, so it would stop starting.
+  const empty = after.replace(/^\s+/, '').startsWith('}')
+  const separator = (empty ? '' : ',') + (empty ? '\n' + indent.slice(0, Math.max(0, indent.length - 2)) : '')
+  return text.slice(0, open + 1) + '\n' + indent + '"' + ENTRY_NAME + '": ' + body + separator + after
 }
 
 /** Build the change without touching disk. Returns null when nothing to do. */
