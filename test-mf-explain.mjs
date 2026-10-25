@@ -132,6 +132,27 @@ await seedState()
   leak ? fail('E6', 'the explanation carried the value') : pass('E6 the explanation carries no value or username')
 }
 
+// E7 - a fill explanation used to throw: fillPolicyFor's success branch did not
+// carry the origins list the explanation joins. Any secret.fill question 500'd.
+{
+  await seedState({ fillPolicies: { [WEB_ID]: { origins: ['https://a.example'], actions: ['secret.fill'] } } })
+  const raw = await call('explain_access', { name: WEB, action: 'secret.fill', origin: 'https://a.example/' })
+  let out = null
+  try { out = JSON.parse(raw) } catch {}
+  out && out.decision && out.reasons.some((r) => r.startsWith('填充策略：允许 https://a.example'))
+    ? pass('E7 a fill explanation names the allowed origins') : fail('E7', raw.slice(0, 300))
+}
+
+// E8 - the list tells the caller which tool to use, sorted, and honours filter.
+{
+  await seedState()
+  const all = JSON.parse(await call('list_secrets', {}))
+  const sorted = all.map((e) => e.name).join(',')
+  const only = JSON.parse(await call('list_secrets', { filter: 'WEB' }))
+  sorted === 'api-key,website-login' && all[1].kind === 'web' && only.length === 1 && only[0].name === WEB
+    ? pass('E8 list_secrets carries kind, sorts, and filters') : fail('E8', JSON.stringify({ sorted, all, only }))
+}
+
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log(String.fromCharCode(10) + '==== explain access ' + passed + '/' + results.length + ' passed ====')

@@ -2127,6 +2127,19 @@ async function handleTelegramMessage(env, message, telegram) {
   return reply(answer.text)
 }
 
+// A channel switched off in the settings is dropped here, so every sender below
+// keeps its plain `if (notifications.x)` shape and a muted channel cannot be
+// woken by a test. A missing `enabled` means on, so existing configs keep working.
+function liveChannels(notifications) {
+  const out = {}
+  for (const name of ['telegram', 'ntfy', 'gotify', 'wxpush']) {
+    const channel = notifications?.[name]
+    if (channel && channel.enabled !== false) out[name] = channel
+  }
+  out.templates = notifications?.templates
+  return out
+}
+
 async function notifyDenied(env, origin, entry, notifications) {
   const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持调用（http_request）', 'secret.fill': '网页填充' }[entry.action] || entry.action || ''
   const text = `${entry.agent} 尝试${actionLabel}「${entry.name}」但被拦下：${entry.reason}\n在控制台的「被拦下的请求」里可以一键授权：${origin}/#items`
@@ -2159,7 +2172,7 @@ async function notifyDenied(env, origin, entry, notifications) {
 
 async function notifyPending(env, origin, entry, ctx) {
   const state = await loadState(env)
-  const notifications = state.settings?.notifications ?? {}
+  const notifications = liveChannels(state.settings?.notifications ?? {})
   // A refusal is a report, not a question: there is no pending record to approve,
   // so the allow/deny buttons would answer "already handled". Say where to fix it.
   if (entry.denied === true) return notifyDenied(env, origin, entry, notifications)
@@ -2327,7 +2340,7 @@ async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now()) 
     return !(typeof last === 'number' && now - last < TTL)
   })
   if (!fresh.length) return { sent: 0, reminders: reminders.length }
-  const notifications = state.settings?.notifications ?? {}
+  const notifications = liveChannels(state.settings?.notifications ?? {})
   const { title, text } = reminderMessage(fresh, origin, notifications)
   const tasks = []
   if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
@@ -2464,6 +2477,9 @@ function applyCredentialKind(state, { itemId, kind, origins, actions, accountId,
 // than one policy claiming the item, or an item with no policy) is not
 // auto-approved: the caller turns it into a pending request.
 function fillPolicyFor(state, itemId, origin) {
+  // Callers hand over what the agent typed ("https://x.com/" with a slash, or a
+  // bare host); policy origins are stored normalised, so normalise here too.
+  origin = normalizeOrigin(origin)?.origin ?? ''
   const kind = credentialKind(state, itemId)
   if (kind !== 'web') return { ok: false, reason: 'not-a-web-credential' }
   const policy = state.fillPolicies?.[itemId] ?? null
@@ -2477,7 +2493,7 @@ function fillPolicyFor(state, itemId, origin) {
   if (!origin || !origins.includes(origin)) return { ok: false, reason: 'origin-not-allowed' }
   const actions = (policy.actions ?? []).map((value) => String(value))
   if (!actions.length) return { ok: false, reason: 'policy-has-no-action' }
-  return { ok: true, policy, origin, actions, kind }
+  return { ok: true, policy, origin, origins, actions, kind }
 }
 // Plaintext read guard, and the whole simplification of this model.
 //
@@ -2505,6 +2521,18 @@ function itemNameOf(state, itemId) {
   return ''
 }
 
+// The guard answers in stable codes. An agent that only sees
+// "web-credential-is-fill-only" does not know that request_fill is the way in.
+const READ_GUARD_HINTS = {
+  'item-id-unresolved': '这个条目的 id 解析不到；让操作员在面板里重新授权一次',
+  'account-mismatch': '这份授权属于另一个 vault 账户；先切回那个账户再试',
+  'web-credential-is-fill-only': '这是网站登录条目，只能 request_fill 填进白名单站点，永远取不到明文',
+  'unclassified-plaintext-off': '条目没有分类，默认不给明文；让操作员把它设为 api 条目',
+  'no-read-grant': '这个 Agent 还没有读取授权；先 request_access，批准后重试',
+}
+// The code stays in brackets: the sentence is for the agent, the code is for
+// whoever greps the audit trail later.
+function readGuardMessage(reason) { const hint = READ_GUARD_HINTS[reason]; return hint ? hint + ' [' + reason + ']' : reason }
 function plaintextReadAllowed(state, itemId, { noApproval = false, granted = false, agent = '' } = {}) {
   // An id that could not be resolved is not an unclassified credential: it is an
   // unknown item, and an unknown item never gets plaintext.
@@ -3357,7 +3385,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     // what pressing 批准 would do — the only difference is who answered.
     const autoRuleLive = autoRuleActive(state, agentName)
     if (!decision.grantEligible && !decision.legacy && !noApprovalInScope && !autoRuleLive) {
-      const why = !itemId ? '条目 id 无法解析'
+      const why = !itemId ? '当前账户里没有名为「' + name + '」的条目（名字必须与面板完全一致，空格也算）'
         : !agentInScope(agent, state.itemGroups, name) ? '该条目不在 Agent 的可读范围内'
         : '在可读范围内，但缺少这条授权'
       // Notify at most once per (agent, item, action) every 30 minutes. An Agent
@@ -3383,7 +3411,9 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
       // Say which action was refused: "read" sent agents looking for a read
       // permission when the block was about calling the API with it.
       const verb = action === 'secret.use' ? 'use this credential (http_request)' : action === 'secret.fill' ? 'fill with this credential' : 'read this item'
-      return { status: 'forbidden', error: 'agent not allowed to ' + verb + '; run explain_access for the reason', reason: 'not-granted' }
+      // The reason is in the message: the generic "run explain_access" line made
+      // an agent investigate permissions when the name was simply misspelled.
+      return { status: 'forbidden', code: !itemId ? 'not-found' : 'not-granted', error: 'agent not allowed to ' + verb + '：' + why, reason: 'not-granted' }
     }
   }
   const policy = state.policies?.[name]
@@ -3441,7 +3471,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
         await notifyPending(env, origin, entry, ctx)
       }
     }
-    return { status: 'pending', requestId: pendingId, approvalUrl: `${origin}/#/grants`, itemId, targetOrigin: String(target?.origin ?? '') }
+    return { status: 'pending', requestId: pendingId, approvalUrl: `${origin}/#pending`, itemId, targetOrigin: String(target?.origin ?? '') }
   }
   // Unified atomic consume: capability is the sole counter. Checks passed
   // above; consume now, before decrypt/fetch, inside the DO transaction.
@@ -3514,7 +3544,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
       }
       return next
     })
-    return { status: 'forbidden', error: 'plaintext read is not allowed for this credential: ' + readGuard.reason, reason: readGuard.reason }
+    return { status: 'forbidden', error: '不能读明文：' + readGuardMessage(readGuard.reason), reason: readGuard.reason }
   }
   // One event name for every authorised read, with the risk carried in fields.
   // A separate 'secret.read-noapproval' name made the statistics — totalReads,
@@ -6190,10 +6220,10 @@ export default {
         const n = state.settings?.notifications ?? {}
         const effectiveOidc = await oidcConfig(env, request, state)
         return json({ notifications: {
-          telegram: { chatId: n.telegram?.chatId ?? '', configured: Boolean(n.telegram?.botToken && n.telegram?.chatId) },
-          ntfy: { url: n.ntfy?.url ?? '', topic: n.ntfy?.topic ?? '', configured: Boolean(n.ntfy?.url && n.ntfy?.topic) },
-          gotify: { url: n.gotify?.url ?? '', configured: Boolean(n.gotify?.url && n.gotify?.token) },
-          wxpush: { url: n.wxpush?.url ?? '', format: n.wxpush?.format ?? 'form', configured: Boolean(n.wxpush?.url && n.wxpush?.token) },
+          telegram: { enabled: n.telegram?.enabled !== false, chatId: n.telegram?.chatId ?? '', configured: Boolean(n.telegram?.botToken && n.telegram?.chatId) },
+          ntfy: { enabled: n.ntfy?.enabled !== false, url: n.ntfy?.url ?? '', topic: n.ntfy?.topic ?? '', configured: Boolean(n.ntfy?.url && n.ntfy?.topic) },
+          gotify: { enabled: n.gotify?.enabled !== false, url: n.gotify?.url ?? '', configured: Boolean(n.gotify?.url && n.gotify?.token) },
+          wxpush: { enabled: n.wxpush?.enabled !== false, url: n.wxpush?.url ?? '', format: n.wxpush?.format ?? 'form', configured: Boolean(n.wxpush?.url && n.wxpush?.token) },
           templates: notificationTemplates(n),
         }, oidc: {
           issuer: effectiveOidc?.issuer ?? '',
@@ -6750,20 +6780,59 @@ export default {
       await addAudit(env, { event: 'sync.pull', agent: device ? 'device:' + device.name : 'admin', device: device?.id, count: live.length, account })
       return json({ ok: true, account, count: live.length, trashed: items.length - live.length, keyCheck, items })
     }
+// MCP clients show annotations and titles in their approval prompts; without
+// them a destructive call looks the same as a read.
+const TOOL_META = {
+  list_secrets: { title: '列出密钥条目', readOnlyHint: true },
+  request_access: { title: '申请读取授权', readOnlyHint: false, destructiveHint: false },
+  explain_access: { title: '解释权限判定', readOnlyHint: true },
+  get_secret: { title: '读取明文', readOnlyHint: true },
+  get_credential: { title: '读取登录凭据', readOnlyHint: true },
+  request_fill: { title: '请求网页填充', readOnlyHint: false, destructiveHint: false },
+  materialize: { title: '写入本地文件', readOnlyHint: false, destructiveHint: true },
+  materialize_redeem: { title: '兑换一次性写入任务', readOnlyHint: false, destructiveHint: true },
+  request_credential: { title: '创建一次性填写链接', readOnlyHint: false, destructiveHint: false },
+  http_request: { title: '代调外部 API', readOnlyHint: false, openWorldHint: true },
+}
+    if (url.pathname === '/health' && (request.method === 'GET' || request.method === 'HEAD')) return json({ ok: true })
+    // A browser-side MCP client (and any Streamable-HTTP probe) sends a CORS
+    // preflight first; without this answer the endpoint looked missing.
+    if (url.pathname === '/mcp' && request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: {
+        'access-control-allow-origin': request.headers.get('origin') ?? '*',
+        'access-control-allow-methods': 'POST, OPTIONS',
+        'access-control-allow-headers': 'authorization, content-type, mcp-protocol-version',
+        'access-control-max-age': '86400',
+      } })
+    }
+    // This server has no SSE stream; GET must say so instead of 404.
+    if (url.pathname === '/mcp' && request.method === 'GET') {
+      return new Response(JSON.stringify({ error: 'this endpoint accepts POST only' }), { status: 405, headers: { 'content-type': 'application/json', allow: 'POST, OPTIONS' } })
+    }
     if (url.pathname === '/mcp' && request.method === 'POST') {
       const resolved = await resolveAgent(request, env)
       if (!resolved) return new Response(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'unauthorized' } }), { status: 401, headers: { 'content-type': 'application/json', 'www-authenticate': 'Bearer' } })
-      const body = await request.json().catch(() => ({}))
+      // A malformed body is a parse error, not an unknown method: -32601 sent
+      // clients looking for a method they had spelled correctly.
+      let body
+      try { body = JSON.parse(await request.text()) } catch { return json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }) }
+      if (Array.isArray(body)) return json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'batch requests are not supported; send one message per request' } })
+      // No id means a notification: a response would be a protocol violation.
+      if (body.id === undefined) return new Response(null, { status: 202 })
       const rpcError = (message, code = -32601) => json({ jsonrpc: '2.0', id: body.id ?? null, error: { code, message } })
       const result = (value) => json({ jsonrpc: '2.0', id: body.id ?? null, result: value })
       if (body.method === 'notifications/initialized') return new Response(null, { status: 202 })
       if (body.method === 'ping') return result({})
       if (body.method === 'initialize') {
-        return result({ protocolVersion: body.params?.protocolVersion ?? '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'secrets-broker', version: '0.1.0' }, instructions: 'Use this server for every credential. Call list_secrets to discover items, get_secret for a value, get_credential for username/password/TOTP, http_request to call an API with the secret injected server-side, or request_credential to create a one-time link when the vault is missing a key. Never ask the user for passwords or API keys. If pending approval, present the approval URL and retry. Never print secret values in chat or logs.' })
+        // Echo a version only when it is one we speak; otherwise answer with ours
+        // rather than agreeing to a date that does not exist.
+        const asked = String(body.params?.protocolVersion ?? '')
+        const protocolVersion = ['2024-11-05', '2025-03-26', '2025-06-18'].includes(asked) ? asked : '2024-11-05'
+        return result({ protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'secrets-broker', version: '0.1.0' }, instructions: 'Use this server for every credential. Call list_secrets to discover items, get_secret for a value, get_credential for username/password/TOTP, http_request to call an API with the secret injected server-side, or request_credential to create a one-time link when the vault is missing a key. Never ask the user for passwords or API keys. If pending approval, present the approval URL and retry. Never print secret values in chat or logs.' })
       }
       if (body.method === 'tools/list') {
         return result({ tools: [
-          { name: 'list_secrets', description: 'List secret item names available to this agent (no values).', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+          { name: 'list_secrets', description: 'List secret item names available to this agent (no values), sorted by name, each with its kind so you know whether to call get_secret or request_fill.', inputSchema: { type: 'object', properties: { filter: { type: 'string', description: 'Only names containing this text (case-insensitive)' }, limit: { type: 'number', description: 'Maximum entries, default 200' } }, additionalProperties: false } },
           { name: 'request_access', description: 'Request approval to read a secret by name. Returns an approval URL if pending.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'explain_access', description: 'Explain, without returning any value, why this agent can or cannot use a credential: its kind, the account it belongs to, the grant that exists and the rule that decides. Use it when a tool answers "not allowed" and you need to know whether to request access, ask for a fill, or stop.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' }, action: { type: 'string', enum: ['secret.read', 'secret.use', 'secret.fill', 'secret.materialize'], description: 'Action to explain (default secret.read)' }, origin: { type: 'string', description: 'Target origin, for secret.fill' }, url: { type: 'string', description: 'Target URL, for secret.use' } }, required: ['name'], additionalProperties: false } },
           { name: 'get_secret', description: 'Read a secret value after approval. Disabled unless MCP_ALLOW_READ=1.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
@@ -6773,27 +6842,41 @@ export default {
           { name: 'materialize_redeem', description: 'Redeem an approved materialize job once. Returns the value for the local bridge to write; the job cannot be redeemed twice.', inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'Job id from the pending approval' } }, required: ['id'], additionalProperties: false } },
           { name: 'request_credential', description: 'Create a secure one-time link for a human to fill in a missing credential; the broker stores it and grants this agent access.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Suggested item name' }, description: { type: 'string', description: 'What the credential is for' } }, required: ['name'] } },
           { name: 'http_request', description: 'Make an HTTPS request with a secret injected server-side. Method allowlist (default GET/POST, extend via HTTP_ALLOW_METHODS; max 16 chars). Path prefix allowlist via HTTP_ALLOW_PATHS (empty = no path restriction). headerName allowlist: Authorization, X-Api-Key, Api-Key, X-Auth-Token (case-insensitive); authPrefix max 32 chars, no CR/LF. Custom headers sanitized (name /^[A-Za-z0-9-]+$/, value <=4KB, max 20; host/content-length/connection/cookie/set-cookie/authorization and other sensitive hops filtered). Body <=64KB as string; GET/HEAD must not send body. Only https, no userinfo, default port 443 or HTTP_ALLOWED_PORTS. The secret is never returned to the caller.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' }, url: { type: 'string', description: 'HTTPS target URL (no userinfo; path must match HTTP_ALLOW_PATHS prefixes when set; port 443 or HTTP_ALLOWED_PORTS)' }, method: { type: 'string', description: 'HTTP method, uppercased (default GET; non-GET/POST requires HTTP_ALLOW_METHODS; max 16 chars)' }, headers: { type: 'object', description: 'Extra headers (sanitized: name /^[A-Za-z0-9-]+$/, value <=4KB, max 20; sensitive/hop headers filtered and cannot override the injected secret header)' }, body: { type: 'string', description: 'Request body as string (<=64KB; GET/HEAD must not include body)' }, headerName: { type: 'string', description: 'Header to inject the secret into (allowlist: Authorization, X-Api-Key, Api-Key, X-Auth-Token; default Authorization)' }, authPrefix: { type: 'string', description: 'Prefix before the secret (default "Bearer ", max 32 chars, no CR/LF)' } }, required: ['name', 'url'] } },
-        ] })
+        ].map((tool) => ({ ...tool, annotations: TOOL_META[tool.name] ?? {} })) })
       }
       if (body.method === 'tools/call') {
         const name = body.params?.name
         const args = body.params?.arguments ?? {}
+        // Trailing spaces are the most common reason a correct name reads as "no access".
+        const argName = () => String(args['name'] ?? '').trim()
         const text = (value, isError = false) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], ...(isError ? { isError: true } : {}) })
+        // A pending answer is not a value and not a failure: say what it is, give the
+        // request id, and tell the model to retry the same call after approval.
+        const pendingText = (access) => text({ status: 'pending-approval', requestId: access.requestId ?? '', approvalUrl: access.approvalUrl ?? '', retryAfterSeconds: 5, next: '批准后重新调用同一个工具即可取到值；不需要再申请一次', message: 'pending approval: ' + (access.approvalUrl ?? '') })
         const session = await getSession(env)
         if (!session) return result(text('vault locked; open the broker page or run unlock.mjs', true))
         try {
           if (name === 'explain_access') {
-            const explained = await explainAccess(env, { resolved, session, name: String(args.name ?? ''), action: String(args.action ?? 'secret.read'), origin: args.origin ? String(args.origin) : '', url: args.url ? String(args.url) : '' })
+            const explained = await explainAccess(env, { resolved, session, name: argName(), action: String(args.action ?? 'secret.read'), origin: args.origin ? String(args.origin) : '', url: args.url ? String(args.url) : '' })
             return result(text(explained))
           }
           if (name === 'list_secrets') {
             if (resolved.agent.account && String(resolved.agent.account).toLowerCase() !== String(session.email).toLowerCase()) return result(text('agent is bound to another vault account', true))
             const items = await listCiphers(env, env.NODEWARDEN_DB, session)
-            const visible = items.filter((item) => resolved.agent.allowAll === true || (resolved.agent.allow ?? []).includes(item.name) || (resolved.agent.groups ?? []).includes(item.group))
-            return result(text(visible.map((item) => ({ name: item.name, url: item.url, noApproval: item.noApproval }))))
+            const filter = String(args.filter ?? '').trim().toLowerCase()
+            const limit = Math.min(Math.max(Math.floor(Number(args.limit)) || 200, 1), 500)
+            const visible = items
+              .filter((item) => resolved.agent.allowAll === true || (resolved.agent.allow ?? []).includes(item.name) || (resolved.agent.groups ?? []).includes(item.group))
+              .filter((item) => !filter || String(item.name).toLowerCase().includes(filter))
+              .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+              .slice(0, limit)
+              // `kind` is what tells the caller to use get_secret (api) or
+              // request_fill (web); without it a web login looks like a struck name.
+              .map((item) => ({ name: item.name, kind: credentialKind(resolved.state, item.id) || 'unclassified', noApproval: item.noApproval === true, url: item.url }))
+            return result(text(visible))
           }
           if (name === 'request_access') {
-            const secretName = String(args.name ?? '')
+            const secretName = argName()
             if (!secretName) return result(text('name is required', true))
             // The same authority checks as the real use, minus the counter:
             // the DO still validates the identity binding, so a legacy grant
@@ -6806,12 +6889,12 @@ export default {
           }
           if (name === 'get_secret') {
             if (env.MCP_ALLOW_READ !== '1') return result(text('get_secret is disabled; set MCP_ALLOW_READ=1 to expose values', true))
-            const secretName = String(args.name ?? '')
+            const secretName = argName()
             if (!secretName) return result(text('name is required', true))
             const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx })
             if (access.status === 'pending') {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
-              return result(text(`pending approval: ${access.approvalUrl}`))
+              return result(pendingText(access))
             }
             if (access.status === 'forbidden' || access.status === 'notfound') {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
@@ -6825,20 +6908,20 @@ export default {
             if (!readGuard.ok) {
               await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name: secretName, reason: readGuard.reason })
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
-              return result(text('plaintext read is not allowed for this credential: ' + readGuard.reason, true))
+              return result(text('不能读明文：' + readGuardMessage(readGuard.reason), true))
             }
             await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: true })
             return result(text(access.value))
           }
           if (name === 'get_credential') {
             if (env.MCP_ALLOW_READ !== '1') return result(text('get_credential is disabled; set MCP_ALLOW_READ=1', true))
-            const secretName = String(args.name ?? '')
+            const secretName = argName()
             if (!secretName) return result(text('name is required', true))
             const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx })
             const credKind = resolved.agent.oauth ? 'oauth' : 'token'
             if (access.status === 'pending') {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
-              return result(text(`pending approval: ${access.approvalUrl}`))
+              return result(pendingText(access))
             }
             if (access.status === 'forbidden' || access.status === 'notfound') {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
@@ -6851,7 +6934,7 @@ export default {
             if (!readGuard.ok) {
               await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name: secretName, reason: readGuard.reason })
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
-              return result(text('plaintext read is not allowed for this credential: ' + readGuard.reason, true))
+              return result(text('不能读明文：' + readGuardMessage(readGuard.reason), true))
             }
             const found = await readSecretFromRows(env, env.NODEWARDEN_DB, session, secretName)
             if (!found) {
@@ -6865,7 +6948,7 @@ export default {
           // approval records a one-shot job that only the same subject can
           // redeem, and the path must be on the operator's allowlist.
           if (name === 'materialize') {
-            const secretName = String(args.name ?? '').trim()
+            const secretName = argName().trim()
             if (!secretName) return result(text('name is required', true))
             const dest = materializeTarget(resolved.state, { path: args.path, key: args.key })
             if (!dest) {
@@ -6908,7 +6991,7 @@ export default {
             const guard = plaintextReadAllowed(live, found.id || job.itemId, { agent: resolved.name, noApproval: live.policies?.[job.name]?.noApproval === true, granted: { subject: resolved.name, accountId: session.email } })
             if (!guard.ok) {
               await addAudit(env, { event: 'materialize.deny', agent: resolved.name, name: job.name, path: job.target?.path ?? '', reason: guard.reason })
-              return result(text('plaintext read is not allowed for this credential: ' + guard.reason, true))
+              return result(text('不能读明文：' + readGuardMessage(guard.reason), true))
             }
             let won = false
             await updateState(env, (next) => {
@@ -6930,7 +7013,7 @@ export default {
           // closed and returns no secret material. The older name is kept so a
           // client that already calls secret.fill keeps working.
           if (name === 'request_fill' || name === 'secret.fill') {
-            const secretName = String(args.name ?? '').trim()
+            const secretName = argName().trim()
             if (!secretName) return result(text('name is required', true))
             const requestedOrigin = normalizeOrigin(args.origin)
             if (!requestedOrigin) return result(text('a valid https origin is required', true))
@@ -6942,7 +7025,7 @@ export default {
             const fillKind = resolved.agent.oauth ? 'oauth' : 'token'
             if (access.status === 'pending') {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: fillKind, action: 'secret.fill', ok: false })
-              return result(text('pending approval: ' + access.approvalUrl))
+              return result(pendingText(access))
             }
             if (access.status === 'forbidden' || access.status === 'notfound') {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: fillKind, action: 'secret.fill', ok: false })
@@ -6998,7 +7081,7 @@ export default {
             })))
             }
           if (name === 'request_credential') {
-            const secretName = String(args.name ?? '').trim()
+            const secretName = argName().trim()
             if (!secretName) return result(text('name is required', true))
             const id = crypto.randomUUID()
             const entry = { id, agent: resolved.name, account: session.email, name: secretName, description: String(args.description ?? '').slice(0, 500), createdAt: nowIso() }
@@ -7007,7 +7090,7 @@ export default {
             return result(text(`credential request created: ${url.origin}/connect?id=${id}`))
           }
           if (name === 'http_request') {
-            const secretName = String(args.name ?? '')
+            const secretName = argName()
             if (!secretName) return result(text('name is required', true))
             // secret.use is a distinct action from secret.read: it never
             // returns plaintext and requires a per-item target policy.
@@ -7017,7 +7100,7 @@ export default {
             const useKind = resolved.agent.oauth ? 'oauth' : 'token'
             if (access.status === 'pending') {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: useKind, action: 'secret.use', ok: false })
-              return result(text(`pending approval: ${access.approvalUrl}`))
+              return result(pendingText(access))
             }
             if (access.status === 'forbidden' || access.status === 'notfound') {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: useKind, action: 'secret.use', ok: false })
@@ -7224,7 +7307,7 @@ export default {
         const readGuard = plaintextReadAllowed(resolved.state, access.itemId ?? '', { agent: resolved.name, noApproval: resolved.state.policies?.[name]?.noApproval === true, granted: access.status === 'allowed' ? { subject: resolved.name, accountId: session.email } : null })
         if (!readGuard.ok) {
           await addAudit(env, { event: 'secret.read-deny', agent: resolved.name, name, reason: readGuard.reason })
-          return fail('plaintext read is not allowed for this credential: ' + readGuard.reason, 403)
+          return fail('不能读明文：' + readGuardMessage(readGuard.reason), 403)
         }
         return json({ value: access.value })
       } catch (error) { return fail(String(error.message ?? error), 500) }

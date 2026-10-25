@@ -202,7 +202,7 @@ let jobId = ''
   const cookie = await adminCookie()
   await adminPost('/api/pending/decide', { id, decision: 'once' }, cookie)
   const redeemed = await mcp('materialize_redeem', { id })
-  if (toolError(redeemed) && /not allowed/.test(toolText(redeemed))) pass('M7 a web credential is refused even with an approval')
+  if (toolError(redeemed) && /web-credential-is-fill-only/.test(toolText(redeemed))) pass('M7 a web credential is refused even with an approval')
   else fail('M7', toolText(redeemed))
 }
 

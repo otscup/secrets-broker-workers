@@ -159,6 +159,8 @@ jobs:
         run: npm run test:materialize
       - name: Explain access (Miniflare)
         run: npm run test:explain
+      - name: Muted notification channels (Miniflare)
+        run: npm run test:notify-channels
       - name: AI assistant snapshot and switches (Miniflare)
         run: npm run test:ai-assistant
       - name: Full security suite (short path)

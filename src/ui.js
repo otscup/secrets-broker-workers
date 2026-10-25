@@ -777,8 +777,6 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
     <div class="card"><h2>两步验证（TOTP）</h2><div id="totp-status" class="hint"></div><div id="totp-setup-box" class="hidden"><div class="hint">用验证器扫码/手动输入下面的密钥，然后输入 6 位验证码启用。</div><div class="secret" id="totp-secret"></div><label class="field">验证码</label><input id="totp-enable-code" inputmode="numeric" placeholder="6 位验证码"><div style="margin-top:10px"><button class="primary" id="totp-enable">启用两步验证</button></div></div><div class="row" style="margin-top:10px"><button id="totp-setup">生成/重新生成密钥</button><button class="danger hidden" id="totp-disable">关闭两步验证</button></div><div class="status" id="totp-message"></div></div>
 
     <div class="card"><h2>本地写入白名单</h2><p class="hint">允许「把某个条目写进本地文件」的目标路径，一行一个。以 <code>/</code> 结尾表示整个目录。</p><textarea id="mat-paths" rows="3" placeholder="/srv/app/secrets.env"></textarea><div class="row" style="margin-top:10px"><button class="primary" id="mat-save">保存白名单</button></div><div class="status" id="mat-status"></div></div>
-    <div class="card"><h2>远端同步</h2><p class="hint">填对面 broker 的地址和它「同步设备」里发的令牌，点「比对」看两个库差在哪。令牌在这里用 SESSION_KEK 加密保存，只用于请求对面的 <code>/sync/pull</code>，不会回显；两边都只搬密文。「比对」不写任何一边，「同步到本地」只把远端更新的条目写进来，删不掉本地任何东西。</p><div id="rb-current"></div><div class="row" style="margin-top:10px"><input id="rb-url" placeholder="https://broker.example.com"><input id="rb-token" type="password" placeholder="对面生成的同步设备令牌"></div><div class="row" style="margin-top:10px"><button class="primary" id="rb-save">保存并测试</button><button id="rb-compare">比对</button><button class="primary" id="rb-apply">同步到本地</button><button class="danger" id="rb-clear">移除</button><button class="danger" id="rb-prune">清理解不开的条目</button></div><div class="status" id="rb-status"></div><div id="rb-result"></div></div>
-    <div class="card"><h2>同步设备</h2><p class="hint">这里发的是给<b>另一个 broker</b> 用的令牌，不是给 Agent 的。对面装上 CLI 后跑 <code>secrets-broker sync --remote &lt;本站地址&gt;</code>，用这把令牌拉取<b>密文</b>做比对：读不到值，也读不到名字。Agent 的 token 不适用。</p><div id="sdev-list"></div><div class="row" style="margin-top:10px"><input id="sdev-name" placeholder="设备名，例如 home-laptop"><button class="primary" id="sdev-create">新建设备</button></div><div class="secret hidden" id="sdev-token"></div><div class="status" id="sdev-status"></div></div>
     <div class="card"><h2>行为安全</h2><p class="hint">每一项的默认值都是最保守的答案。单独给某个 Agent 或某个条目配过权限的，以那条配置为准。</p>
       <div class="ios-field"><label>允许读取网页登录的明文<div class="hint">关闭时，网站密码只能被填充进指定站点，任何 Agent 都拿不到明文。</div></label><input type="checkbox" class="ios-switch" id="bs-web"></div>
       <div class="ios-field"><label>允许读取未分类条目的明文<div class="hint">关闭时，没有分类的凭据即使被授权也只返回拒绝。</div></label><input type="checkbox" class="ios-switch" id="bs-unclassified"></div>
@@ -812,13 +810,13 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
       <div class="row" style="margin-top:12px"><button class="primary" id="ai-save">保存 AI 设置</button><button id="ai-test">测试</button></div>
       <div class="status" id="ai-status"></div>
       </div></div>
-    <div class="card collapsible collapsed" id="card-notify-channels"><h2 class="card-toggle" data-collapse="card-notify-channels">通知渠道 <span class="card-caret">▸</span></h2><div class="hint">待批准请求会推送到这里。留空的 token 表示保留原值。</div>
+    <div class="card collapsible collapsed" id="card-notify-channels"><h2 class="card-toggle" data-collapse="card-notify-channels">通知渠道 <span class="card-caret">▸</span></h2><div class="hint">待批准请求会推送到这里。留空的 token 表示保留原值。关掉「启用此渠道」只停止自动推送，「发送测试通知」仍会发到所有已配置渠道。</div>
       <div class="card-body">
       <div class="grid2" style="margin-top:10px">
-        <div><h2 style="font-size:13px">Telegram</h2><label class="field">Bot Token</label><input id="tg-token" type="password" placeholder="留空保留原值"><label class="field">Chat ID</label><input id="tg-chat" placeholder="例如 123456789"><div class="hint" id="tg-status"></div></div>
-        <div><h2 style="font-size:13px">ntfy</h2><label class="field">服务器 URL</label><input id="ntfy-url" placeholder="https://ntfy.example.com"><label class="field">Topic</label><input id="ntfy-topic" placeholder="secrets-broker-xxxx"><div class="hint" id="ntfy-status"></div></div>
-        <div><h2 style="font-size:13px">Gotify</h2><label class="field">服务器 URL</label><input id="gotify-url" placeholder="https://gotify.example.com"><label class="field">App Token</label><input id="gotify-token" type="password" placeholder="留空保留原值"><div class="hint" id="gotify-status"></div></div>
-        <div><h2 style="font-size:13px">Webhook（通用 / 兼容 wxpush）</h2><label class="field">URL</label><input id="wxpush-url" placeholder="https://example.com/webhook"><label class="field">Token</label><input id="wxpush-token" type="password" placeholder="留空保留原值"><label class="field">发送格式</label><select id="wxpush-format"><option value="form">表单（wxpush 兼容）</option><option value="json">JSON + Bearer Token</option></select><div class="hint" id="wxpush-status"></div></div>
+        <div><h2 style="font-size:13px">Telegram</h2><label class="chk"><input type="checkbox" id="tg-enabled"> 启用此渠道</label><label class="field">Bot Token</label><input id="tg-token" type="password" placeholder="留空保留原值"><label class="field">Chat ID</label><input id="tg-chat" placeholder="例如 123456789"><div class="hint" id="tg-status"></div></div>
+        <div><h2 style="font-size:13px">ntfy</h2><label class="chk"><input type="checkbox" id="ntfy-enabled"> 启用此渠道</label><label class="field">服务器 URL</label><input id="ntfy-url" placeholder="https://ntfy.example.com"><label class="field">Topic</label><input id="ntfy-topic" placeholder="secrets-broker-xxxx"><div class="hint" id="ntfy-status"></div></div>
+        <div><h2 style="font-size:13px">Gotify</h2><label class="chk"><input type="checkbox" id="gotify-enabled"> 启用此渠道</label><label class="field">服务器 URL</label><input id="gotify-url" placeholder="https://gotify.example.com"><label class="field">App Token</label><input id="gotify-token" type="password" placeholder="留空保留原值"><div class="hint" id="gotify-status"></div></div>
+        <div><h2 style="font-size:13px">Webhook（通用 / 兼容 wxpush）</h2><label class="chk"><input type="checkbox" id="wxpush-enabled"> 启用此渠道</label><label class="field">URL</label><input id="wxpush-url" placeholder="https://example.com/webhook"><label class="field">Token</label><input id="wxpush-token" type="password" placeholder="留空保留原值"><label class="field">发送格式</label><select id="wxpush-format"><option value="form">表单（wxpush 兼容）</option><option value="json">JSON + Bearer Token</option></select><div class="hint" id="wxpush-status"></div></div>
       </div>
       <div style="margin-top:12px"><button class="primary" id="settings-save">保存通知设置</button><button id="notify-test" style="margin-left:8px">发送测试通知</button><button id="notify-test-approval" style="margin-left:8px">发送模拟授权通知</button></div><div class="status" id="settings-status"></div>
       </div>
@@ -980,124 +978,6 @@ function when(value) {
   if (!value) return '-'
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false })
-}
-function renderRemoteBroker(config) {
-  const box = $('rb-current')
-  if (!box) return
-  if (!config || config.configured !== true) { box.innerHTML = '<p class="hint">还没有配置远端。</p>'; return }
-  box.innerHTML = '<div class="ios-row"><div class="ios-main"><div class="ios-title"><b>' + esc(config.url) + '</b><span class="ios-pill on">已配置</span></div><div class="ios-sub">' + (config.lastCompareAt ? '上次比对 ' + esc(when(config.lastCompareAt)) + ' · 远端 ' + (config.lastCount ?? 0) + ' 条' : '还没比对过') + '</div></div></div>'
-}
-function renderCompareResult(result) {
-  const box = $('rb-result')
-  if (!box) return
-  const counts = result.counts ?? {}
-  const rows = result.rows ?? []
-  const keyMatch = result.keyMatch ?? null
-  const trashed = result.remote?.trashed ?? result.trashed ?? 0
-  const line = (label, value) => '<div class="health-row"><span class="health-label">' + label + '</span><span class="health-hint"></span><span class="health-value">' + value + '</span></div>'
-  // The verdict is a fingerprint comparison, not a guess: same wrapped account
-  // key on both sides means the ciphertext is portable, and anything else means
-  // it is not. Say which one instead of printing the same scary sentence twice.
-  const keyLine = keyMatch === true
-    ? '<div class="hint" style="margin-top:8px">两边的账户密钥一致，密文可以直接搬。</div>'
-    : keyMatch === false
-      ? '<div class="hint" style="margin-top:8px;color:var(--red)">两边的账户密钥不一致：同一个邮箱在两个 broker 上各自初始化过，密文不通用。</div>'
-      : '<div class="hint" style="margin-top:8px">对面没报账户密钥，判断不了是不是同一把钥匙。</div>'
-  const hint = result.unreadable
-    ? '<div class="hint" style="margin-top:8px;color:var(--red)">远端有 ' + result.unreadable + ' 条密文用这台 broker 的主密码解不开：' + (keyMatch === false ? '因为账户密钥不同。' : keyMatch === true ? '账户密钥相同，所以这几条是别的账户带过来的旧数据。' : '对面没报账户密钥，判断不了。') + '同步进来只会显示「(未命名)」。</div>'
-    : ''
-  box.innerHTML = '<div class="health">' + line('将上传', counts.push ?? 0) + line('将下载', counts.pull ?? 0) + line('将删除', counts.delete ?? 0) + line('冲突', counts.conflict ?? 0) + line('一致', counts.equal ?? 0) + (trashed ? line('远端垃圾桶（不搬）', trashed) : '') + (result.unreadable ? line('解不开', result.unreadable) : '') + '</div>' + keyLine + hint + (rows.length ? '<div class="hint" style="margin-top:8px">' + rows.map((row) => esc(String(row.direction) + ' · ' + String(row.id).slice(0, 8) + ' · ' + String(row.updatedAt || '-'))).join('<br>') + '</div>' : '')
-}
-$('rb-save').onclick = async () => {
-  const url = $('rb-url').value.trim()
-  const token = $('rb-token').value.trim()
-  if (!url) { status('rb-status', '先填对面的地址', 'error'); return }
-  if (!token) { status('rb-status', '先粘贴对面的同步设备令牌', 'error'); return }
-  try {
-    const saved = await api('/api/sync/remote', { method: 'POST', body: JSON.stringify({ url, token }) })
-    $('rb-token').value = ''
-    status('rb-status', '已保存，对面现在有 ' + saved.count + ' 条', 'ok')
-    const settings = await api('/api/settings')
-    renderRemoteBroker(settings.remoteBroker)
-  } catch (error) { status('rb-status', error.message, 'error') }
-}
-$('rb-compare').onclick = async () => {
-  status('rb-status', '正在比对…', 'ok')
-  try {
-    const result = await api('/api/sync/compare', { method: 'POST', body: '{}' })
-    status('rb-status', '比对完成：本地 ' + result.local.count + ' 条，远端 ' + result.remote.count + ' 条', 'ok')
-    renderCompareResult(result)
-  } catch (error) { status('rb-status', error.message, 'error') }
-}
-$('rb-apply').onclick = async () => {
-  if (!(await askYes('把远端较新的条目写进本地？只会新增或覆盖本地较旧的版本，不会删除本地任何条目。', { yes: '同步' }))) return
-  status('rb-status', '正在同步…', 'ok')
-  try {
-    const result = await api('/api/sync/apply', { method: 'POST', body: '{}' })
-    const kept = (result.counts?.delete ?? 0) + (result.counts?.conflict ?? 0)
-    status('rb-status', '已写入 ' + result.applied + ' 条' + (result.failed?.length ? '，' + result.failed.length + ' 条失败' : '') + (result.unreadable ? '，' + result.unreadable + ' 条解不开已跳过' : '') + (kept ? '，另有 ' + kept + ' 条需要你手动确认' : ''), 'ok')
-    renderCompareResult(result)
-    await Promise.all([loadItems(), loadState()])
-  } catch (error) { status('rb-status', error.message, 'error') }
-}
-$('rb-prune').onclick = async () => {
-  if (!(await askYes('删掉本地所有用这台 broker 的钥匙解不开的条目？它们永远读不出名字和密码，只会在列表里变成「(未命名)」。', { yes: '清理' }))) return
-  status('rb-status', '正在清理…', 'ok')
-  try {
-    const result = await api('/api/sync/prune-unreadable', { method: 'POST', body: '{}' })
-    status('rb-status', '清掉了 ' + result.removed + ' 条解不开的条目', 'ok')
-    $('rb-result').innerHTML = ''
-    await Promise.all([loadItems(), loadState()])
-  } catch (error) { status('rb-status', error.message, 'error') }
-}
-$('rb-clear').onclick = async () => {
-  if (!(await askYes('移除远端配置？令牌会一起删掉。'))) return
-  try {
-    await api('/api/sync/remote', { method: 'DELETE' })
-    status('rb-status', '已移除', 'ok')
-    $('rb-result').innerHTML = ''
-    renderRemoteBroker(null)
-  } catch (error) { status('rb-status', error.message, 'error') }
-}
-async function renderSyncDevices() {
-  const box = $('sdev-list')
-  if (!box) return
-  const data = await api('/api/sync/devices').catch(() => ({ devices: [] }))
-  const devices = data.devices ?? []
-  if (!devices.length) { box.innerHTML = '<p class="hint">还没有同步设备。新建设备后，把那串令牌填到对面 broker 的 BROKER_REMOTE_TOKEN。</p>'; return }
-  box.innerHTML = devices.map((device) => '<div class="ios-row"><div class="ios-main"><div class="ios-title"><b>' + esc(device.name) + '</b>' + (device.revokedAt ? '<span class="ios-pill bad">已撤销</span>' : '<span class="ios-pill on">可用</span>') + '</div><div class="ios-sub">创建于 ' + esc(when(device.createdAt)) + (device.lastUsedAt ? ' · 最近使用 ' + esc(when(device.lastUsedAt)) : ' · 还没用过') + '</div></div>' + (device.revokedAt ? '<button class="ios-pill plain" data-sdev-delete="' + esc(device.id) + '">删除</button>' : '<button class="ios-pill plain" data-sdev-revoke="' + esc(device.id) + '">撤销</button>') + '</div>').join('')
-}
-$('sdev-create').onclick = async () => {
-  const name = $('sdev-name').value.trim()
-  if (!name) { status('sdev-status', '先给设备起个名字', 'error'); return }
-  try {
-    const created = await api('/api/sync/devices/create', { method: 'POST', body: JSON.stringify({ name }) })
-    $('sdev-token').classList.remove('hidden')
-    $('sdev-token').innerHTML = '只显示这一次，复制到对面 broker：<br><code>' + esc(created.token) + '</code>'
-    $('sdev-name').value = ''
-    status('sdev-status', '已创建「' + created.device.name + '」', 'ok')
-    await renderSyncDevices()
-  } catch (error) { status('sdev-status', error.message, 'error') }
-}
-$('sdev-list').onclick = async (event) => {
-  const del = event.target.closest('[data-sdev-delete]')
-  if (del) {
-    if (!(await askYes('删除这个已撤销的同步设备？记录会消失，令牌仍然作废。'))) return
-    try {
-      await api('/api/sync/devices/delete', { method: 'POST', body: JSON.stringify({ id: del.dataset.sdevDelete }) })
-      status('sdev-status', '已删除', 'ok')
-      await renderSyncDevices()
-    } catch (error) { status('sdev-status', error.message, 'error') }
-    return
-  }
-  const button = event.target.closest('[data-sdev-revoke]')
-  if (!button) return
-  if (!(await askYes('撤销这个同步设备？对面的下一次拉取会立刻失败。'))) return
-  try {
-    await api('/api/sync/devices/revoke', { method: 'POST', body: JSON.stringify({ id: button.dataset.sdevRevoke }) })
-    status('sdev-status', '已撤销', 'ok')
-    await renderSyncDevices()
-  } catch (error) { status('sdev-status', error.message, 'error') }
 }
 $('mat-save').onclick = async () => {
   try {
@@ -1444,7 +1324,7 @@ $('oauth-clients-box').addEventListener('click', async (event) => {
   } catch (error) { toast(error.message, true) }
 })
 
-async function loadAll() { await Promise.all([loadState(), loadItems(), loadStats()]); startPendingPolling(); updateBrowserNotifyStatus() }
+async function loadAll() { await Promise.all([loadState(), loadItems(), loadStats()]); startPendingPolling(); updateBrowserNotifyStatus(); if (/^#\/?(pending|grants)$/.test(location.hash)) { openNoticeModal(); history.replaceState({}, '', '/') } }
 let pendingTimer = null
 let knownPending = new Set()
 let pendingInitialized = false
@@ -1460,7 +1340,7 @@ async function checkPendingNotifications() {
     knownPending = ids; pendingInitialized = true
     if (app.data) app.data = data
     renderPending()
-    if (app.stats) { app.stats.pending = pending.length; renderStats() }
+    if (app.stats) renderStats()
   } catch {}
 }
 function startPendingPolling() { updateBrowserNotifyStatus(); if (pendingTimer) return; checkPendingNotifications(); pendingTimer = setInterval(checkPendingNotifications, 15000) }
@@ -1619,6 +1499,8 @@ async function loadSettings() {
     $('gotify-status').textContent = n.gotify?.configured ? '已配置（token 已保存）' : '未配置'
     $('wxpush-url').value = n.wxpush?.url || ''; $('wxpush-format').value = n.wxpush?.format || 'form'
     $('wxpush-status').textContent = n.wxpush?.configured ? '已配置（token 已保存）' : '未配置'
+    $('tg-enabled').checked = n.telegram?.enabled !== false; $('ntfy-enabled').checked = n.ntfy?.enabled !== false
+    $('gotify-enabled').checked = n.gotify?.enabled !== false; $('wxpush-enabled').checked = n.wxpush?.enabled !== false
     const tpl = n.templates || {}; const tplAp = tpl.approval || {}; const tplLb = tplAp.labels || {}; const tplRm = tpl.reminder || {}
     $('tpl-ap-title').value = tplAp.title || ''; $('tpl-ap-body').value = tplAp.body || ''
     $('tpl-lb-once').value = tplLb.once || ''; $('tpl-lb-24h').value = tplLb['24h'] || ''; $('tpl-lb-deny').value = tplLb.deny || ''; $('tpl-lb-always').value = tplLb.always || ''
@@ -1635,10 +1517,10 @@ async function loadSettings() {
 async function saveSettings() {
   try {
     await api('/api/settings', { method: 'POST', body: JSON.stringify({ notifications: {
-      telegram: { botToken: $('tg-token').value, chatId: $('tg-chat').value },
-      ntfy: { url: $('ntfy-url').value, topic: $('ntfy-topic').value },
-      gotify: { url: $('gotify-url').value, token: $('gotify-token').value },
-      wxpush: { url: $('wxpush-url').value, token: $('wxpush-token').value, format: $('wxpush-format').value },
+      telegram: { enabled: $('tg-enabled').checked, botToken: $('tg-token').value, chatId: $('tg-chat').value },
+      ntfy: { enabled: $('ntfy-enabled').checked, url: $('ntfy-url').value, topic: $('ntfy-topic').value },
+      gotify: { enabled: $('gotify-enabled').checked, url: $('gotify-url').value, token: $('gotify-token').value },
+      wxpush: { enabled: $('wxpush-enabled').checked, url: $('wxpush-url').value, token: $('wxpush-token').value, format: $('wxpush-format').value },
       templates: {
         approval: { title: $('tpl-ap-title').value, body: $('tpl-ap-body').value, labels: { once: $('tpl-lb-once').value, '24h': $('tpl-lb-24h').value, deny: $('tpl-lb-deny').value, always: $('tpl-lb-always').value } },
         reminder: { title: $('tpl-rm-title').value, body: $('tpl-rm-body').value },
@@ -1977,7 +1859,11 @@ function renderTrendFace() {
 
 function renderStats() {
   const stats = app.stats || { totalReads: 0, activeAgents: 0, pending: 0, activeGrants: 0, buckets: [], topItems: [], topAgents: [] }
-  const cards = [{ l: '读取次数', v: stats.totalReads, sub: '当前区间 · 点开查看', view: 'reads' }, { l: '活跃 Agent', v: stats.activeAgents, sub: '有读取记录', view: 'agents' }, { l: '待审批 / 通知', v: stats.pending, sub: '点开处理', warn: stats.pending > 0, view: 'pending' }, { l: '有效授权', v: stats.activeGrants, sub: '含免审批', view: 'grants' }]
+  // The sheet lists approvals *and* authorization reminders, so the card has to
+  // count both; counting only state.pending showed 0 while the sheet showed two
+  // expiring grants.
+  const noticeCount = ((app.data && app.data.pending) || []).length + ((app.data && app.data.reminders) || []).length
+  const cards = [{ l: '读取次数', v: stats.totalReads, sub: '当前区间 · 点开查看', view: 'reads' }, { l: '活跃 Agent', v: stats.activeAgents, sub: '有读取记录', view: 'agents' }, { l: '待审批 / 通知', v: noticeCount, sub: '点开处理', warn: noticeCount > 0, view: 'pending' }, { l: '有效授权', v: stats.activeGrants, sub: '含免审批', view: 'grants' }]
   const spark = (() => { const b = (stats.buckets || []).slice(-12); const mx = Math.max(1, ...b.map((x) => x.count)); return b.length ? '<div class="kpi-spark">' + b.map((x) => '<i style="height:' + Math.max(2, Math.round(x.count / mx * 20)) + 'px"></i>').join('') + '</div>' : '' })()
   $('kpis').innerHTML = cards.map((card) => '<div class="kpi' + (card.warn ? ' warn' : '') + '" data-kpi="' + card.view + '"' + (card.event ? ' data-kpi-event="' + card.event + '"' : '') + '><div class="label">' + card.l + '</div><div class="value">' + card.v + '</div>' + (card.view === 'reads' ? spark : '') + '<div class="sub">' + card.sub + '</div></div>').join('')
   renderOverviewActions()
@@ -3569,8 +3455,6 @@ async function loadSecurity() {
     $('totp-disable').classList.toggle('hidden', !data.totpEnabled)
     const settings = await api('/api/settings').catch(() => ({}))
     $('mat-paths').value = (settings.materializePaths ?? []).join('\n')
-    renderRemoteBroker(settings.remoteBroker)
-    await renderSyncDevices()
     $('bs-web').checked = settings.webPlaintext === true
     $('bs-unclassified').checked = settings.unclassifiedPlaintext === true
     $('bs-target').checked = settings.useAnyTarget === true
