@@ -86,6 +86,7 @@
     "test:grant-delete": "node test-mf-grant-delete-restore.mjs",
     "test:require-classification": "node test-mf-require-classification.mjs",
     "test:plugin-endpoints": "node test-mf-plugin-endpoints.mjs",
+    "test:plugin-guard": "node dsh-plugin/test-plugin-guard.mjs",
     "test:target-binding": "node test-mf-target-binding.mjs",
     "test:plugin-operator": "node test-plugin-endpoints.mjs",
     "test:ai-assistant": "node test-mf-ai-assistant.mjs"

@@ -244,13 +244,24 @@ window.__ModuleLoader__.load({
           if (fromCache && last) {
             ({ pendingResponse, requestResponse, usageResponse, activityResponse, itemsResponse } = last);
           } else {
-            [pendingResponse, requestResponse, usageResponse, activityResponse, itemsResponse] = await Promise.all([
+            // A poll that only updates the badge needs the two queue endpoints
+            // and nothing else. It used to pull all five every 15s, open or not,
+            // and /items decrypts the whole vault: ~3.3s of broker work per tick
+            // to keep one number current.
+            const badgeOnly = !showEmpty && !overlay;
+            [pendingResponse, requestResponse] = await Promise.all([
               fetch('/api/secrets-broker/pending').then((r) => r.json()).catch(() => ({ pending: [] })),
               fetch('/api/secrets-broker/credential-requests').then((r) => r.json()).catch(() => ({ requests: [] })),
-              fetch('/api/secrets-broker/usage?hours=1').then((r) => r.json()).catch(() => ({})),
-              fetch('/api/secrets-broker/activity?limit=12').then((r) => r.json()).catch(() => ({ activity: [] })),
-              fetch('/api/secrets-broker/items').then((r) => r.json()).catch(() => ({})),
             ]);
+            if (badgeOnly) {
+              ({ usageResponse, activityResponse, itemsResponse } = last ?? { usageResponse: {}, activityResponse: { activity: [] }, itemsResponse: {} });
+            } else {
+              [usageResponse, activityResponse, itemsResponse] = await Promise.all([
+                fetch('/api/secrets-broker/usage?hours=1').then((r) => r.json()).catch(() => ({})),
+                fetch('/api/secrets-broker/activity?limit=12').then((r) => r.json()).catch(() => ({ activity: [] })),
+                fetch('/api/secrets-broker/items').then((r) => r.json()).catch(() => ({})),
+              ]);
+            }
             last = { pendingResponse, requestResponse, usageResponse, activityResponse, itemsResponse };
           }
           const pending = (pendingResponse.pending || []).filter((entry) => !dismissed.has(entry.id));
@@ -284,9 +295,12 @@ window.__ModuleLoader__.load({
             chip.onclick = () => { tab = id; showEmpty = true; load(true) };
             head.appendChild(chip);
           }
-          const close = mk('button', '×', 'border:0;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:#6b7890');
-          close.onclick = () => close();
-          head.appendChild(close);
+          // This must not be named `close`: a const here shadows the close()
+          // function above, so the handler called the button itself, recursively.
+          // That recursion is what made the × take seconds to dismiss.
+          const closeButton = mk('button', '×', 'border:0;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:#6b7890');
+          closeButton.onclick = () => close();
+          head.appendChild(closeButton);
           out.push(head);
 
           if (tab === 'queue') {

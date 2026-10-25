@@ -153,6 +153,8 @@ jobs:
         run: npm run test:cli
       - name: Local client discovery (cli)
         run: npm run test:agents
+      - name: DSH plugin refuses cross-site approvals
+        run: npm run test:plugin-guard
       - name: Materialise allowlist (Miniflare)
         run: npm run test:materialize
       - name: Explain access (Miniflare)

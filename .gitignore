@@ -31,3 +31,4 @@ test-*.mjs
 !test-plugin-endpoints.mjs
 !dsh-plugin/test-popup.mjs
 !dsh-plugin/test-popup-actions.mjs
+!dsh-plugin/test-plugin-guard.mjs

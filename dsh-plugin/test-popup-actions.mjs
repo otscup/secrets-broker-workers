@@ -224,7 +224,39 @@ if (doc.body.children.includes(overlay)) {
   }
 }
 
+// C10: the × in the header closes at once. It used to be a const named `close`
+// that shadowed the close() function, so the handler called the button itself in
+// a loop and dismissal took seconds.
+{
+  if (!panel()) { launcher.onclick(); await sleep(300) }
+  const box = panel()
+  const x = box ? collect(box).find((n) => n.tagName === 'BUTTON' && String(n.textContent ?? '') === '×' && !String(n.title ?? '').startsWith('从 vault 删除')) : null
+  if (!x) record('C10 the header × closes immediately', false, 'no close button')
+  else {
+    const before = doc.body.children.filter((c) => c.id !== 'secrets-broker-launcher').length
+    x.onclick()
+    await sleep(30)
+    const after = doc.body.children.filter((c) => c.id !== 'secrets-broker-launcher').length
+    record('C10 the header × closes immediately', before === 1 && after === 0, JSON.stringify({ before, after }))
+  }
+}
+
 cleanup()
+
+// C11: with the panel never opened, the poll only needs the two queue endpoints.
+// It used to pull all five every 15s — /items decrypts the whole vault — which
+// cost ~3.3s of broker work per tick to keep a badge number current.
+{
+  const before = calls.length
+  const stop = fn({})
+  await sleep(400)
+  const spent = calls.slice(before)
+  stop()
+  const paths = spent.map((c) => c.path.replace('/api/secrets-broker', ''))
+  const ok = spent.length === 2 && !paths.some((p) => p.includes('/items') || p.includes('/usage') || p.includes('/activity'))
+  record('C11 a closed panel polls only the badge endpoints', ok, JSON.stringify(paths))
+}
+
 const passed = out.filter((r) => r.ok).length
 console.log('\n==== popup actions ' + passed + '/' + out.length + ' passed ====')
 process.exit(passed === out.length ? 0 : 1)

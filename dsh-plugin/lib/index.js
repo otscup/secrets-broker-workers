@@ -28,6 +28,17 @@ function json(res, status, body) {
   res.end(JSON.stringify(body))
 }
 
+// The plugin token never leaves this process, so the only thing standing between
+// a web page and "approve that request" is where the request came from. These
+// routes served any caller: a page on another site could POST /decide and hand
+// an agent the secret its human was still looking at.
+function crossSite(req) {
+  if (String(req.headers['sec-fetch-site'] || '') === 'cross-site') return true
+  const origin = String(req.headers.origin || '')
+  if (!origin) return false
+  try { return new URL(origin).host !== String(req.headers.host || '') } catch { return true }
+}
+
 async function broker(path, options = {}) {
   const token = pluginToken()
   if (!token) return { ok: false, status: 503, body: { error: 'plugin token not configured' } }
@@ -40,179 +51,56 @@ async function broker(path, options = {}) {
   return { ok: response.ok, status: response.status, body }
 }
 
+// Every route is the same three lines around a different broker path, so they
+// are declared once instead of copied eleven times.
+const ROUTES = [
+  ['pending', 'GET'],
+  ['credential-requests', 'GET'],
+  ['credential-requests/cancel', 'POST'],
+  ['connect/save', 'POST'],
+  ['decide', 'POST'],
+  ['usage', 'GET'],
+  ['wait', 'GET'],
+  ['activity', 'GET'],
+  ['items', 'GET'],
+  ['items/save', 'POST'],
+  ['items/delete', 'POST'],
+]
+
+async function relay(req, res, method) {
+  if (crossSite(req)) return json(res, 403, { ok: false, error: 'cross-site request refused' })
+  if (req.method !== method) return json(res, 405, { ok: false, error: 'method-not-allowed' })
+  const url = String(req.url || '')
+  const query = url.includes('?') ? url.slice(url.indexOf('?')) : ''
+  const options = { method }
+  if (method === 'POST') {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    options.body = Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '') || '{}'
+    // A cross-origin form cannot set this without a preflight, which the browser
+    // will not grant, so requiring it blocks the form-POST version of a CSRF.
+    options.headers = { 'content-type': 'application/json' }
+  }
+  // The route name is the path after the prefix; the upstream path is the same
+  // name, so there is nothing to map.
+  const name = url.slice(PREFIX.length + 1).split('?')[0]
+  const result = await broker('/api/plugin/' + name + (method === 'GET' ? query : ''), options)
+  json(res, result.status, result.body ?? { ok: false })
+}
+
 export function apply(ctx) {
   try {
-    ctx.effect(() => {
-      const dispose = ctx.webServer.register({
-        kind: 'exact',
-        path: `${PREFIX}/pending`,
-        handler: async (req, res) => {
-          if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method-not-allowed' })
-          try {
-            const result = await broker('/api/plugin/pending')
-            json(res, result.status, result.body ?? { ok: false })
-          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
-        },
-      })
-      return () => dispose()
-    }, 'ui-secrets-broker: pending route')
-    ctx.effect(() => {
-      const dispose = ctx.webServer.register({
-        kind: 'exact',
-        path: `${PREFIX}/credential-requests`,
-        handler: async (req, res) => {
-          if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method-not-allowed' })
-          try {
-            const result = await broker('/api/plugin/credential-requests')
-            json(res, result.status, result.body ?? { ok: false })
-          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
-        },
-      })
-      return () => dispose()
-    }, 'ui-secrets-broker: credential route')
-    ctx.effect(() => {
-      const dispose = ctx.webServer.register({
-        kind: 'exact',
-        path: `${PREFIX}/credential-requests/cancel`,
-        handler: async (req, res) => {
-          if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method-not-allowed' })
-          try {
-            const chunks = []
-            for await (const chunk of req) chunks.push(chunk)
-            const body = JSON.parse(Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '') || '{}')
-            const result = await broker('/api/plugin/credential-requests/cancel', { method: 'POST', body: JSON.stringify(body) })
-            json(res, result.status, result.body ?? { ok: false })
-          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
-        },
-      })
-      return () => dispose()
-    }, 'ui-secrets-broker: credential cancel route')
-    ctx.effect(() => {
-      const dispose = ctx.webServer.register({
-        kind: 'exact',
-        path: `${PREFIX}/connect/save`,
-        handler: async (req, res) => {
-          if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method-not-allowed' })
-          try {
-            const chunks = []
-            for await (const chunk of req) chunks.push(chunk)
-            const body = JSON.parse(Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '') || '{}')
-            const result = await broker('/api/plugin/connect/save', { method: 'POST', body: JSON.stringify(body) })
-            json(res, result.status, result.body ?? { ok: false })
-          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
-        },
-      })
-      return () => dispose()
-    }, 'ui-secrets-broker: connect route')
-    ctx.effect(() => {
-      const dispose = ctx.webServer.register({
-        kind: 'exact',
-        path: `${PREFIX}/decide`,
-        handler: async (req, res) => {
-          if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method-not-allowed' })
-          try {
-            const chunks = []
-            for await (const chunk of req) chunks.push(chunk)
-            const body = JSON.parse(Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '') || '{}')
-            const result = await broker('/api/plugin/decide', { method: 'POST', body: JSON.stringify(body) })
-            json(res, result.status, result.body ?? { ok: false })
-          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
-        },
-      })
-      return () => dispose()
-    }, 'ui-secrets-broker: decide route')
-    ctx.effect(() => {
-      const dispose = ctx.webServer.register({
-        kind: 'exact',
-        path: `${PREFIX}/usage`,
-        handler: async (req, res) => {
-          if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method-not-allowed' })
-          try {
-            const query = String(req.url || '').includes('?') ? String(req.url).slice(String(req.url).indexOf('?')) : ''
-            const result = await broker('/api/plugin/usage' + query)
-            json(res, result.status, result.body ?? { ok: false })
-          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
-        },
-      })
-      return () => dispose()
-    }, 'ui-secrets-broker: usage route')
-    ctx.effect(() => {
-      const dispose = ctx.webServer.register({
-        kind: 'exact',
-        path: `${PREFIX}/wait`,
-        handler: async (req, res) => {
-          if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method-not-allowed' })
-          try {
-            const query = String(req.url || '').includes('?') ? String(req.url).slice(String(req.url).indexOf('?')) : ''
-            const result = await broker('/api/plugin/wait' + query)
-            json(res, result.status, result.body ?? { ok: false })
-          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
-        },
-      })
-      return () => dispose()
-    }, 'ui-secrets-broker: wait route')
-    ctx.effect(() => {
-      const dispose = ctx.webServer.register({
-        kind: 'exact',
-        path: `${PREFIX}/activity`,
-        handler: async (req, res) => {
-          if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method-not-allowed' })
-          try {
-            const query = String(req.url || '').includes('?') ? String(req.url).slice(String(req.url).indexOf('?')) : ''
-            const result = await broker('/api/plugin/activity' + query)
-            json(res, result.status, result.body ?? { ok: false })
-          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
-        },
-      })
-      return () => dispose()
-    }, 'ui-secrets-broker: activity route')
-    ctx.effect(() => {
-      const dispose = ctx.webServer.register({
-        kind: 'exact',
-        path: `${PREFIX}/items`,
-        handler: async (req, res) => {
-          if (req.method !== 'GET') return json(res, 405, { ok: false, error: 'method-not-allowed' })
-          try {
-            const result = await broker('/api/plugin/items')
-            json(res, result.status, result.body ?? { ok: false })
-          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
-        },
-      })
-      return () => dispose()
-    }, 'ui-secrets-broker: items route')
-    ctx.effect(() => {
-      const dispose = ctx.webServer.register({
-        kind: 'exact',
-        path: `${PREFIX}/items/save`,
-        handler: async (req, res) => {
-          if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method-not-allowed' })
-          try {
-            const chunks = []
-            for await (const chunk of req) chunks.push(chunk)
-            const body = JSON.parse(Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '') || '{}')
-            const result = await broker('/api/plugin/items/save', { method: 'POST', body: JSON.stringify(body) })
-            json(res, result.status, result.body ?? { ok: false })
-          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
-        },
-      })
-      return () => dispose()
-    }, 'ui-secrets-broker: item save route')
-    ctx.effect(() => {
-      const dispose = ctx.webServer.register({
-        kind: 'exact',
-        path: `${PREFIX}/items/delete`,
-        handler: async (req, res) => {
-          if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'method-not-allowed' })
-          try {
-            const chunks = []
-            for await (const chunk of req) chunks.push(chunk)
-            const body = JSON.parse(Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '') || '{}')
-            const result = await broker('/api/plugin/items/delete', { method: 'POST', body: JSON.stringify(body) })
-            json(res, result.status, result.body ?? { ok: false })
-          } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
-        },
-      })
-      return () => dispose()
-    }, 'ui-secrets-broker: item delete route')
+    for (const [path, method] of ROUTES) {
+      ctx.effect(() => {
+        const dispose = ctx.webServer.register({
+          kind: 'exact',
+          path: `${PREFIX}/${path}`,
+          handler: async (req, res) => {
+            try { await relay(req, res, method) } catch (error) { json(res, 502, { ok: false, error: String(error.message ?? error) }) }
+          },
+        })
+        return () => dispose()
+      }, `ui-secrets-broker: ${path} route`)
+    }
   } catch (error) { console.error('[ui-secrets-broker] route registration failed:', error) }
 }
