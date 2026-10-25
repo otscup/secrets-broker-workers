@@ -143,7 +143,7 @@ const login = async (mf) => {
   }).then((r) => r.json()).catch(() => ({}))
   const after = await mf.dispatchFetch('https://broker.test/api/sync/devices', { headers: { cookie } }).then((r) => r.json()).catch(() => ({}))
   const device = (after.devices ?? []).find((d) => d.name === 'home-laptop') ?? {}
-  const leaks = JSON.stringify(after).includes(created.token ?? ' ')
+  const leaks = JSON.stringify(after).includes(created.token ?? '\u0000')
   anon.status === 401 && typeof created.token === 'string' && created.token.length > 20 && device.id && !leaks
     ? pass('S8 an admin mints a device token, and it is only shown once')
     : fail('S8', JSON.stringify({ anon: anon.status, hasToken: typeof created.token, device, leaks }))
@@ -301,6 +301,104 @@ const login = async (mf) => {
     ? pass('S16 pruning removes only the rows this key cannot open')
     : fail('S16', JSON.stringify({ pruned, junk, good }))
   await mf.dispose()
+}
+
+// S17 - deleting a device: only after it is revoked, and then it is gone from
+// the list. A revoked row used to be permanent, so a list at the 20-device cap
+// could never be cleaned up.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const cookie = await login(mf)
+  const post = (path, body) => mf.dispatchFetch('https://broker.test' + path, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  const live = await post('/api/sync/devices/delete', { id: 'sdev_test' })
+  const anon = await mf.dispatchFetch('https://broker.test/api/sync/devices/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'sdev_test' }) })
+  await post('/api/sync/devices/revoke', { id: 'sdev_test' })
+  const gone = await post('/api/sync/devices/delete', { id: 'sdev_test' })
+  const list = await mf.dispatchFetch('https://broker.test/api/sync/devices', { headers: { cookie } }).then((r) => r.json()).catch(() => ({}))
+  live.status === 409 && anon.status === 401 && gone.ok === true && (list.devices ?? []).length === 0
+    ? pass('S17 a revoked device can be deleted, a live one must be revoked first')
+    : fail('S17', JSON.stringify({ live: live.status, anon: anon.status, gone: gone.status, left: (list.devices ?? []).length }))
+  await mf.dispose()
+}
+
+// S18 - trash is not content: the pull reports live rows in count, tombstones
+// separately, and a fingerprint of the account key so the two sides can tell
+// whether they are the same vault.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const db = await mf.getD1Database('NODEWARDEN_DB')
+  await db.prepare('INSERT OR REPLACE INTO ciphers (id,user_id,type,folder_id,name,notes,data,key,favorite,reprompt,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind('item-trashed-1', 'u1', 1, null, 'name', null, '{}', null, 0, 0, '2024-02-01T00:00:00.000Z', '2024-02-01T00:00:00.000Z', '2024-03-01T00:00:00.000Z')
+    .run()
+  const r = await mf.dispatchFetch('https://broker.test/sync/pull', { headers: { authorization: 'Bearer ' + DEVICE_TOKEN } })
+  const body = await r.json().catch(() => ({}))
+  const expected = await sha256('k')
+  body.count === 1 && body.trashed === 1 && body.items.length === 2 && body.keyCheck === expected
+    ? pass('S18 the pull counts live rows, reports trash apart, and fingerprints the key')
+    : fail('S18', JSON.stringify({ count: body.count, trashed: body.trashed, items: body.items?.length, keyCheck: body.keyCheck === expected }))
+  await mf.dispose()
+}
+
+// S19 - a peer whose trash came from another account must not block the merge:
+// tombstones are never pulled and never counted as rows this key cannot open.
+// Before this, one foreign tombstone made apply refuse with a 409.
+{
+  const http = await import('node:http')
+  const tombstone = {
+    id: 'item-tomb-1',
+    type: 1,
+    folderId: null,
+    name: '2.AAAAAAAAAAAAAAAAAAAAAA==|AAAAAAAAAAAAAAAAAAAAAA==|AAAAAAAAAAAAAAAAAAAAAA==',
+    notes: null,
+    data: JSON.stringify({ login: { uris: [] }, fields: [] }),
+    key: null,
+    createdAt: '2024-02-01T00:00:00.000Z',
+    updatedAt: '2026-05-01T00:00:00.000Z',
+    deletedAt: '2026-05-02T00:00:00.000Z',
+    archivedAt: null,
+  }
+  const peer = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ ok: true, account: ACCT, count: 0, trashed: 1, keyCheck: 'other', items: [tombstone] }))
+  })
+  await new Promise((r) => peer.listen(0, '127.0.0.1', r))
+  const base = 'http://127.0.0.1:' + peer.address().port
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const cookie = await login(mf)
+  await mf.dispatchFetch('https://broker.test/api/unlock', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ symEncKey: Buffer.alloc(32, 1).toString('base64'), symMacKey: Buffer.alloc(32, 2).toString('base64') }) })
+  await mf.dispatchFetch('https://broker.test/api/sync/remote', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ url: base, token: 'z'.repeat(24) }) })
+  const apply = await mf.dispatchFetch('https://broker.test/api/sync/apply', { method: 'POST', headers: { cookie } })
+  const body = await apply.json().catch(() => ({}))
+  apply.status === 200 && body.applied === 0 && body.unreadable === 0 && body.trashed === 1 && body.keyMatch === false
+    ? pass('S19 a peer tombstone is reported, never pulled or counted as unreadable')
+    : fail('S19', JSON.stringify({ status: apply.status, body }))
+  await mf.dispose()
+  peer.close()
+}
+
+// S20 - the key verdict is a comparison, not a guess: same fingerprint means the
+// same vault, another fingerprint means the ciphertext cannot travel.
+{
+  const http = await import('node:http')
+  let keyCheck = await sha256('k')
+  const peer = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ ok: true, account: ACCT, count: 0, keyCheck, items: [] }))
+  })
+  await new Promise((r) => peer.listen(0, '127.0.0.1', r))
+  const base = 'http://127.0.0.1:' + peer.address().port
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const cookie = await login(mf)
+  await mf.dispatchFetch('https://broker.test/api/sync/remote', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ url: base, token: 'z'.repeat(24) }) })
+  const compare = () => mf.dispatchFetch('https://broker.test/api/sync/compare', { method: 'POST', headers: { cookie } }).then((r) => r.json()).catch(() => ({}))
+  const same = await compare()
+  keyCheck = 'not-the-same-key'
+  const different = await compare()
+  same.keyMatch === true && different.keyMatch === false
+    ? pass('S20 compare says whether the two vaults share a key')
+    : fail('S20', JSON.stringify({ same: same.keyMatch, different: different.keyMatch }))
+  await mf.dispose()
+  peer.close()
 }
 
 const passed = results.filter((r) => r.ok).length

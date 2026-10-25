@@ -992,8 +992,21 @@ function renderCompareResult(result) {
   if (!box) return
   const counts = result.counts ?? {}
   const rows = result.rows ?? []
+  const keyMatch = result.keyMatch ?? null
+  const trashed = result.remote?.trashed ?? result.trashed ?? 0
   const line = (label, value) => '<div class="health-row"><span class="health-label">' + label + '</span><span class="health-hint"></span><span class="health-value">' + value + '</span></div>'
-  box.innerHTML = '<div class="health">' + line('将上传', counts.push ?? 0) + line('将下载', counts.pull ?? 0) + line('将删除', counts.delete ?? 0) + line('冲突', counts.conflict ?? 0) + line('一致', counts.equal ?? 0) + (result.unreadable ? line('解不开（不是同一把钥匙）', result.unreadable) : '') + '</div>' + (result.unreadable ? '<div class="hint" style="margin-top:8px;color:var(--red)">远端有 ' + result.unreadable + ' 条密文用这台 broker 的主密码解不开：两边的 vault 不是同一把钥匙，同步进来也只会显示「(未命名)」。</div>' : '') + (rows.length ? '<div class="hint" style="margin-top:8px">' + rows.map((row) => esc(String(row.direction) + ' · ' + String(row.id).slice(0, 8) + ' · ' + String(row.updatedAt || '-'))).join('<br>') + '</div>' : '')
+  // The verdict is a fingerprint comparison, not a guess: same wrapped account
+  // key on both sides means the ciphertext is portable, and anything else means
+  // it is not. Say which one instead of printing the same scary sentence twice.
+  const keyLine = keyMatch === true
+    ? '<div class="hint" style="margin-top:8px">两边的账户密钥一致，密文可以直接搬。</div>'
+    : keyMatch === false
+      ? '<div class="hint" style="margin-top:8px;color:var(--red)">两边的账户密钥不一致：同一个邮箱在两个 broker 上各自初始化过，密文不通用。</div>'
+      : '<div class="hint" style="margin-top:8px">对面没报账户密钥，判断不了是不是同一把钥匙。</div>'
+  const hint = result.unreadable
+    ? '<div class="hint" style="margin-top:8px;color:var(--red)">远端有 ' + result.unreadable + ' 条密文用这台 broker 的主密码解不开：' + (keyMatch === false ? '因为账户密钥不同。' : keyMatch === true ? '账户密钥相同，所以这几条是别的账户带过来的旧数据。' : '对面没报账户密钥，判断不了。') + '同步进来只会显示「(未命名)」。</div>'
+    : ''
+  box.innerHTML = '<div class="health">' + line('将上传', counts.push ?? 0) + line('将下载', counts.pull ?? 0) + line('将删除', counts.delete ?? 0) + line('冲突', counts.conflict ?? 0) + line('一致', counts.equal ?? 0) + (trashed ? line('远端垃圾桶（不搬）', trashed) : '') + (result.unreadable ? line('解不开', result.unreadable) : '') + '</div>' + keyLine + hint + (rows.length ? '<div class="hint" style="margin-top:8px">' + rows.map((row) => esc(String(row.direction) + ' · ' + String(row.id).slice(0, 8) + ' · ' + String(row.updatedAt || '-'))).join('<br>') + '</div>' : '')
 }
 $('rb-save').onclick = async () => {
   const url = $('rb-url').value.trim()
@@ -1052,7 +1065,7 @@ async function renderSyncDevices() {
   const data = await api('/api/sync/devices').catch(() => ({ devices: [] }))
   const devices = data.devices ?? []
   if (!devices.length) { box.innerHTML = '<p class="hint">还没有同步设备。新建设备后，把那串令牌填到对面 broker 的 BROKER_REMOTE_TOKEN。</p>'; return }
-  box.innerHTML = devices.map((device) => '<div class="ios-row"><div class="ios-main"><div class="ios-title"><b>' + esc(device.name) + '</b>' + (device.revokedAt ? '<span class="ios-pill bad">已撤销</span>' : '<span class="ios-pill on">可用</span>') + '</div><div class="ios-sub">创建于 ' + esc(when(device.createdAt)) + (device.lastUsedAt ? ' · 最近使用 ' + esc(when(device.lastUsedAt)) : ' · 还没用过') + '</div></div>' + (device.revokedAt ? '' : '<button class="ios-pill plain" data-sdev-revoke="' + esc(device.id) + '">撤销</button>') + '</div>').join('')
+  box.innerHTML = devices.map((device) => '<div class="ios-row"><div class="ios-main"><div class="ios-title"><b>' + esc(device.name) + '</b>' + (device.revokedAt ? '<span class="ios-pill bad">已撤销</span>' : '<span class="ios-pill on">可用</span>') + '</div><div class="ios-sub">创建于 ' + esc(when(device.createdAt)) + (device.lastUsedAt ? ' · 最近使用 ' + esc(when(device.lastUsedAt)) : ' · 还没用过') + '</div></div>' + (device.revokedAt ? '<button class="ios-pill plain" data-sdev-delete="' + esc(device.id) + '">删除</button>' : '<button class="ios-pill plain" data-sdev-revoke="' + esc(device.id) + '">撤销</button>') + '</div>').join('')
 }
 $('sdev-create').onclick = async () => {
   const name = $('sdev-name').value.trim()
@@ -1067,6 +1080,16 @@ $('sdev-create').onclick = async () => {
   } catch (error) { status('sdev-status', error.message, 'error') }
 }
 $('sdev-list').onclick = async (event) => {
+  const del = event.target.closest('[data-sdev-delete]')
+  if (del) {
+    if (!(await askYes('删除这个已撤销的同步设备？记录会消失，令牌仍然作废。'))) return
+    try {
+      await api('/api/sync/devices/delete', { method: 'POST', body: JSON.stringify({ id: del.dataset.sdevDelete }) })
+      status('sdev-status', '已删除', 'ok')
+      await renderSyncDevices()
+    } catch (error) { status('sdev-status', error.message, 'error') }
+    return
+  }
   const button = event.target.closest('[data-sdev-revoke]')
   if (!button) return
   if (!(await askYes('撤销这个同步设备？对面的下一次拉取会立刻失败。'))) return

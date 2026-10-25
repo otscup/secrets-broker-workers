@@ -1631,6 +1631,19 @@ async function resolveSyncDevice(request, env, state) {
   return null
 }
 
+// "Are these two vaults the same vault?" A broker cannot hand over its key, so
+// the peer reports a fingerprint of its wrapped account key and we hash ours the
+// same way. Equal fingerprints mean the same account data, which is the only
+// condition under which ciphertext travels. null means the peer is too old to
+// answer, which is reported honestly rather than guessed at.
+async function syncKeyMatch(env, account, peer) {
+  const check = String(peer?.keyCheck ?? '')
+  if (!check) return null
+  const user = await env.NODEWARDEN_DB.prepare('SELECT key FROM users WHERE lower(email) = lower(?)').bind(account).first().catch(() => null)
+  if (!user?.key) return null
+  return constantTimeEqual(encoder.encode(await sha256Base64(String(user.key))), encoder.encode(check))
+}
+
 function publicState(state) {
   const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], allowAll: agent.allowAll === true, write: agent.write === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '', expiresAt: typeof agent.expiresAt === 'number' ? agent.expiresAt : null }))
   const seen = new Set(agents.map((agent) => agent.name))
@@ -6002,14 +6015,20 @@ export default {
         await addAudit(env, { event: 'sync.compare-deny', url: remote.url, reason: error.message.slice(0, 120) })
         return fail('远端没有给出结果：' + error.message, 502)
       }
-      const summary = diffSummary(diffVaults(mine, theirs.items))
+      // Trash is not content. A row with deleted_at set is a deletion signal,
+      // which apply refuses to act on, so counting it as "will pull" or as
+      // unreadable made a vault whose trash came from another account look
+      // broken while its live items were fine.
+      const theirsLive = (theirs.items ?? []).filter((row) => !row?.deletedAt)
+      const keyMatch = await syncKeyMatch(env, account, theirs)
+      const summary = diffSummary(diffVaults(mine, theirsLive))
       // Same key check as apply, so the number on screen before pressing the
       // button already says whether the two vaults share a master key.
       let unreadable = 0
-      if (session) for (const row of theirs.items ?? []) if (row?.name && !(await rowReadable(row, session))) unreadable += 1
-      await mutateState(env, [{ op: 'set', path: ['settings', 'remoteBroker', 'lastCount'], value: theirs.count ?? theirs.items.length }, { op: 'set', path: ['settings', 'remoteBroker', 'lastCompareAt'], value: nowIso() }])
+      if (session) for (const row of theirsLive) if (row?.name && !(await rowReadable(row, session))) unreadable += 1
+      await mutateState(env, [{ op: 'set', path: ['settings', 'remoteBroker', 'lastCount'], value: theirs.count ?? theirsLive.length }, { op: 'set', path: ['settings', 'remoteBroker', 'lastCompareAt'], value: nowIso() }])
       await addAudit(env, { event: 'sync.compare', url: remote.url, counts: summary.counts })
-      return json({ ok: true, local: { count: mine.length }, remote: { count: (theirs.items ?? []).length, account: theirs.account ?? '' }, unreadable, ...summary })
+      return json({ ok: true, local: { count: mine.length }, remote: { count: theirsLive.length, trashed: (theirs.items ?? []).length - theirsLive.length, account: theirs.account ?? '' }, unreadable, keyMatch, ...summary })
     }
     // Comparing told you what differs; this writes the half that comes this way.
     // It only ever adds or overwrites rows the peer has a newer version of: a
@@ -6043,21 +6062,31 @@ export default {
       // list as "(未命名)" and read as corruption. Ask before writing: if the name
       // does not decrypt with this vault's key, the row is not ours to hold.
       if (!session) return fail('先解锁 vault 再同步：要验证对面的密文能不能用这台 broker 的钥匙解开', 423)
+      const keyMatch = await syncKeyMatch(env, account, theirs)
       const wanted = []
       let unreadable = 0
+      let trashed = 0
       for (const row of theirs.items ?? []) {
         if (!row?.id || !row.name || !row.data) continue
+        // A tombstone on the peer is reported, never applied (see above), so it
+        // must not be pulled either — and it must not be counted as a row this
+        // vault cannot decrypt.
+        if (row.deletedAt) { trashed += 1; continue }
         const here = localById.get(row.id)
         if (here) {
-          if (row.deletedAt) continue
           if (!here.deletedAt && !(String(row.updatedAt ?? '') > String(here.updatedAt ?? ''))) continue
         }
         if (!(await rowReadable(row, session))) { unreadable += 1; continue }
         wanted.push(row)
       }
       if (!wanted.length && unreadable) {
-        await addAudit(env, { event: 'sync.apply-deny', url: remote.url, reason: 'unreadable-ciphertext', count: unreadable })
-        return fail('远端的 ' + unreadable + ' 条密文用这台 broker 的主密码解不开——两边的 vault 不是同一把钥匙（同一个账户、同一个主密码才有同一把钥匙）。没有写入任何条目。', 409)
+        await addAudit(env, { event: 'sync.apply-deny', url: remote.url, reason: 'unreadable-ciphertext', count: unreadable, keyMatch })
+        const verdict = keyMatch === false
+          ? '对面的账户密钥和这台不一样（同一个邮箱在两个 broker 上各自初始化过，账户密钥就不同），密文不能互用。'
+          : keyMatch === true
+            ? '两边的账户密钥是一样的，所以这 ' + unreadable + ' 条多半是从别的账户带过来的旧数据。'
+            : '对面没报账户密钥，判断不了是不是同一把钥匙。'
+        return fail('远端的 ' + unreadable + ' 条密文用这台 broker 的主密码解不开——' + verdict + '没有写入任何条目。', 409)
       }
       const insert = env.NODEWARDEN_DB.prepare(
         'INSERT OR REPLACE INTO ciphers (id, user_id, type, folder_id, name, notes, data, key, favorite, reprompt, created_at, updated_at, deleted_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)',
@@ -6072,13 +6101,13 @@ export default {
           failed.push(row.id)
         }
       }
-      const summary = diffSummary(diffVaults(mine, theirs.items))
+      const summary = diffSummary(diffVaults(mine, (theirs.items ?? []).filter((row) => !row?.deletedAt)))
       await mutateState(env, [
-        { op: 'set', path: ['settings', 'remoteBroker', 'lastCount'], value: theirs.count ?? theirs.items.length },
+        { op: 'set', path: ['settings', 'remoteBroker', 'lastCount'], value: theirs.count ?? 0 },
         { op: 'set', path: ['settings', 'remoteBroker', 'lastCompareAt'], value: nowIso() },
       ])
       await addAudit(env, { event: 'sync.apply', url: remote.url, applied, failed: failed.length, unreadable, counts: summary.counts })
-      return json({ ok: true, applied, failed, unreadable, pulled: wanted.length, total: (theirs.items ?? []).length, counts: summary.counts })
+      return json({ ok: true, applied, failed, unreadable, trashed, keyMatch, pulled: wanted.length, total: (theirs.items ?? []).length, counts: summary.counts })
     }
 
     // Rows that cannot be decrypted with this vault's key are dead weight: they
@@ -6136,6 +6165,22 @@ export default {
       if (!device) return fail('device not found', 404)
       await mutateState(env, [{ op: 'set', path: ['syncDevices', id, 'revokedAt'], value: nowIso() }])
       await addAudit(env, { event: 'sync.device.revoke', name: device.name, device: id })
+      return json({ ok: true })
+    }
+    // Revoking stops the token; deleting forgets the row. Without this a revoked
+    // device sat in the list forever, so a list that had grown to twenty (the
+    // cap) could never be cleaned up and no new device could be created.
+    if (url.pathname === '/api/sync/devices/delete' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const id = String(body.id ?? '')
+      const state = await loadState(env)
+      const device = state.syncDevices?.[id]
+      if (!device) return fail('device not found', 404)
+      // Deleting a live device would be an invisible revoke; make it explicit.
+      if (!device.revokedAt) return fail('先撤销这个设备再删除', 409)
+      await mutateState(env, [{ op: 'delete', path: ['syncDevices', id] }])
+      await addAudit(env, { event: 'sync.device.delete', name: device.name, device: id })
       return json({ ok: true })
     }
     if (url.pathname === '/api/settings') {
@@ -6694,8 +6739,16 @@ export default {
       // way every other read path does, or sync would silently compare nothing.
       const items = await vaultCipherRows(env, account)
       if (!items) return fail('no vault user matches ' + account + ' (is the vault database initialised?)', 409)
-      await addAudit(env, { event: 'sync.pull', agent: device ? 'device:' + device.name : 'admin', device: device?.id, count: items.length, account })
-      return json({ ok: true, account, count: items.length, items })
+      // A fingerprint of the account's wrapped key answers "are these two vaults
+      // the same vault?" without handing over the key or a plaintext. Hashing a
+      // ciphertext blob reveals nothing, and two brokers that hold the same
+      // account data hold the same string, so the comparison is exact instead of
+      // the guess the panel used to print.
+      const userRow = await env.NODEWARDEN_DB.prepare('SELECT key FROM users WHERE lower(email) = lower(?)').bind(account).first().catch(() => null)
+      const keyCheck = userRow?.key ? await sha256Base64(String(userRow.key)) : ''
+      const live = items.filter((row) => !row?.deletedAt)
+      await addAudit(env, { event: 'sync.pull', agent: device ? 'device:' + device.name : 'admin', device: device?.id, count: live.length, account })
+      return json({ ok: true, account, count: live.length, trashed: items.length - live.length, keyCheck, items })
     }
     if (url.pathname === '/mcp' && request.method === 'POST') {
       const resolved = await resolveAgent(request, env)
