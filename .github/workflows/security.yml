@@ -39,6 +39,8 @@ jobs:
         run: npm run test:capabilities
       - name: Capability admin API (Miniflare)
         run: npm run test:capabilities-admin
+      - name: Approval bound to its target (Miniflare)
+        run: npm run test:target-binding
       - name: Independent review regression (Miniflare)
         run: npm run test:review-fixes
       - name: State machine edge cases (Miniflare)

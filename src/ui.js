@@ -2605,7 +2605,7 @@ function renderPending() {
   const body = pending.map((request) => {
     const origin = pendingOriginLabel(request)
     const isFill = String(request.action || '') === 'secret.fill'
-    const originLine = isFill ? (origin ? '目标 ' + origin : '缺少目标 origin，填单会被拒绝') : ''
+    const originLine = !origin ? '' : /^目标无效/.test(origin) ? origin : '目标 ' + origin
     const chips = [['once', '仅本次'], ['1h', '1 小时'], ['24h', '24 小时'], ['7d', '7 天'], ['always', '永久']]
       .map((mode) => '<button class="ios-chip" data-decide="' + mode[0] + '" data-id="' + esc(request.id) + '">' + mode[1] + '</button>').join('')
       + '<button class="ios-chip danger" data-decide="deny" data-id="' + esc(request.id) + '">拒绝</button>'
@@ -2733,7 +2733,9 @@ function openBulkKind() {
 }
 
 function pendingOriginLabel(entry) {
-  if (String(entry.action || '') !== 'secret.fill') return ''
+  const action = String(entry.action || '')
+  // read has no site. fill and use both name one, and the approval binds it.
+  if (action !== 'secret.fill' && action !== 'secret.use') return ''
   const origin = String(entry.targetOrigin || '').trim()
   if (!origin) return '目标无效（缺少 origin）'
   return origin

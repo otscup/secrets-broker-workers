@@ -1868,6 +1868,18 @@ async function decidePending(env, id, decision, source = 'web') {
     // A fill approval is only meaningful with a concrete target origin, and
     // the origin must still satisfy the fill policy. A missing or malformed
     // target is refused rather than guessed.
+    // A fill or use approval names a site. The capability carries that site so
+    // the approval buys exactly what the operator saw, not every host the
+    // item's policy happens to list.
+    const boundOrigin = entryAction === 'secret.fill' || entryAction === 'secret.use'
+      ? normalizeOrigin(entry.targetOrigin)?.origin ?? ''
+      : ''
+    if (entryAction === 'secret.use' && !boundOrigin) {
+      // Without an origin this approval would be a blank cheque; the agent asks
+      // again and the next pending names its target.
+      outcome = { agent: entry.agent, name: entry.name, mode, action: entryAction, denied: true, error: 'use-target-missing' }
+      return state
+    }
     if (entryAction === 'secret.fill') {
       const target = normalizeOrigin(entry.targetOrigin)
       if (!target) {
@@ -1891,6 +1903,15 @@ async function decidePending(env, id, decision, source = 'web') {
       if (existing) {
         const status = capabilityStatus(existing)
         if (status === 'valid' || status === 'expiring') {
+          // One record per (agent, item, action), so approving a second site
+          // appends to the target list instead of being skipped until the
+          // first approval expires. A record with no list predates target
+          // binding: leave it alone rather than narrow access it already had.
+          if (Array.isArray(existing.targets) && boundOrigin && !existing.targets.includes(boundOrigin)) {
+            existing.targets = [...existing.targets, boundOrigin]
+            outcome = { agent: entry.agent, name: entry.name, mode, action: entryAction, target: boundOrigin, appended: true }
+            return state
+          }
           outcome = { agent: entry.agent, name: entry.name, mode, action: entryAction, skipped: 'live-capability' }
           return state
         }
@@ -1902,6 +1923,7 @@ async function decidePending(env, id, decision, source = 'web') {
         expiresAt: ttl == null || ttl === 0 ? null : Date.now() + ttl,
         maxUses: mode === 'once' ? 1 : null, usedCount: 0,
         revokedAt: null, revokedBy: null, approvalId: id, policyVersion: 1,
+        ...(boundOrigin ? { targets: [boundOrigin] } : {}),
         regrantedFrom: existing ? (existing.revokedAt ? 'revoked' : (existing.exhaustedAt ? 'exhausted' : 'expired')) : null,
       }
     } else {
@@ -3015,6 +3037,24 @@ function targetAllowed(policy, target) {
 }
 
 /**
+ * The target shape the use policy and the approval binding both compare.
+ *
+ * One helper so the enforcement path and explain_access cannot describe the
+ * same request differently. Returns null when the URL is not a URL.
+ */
+export function useTargetOf(rawUrl, method = 'GET') {
+  let parsed
+  try { parsed = new URL(String(rawUrl ?? '')) } catch { return null }
+  return {
+    host: parsed.hostname.toLowerCase().replace(/\.$/, ''),
+    port: String(parsed.port || '443'),
+    method: String(method ?? 'GET').trim().toUpperCase(),
+    pathname: parsed.pathname || '/',
+    origin: parsed.origin,
+  }
+}
+
+/**
  * Unified authorization for secret.read / secret.use.
  *
  * Returns { ok, reason, legacy, shadow? }. Never returns secret material.
@@ -3052,12 +3092,16 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
       const fill = fillPolicyFor(state, itemId, target?.origin ?? '')
       if (!fill.ok) { ok = false; reason = fill.reason }
       else if (!fill.actions.includes(String(target?.action ?? 'login'))) { ok = false; reason = 'action-not-allowed' }
+      else if (Array.isArray(cap.targets) && target?.origin && !cap.targets.includes(target.origin)) { ok = false; reason = 'target-not-approved' }
       else { ok = true; reason = 'capability' }
     }
     else {
       const policy = usePolicyFor(state, itemId, accountId)
       if (!policy) { ok = false; reason = 'no-use-policy' }
       else if (!targetAllowed(policy, target)) { ok = false; reason = 'target-denied' }
+      // The approval named one site. Another site the policy happens to allow
+      // is a new question, not an inherited right.
+      else if (Array.isArray(cap.targets) && target?.origin && !cap.targets.includes(target.origin)) { ok = false; reason = 'target-not-approved' }
       else { ok = true; reason = 'capability' }
     }
   } else if (legacyDecision && !cap) {
@@ -3071,7 +3115,8 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
   // A capability that exists but is not usable is DECISIVE: no caller may
   // fall through to the approval gate, a legacy grant, or the legacy scope
   // path. Account mismatch counts as decisive too (cross-account attempt).
-  const capabilityDecisive = Boolean(cap) && (reason !== 'capability')
+  const targetNotApproved = reason === 'target-not-approved'
+  const capabilityDecisive = Boolean(cap) && (reason !== 'capability') && !targetNotApproved
   if (capabilityDecisive) { ok = false; if (!reason || reason === 'no-capability') reason = capabilityStatus(cap) }
   // Capability-eligible but not yet issued (actionGrant without approval
   // state): the approval gate in agentAccess must see this as pending, not
@@ -3110,7 +3155,7 @@ export function authorizeSecretAction(state, { agent, agentName, itemId, itemNam
     else if (!fill.actions.includes(String(target?.action ?? 'login'))) { ok = false; reason = 'action-not-allowed'; grantEligible = false }
     else { ok = false; reason = 'awaiting-approval' }
   }
-  return { ok, reason, legacy: legacyDecision, grant: null, capability: cap, capabilityKey: key, grantEligible, capabilityDecisive }
+  return { ok, reason, legacy: legacyDecision, grant: null, capability: cap, capabilityKey: key, grantEligible, capabilityDecisive, targetNotApproved }
 }
 
 // A refusal that only says "not allowed" costs the Agent (and the operator) a
@@ -3135,7 +3180,7 @@ async function explainAccess(env, { resolved, session, name, action, origin = ''
   const policy = state.policies?.[itemName] ?? null
   const cap = state.capabilities?.[capabilityKey(resolved.name, itemId, action)] ?? null
   const status = capabilityStatus(cap)
-  const target = action === 'secret.fill' ? { origin } : action === 'secret.use' && url ? { url } : null
+  const target = action === 'secret.fill' ? { origin } : action === 'secret.use' && url ? useTargetOf(url) : null
   const decision = authorizeSecretAction(state, { agent: resolved.agent, agentName: resolved.name, itemId, itemName, action, target, accountId })
   const guard = plaintextReadAllowed(state, itemId, { agent: resolved.name, noApproval: policy?.noApproval === true, granted: cap && status !== 'revoked' ? { subject: resolved.name, accountId } : null })
   const reasons = []
@@ -3146,6 +3191,8 @@ async function explainAccess(env, { resolved, session, name, action, origin = ''
   if (policy?.noApproval === true) reasons.push('已设为免审批：in-scope 的 Agent 读它不用问')
   if (cap) reasons.push('能力：' + ({ valid: '有效', expiring: '有效（24 小时内到期）', expired: '已过期', revoked: '已撤销', exhausted: '次数已用完', missing: '无' })[status] + (cap.expiresAt ? '，到期 ' + new Date(cap.expiresAt).toISOString() : '') + (cap.maxUses != null ? '，已用 ' + (cap.usedCount ?? 0) + '/' + cap.maxUses : ''))
   else reasons.push('能力：无')
+  if (cap?.targets?.length) reasons.push('已批准的目标：' + cap.targets.join('、'))
+  if (decision.targetNotApproved) reasons.push('这次的目标 ' + (target?.origin ?? '') + ' 没有批准过；每次批准只管它当时写明的站点')
   if (decision.ok) reasons.push('判定：放行（' + decision.reason + '）')
   else if (decision.grantEligible) reasons.push('判定：需要你批准（' + decision.reason + '）')
   else reasons.push('判定：拒绝（' + decision.reason + '）')
@@ -3275,6 +3322,10 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   const itemId = state.itemIds?.[name] ?? ''
   const decision = authorizeSecretAction(state, { agent, agentName, itemId, itemName: name, action, target, accountId: session.email })
   shadowAudit(env, state, action, agentName, name, itemId, decision.ok, decision.legacy)
+  // A live capability that covers another site is not a grant and not a
+  // refusal: it is a new question about this one, so the approval gate below
+  // must run with the capability suppressed.
+  const needsTargetApproval = decision.targetNotApproved === true
   if (!decision.ok) {
     if (decision.reason === 'no-use-policy' || decision.reason === 'target-denied') return { status: 'forbidden', error: `secret.use denied: ${decision.reason}` }
     // A capability that exists but is expired/revoked/exhausted/cross-account
@@ -3330,14 +3381,18 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   //                approval or an admin pre-grant mints).
   const legacyGrant = action === 'secret.read' ? activeGrant(state, agentName, name) : null
   const noApprovalSatisfies = action === 'secret.read' && policy?.noApproval === true
-  if (!noApprovalSatisfies && !decision.capability && !legacyGrant) {
+  if (!noApprovalSatisfies && (!decision.capability || needsTargetApproval) && !legacyGrant) {
     let pendingId = findPending(state, agentName, name, action)
     if (!pendingId) {
       pendingId = crypto.randomUUID()
       // The pending request records the target origin so the approver can see
       // which site the credential would be filled into. A fill request without
       // an origin is never approvable.
-      const entry = { id: pendingId, agent: agentName, name, account: session.email, action, createdAt: nowIso(), targetOrigin: action === 'secret.fill' ? String(target?.origin ?? '') : '', ...(action === 'secret.materialize' ? { target: { path: String(target?.path ?? ''), key: String(target?.key ?? '') } } : {}) }
+      // fill and use both name a site, and the approval binds that site rather
+      // than just the credential. An approval without an origin is a blank
+      // cheque, so the origin is recorded for both and checked when it decides.
+      const bindsTarget = action === 'secret.fill' || action === 'secret.use'
+      const entry = { id: pendingId, agent: agentName, name, account: session.email, action, createdAt: nowIso(), targetOrigin: bindsTarget ? String(target?.origin ?? origin ?? '') : '', ...(action === 'secret.materialize' ? { target: { path: String(target?.path ?? ''), key: String(target?.key ?? '') } } : {}) }
       await updateState(env, (next) => { next.pending[pendingId] = entry; if (itemId) { next.itemIds ??= {}; next.itemIds[name] = itemId } return next })
       await addAudit(env, { event: 'request.create', agent: agentName, name })
       // An active auto-approval rule answers it now instead of asking. It is
@@ -3380,7 +3435,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   // Failed upstream calls still count (no infinite failure-retry bypass).
   // Whenever a capability exists it is the sole counter — including for
   // legacy agents. The legacy path never skips consumption.
-  if (decision.capability) {
+  if (decision.capability && !needsTargetApproval) {
     // The DO is the authority. A pending migration is materialised first so
     // the identity binding is proven: a legacy grant without one is refused
     // with 'unbound-legacy-identity' here, exactly as on the read path. This
@@ -6903,14 +6958,8 @@ export default {
             if (!secretName) return result(text('name is required', true))
             // secret.use is a distinct action from secret.read: it never
             // returns plaintext and requires a per-item target policy.
-            let parsedTarget = null
-            try { parsedTarget = new URL(String(args.url ?? '')) } catch { return result(text('invalid url', true)) }
-            const useTarget = {
-              host: parsedTarget.hostname.toLowerCase().replace(/\.$/, ''),
-              port: String(parsedTarget.port || '443'),
-              method: String(args.method ?? 'GET').trim().toUpperCase(),
-              pathname: parsedTarget.pathname || '/',
-            }
+            const useTarget = useTargetOf(args.url, args.method)
+            if (!useTarget) return result(text('invalid url', true))
             const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx, action: 'secret.use', target: useTarget })
             const useKind = resolved.agent.oauth ? 'oauth' : 'token'
             if (access.status === 'pending') {
