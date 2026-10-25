@@ -39,6 +39,8 @@ jobs:
         run: npm run test:capabilities
       - name: Capability admin API (Miniflare)
         run: npm run test:capabilities-admin
+      - name: Bulk grants + agent write (Miniflare)
+        run: npm run test:batch-write
       - name: Approval bound to its target (Miniflare)
         run: npm run test:target-binding
       - name: Independent review regression (Miniflare)
