@@ -1233,7 +1233,7 @@ async function resolveAgent(request, env) {
     if (tokenEntry.expiresAt && tokenEntry.expiresAt < Date.now()) continue
     if (constantTimeEqual(encoder.encode(tokenEntry.hash ?? ''), encoder.encode(hash))) {
       const profile = state.oauthAgentProfiles?.[tokenEntry.agent] ?? {}
-      return { name: tokenEntry.agent, agent: { allow: profile.allow ?? [], groups: profile.groups ?? [], allowAll: profile.allowAll === true, write: profile.write === true, oauth: true, account: tokenEntry.account ?? '', alias: profile.alias ?? '', note: profile.note ?? '' }, state }
+      return { name: tokenEntry.agent, agent: { allow: profile.allow ?? [], groups: profile.groups ?? [], allowAll: profile.allowAll === true, write: profile.write === true, tools: Array.isArray(profile.tools) ? profile.tools : null, oauth: true, account: tokenEntry.account ?? '', alias: profile.alias ?? '', note: profile.note ?? '' }, state }
     }
   }
   return null
@@ -1254,6 +1254,38 @@ function activeGrant(state, agent, name) {
 // approving them could silently mint the wrong action's capability.
 function findPending(state, agent, name, action) {
   return Object.entries(state.pending).find(([, entry]) => entry.agent === agent && entry.name === name && entry.action === action)?.[0] ?? null
+}
+
+// Restore is revoke's inverse, and it has to undo the same two things: the
+// grant row AND the capability minted from it. Un-revoking only the row left the
+// capability revoked, so the console said 生效中 while the agent still got
+// "capability revoked" — the restore looked like text and nothing else.
+function restoreGrantState(state, { agent, name, seconds, now = nowIso() }) {
+  const grant = state.grants?.[grantKey(agent, name)]
+  if (!grant) return false
+  const expiresAt = seconds > 0 ? Date.now() + seconds * 1000 : 0
+  grant.revokedAt = null
+  grant.reads = 0
+  grant.expiresAt = expiresAt
+  const account = String(grant.account ?? '').toLowerCase()
+  for (const cap of Object.values(state.capabilities ?? {})) {
+    if (!cap || cap.subjectId !== agent || cap.itemName !== name) continue
+    // Only the read capability belongs to a read grant. A fill or use
+    // capability was approved on its own and must not come back with it.
+    if (cap.action !== 'secret.read') continue
+    // Leave revocations that were not ours alone (Telegram, agent delete, a
+    // narrower admin revoke); restoring one of those would undo a decision the
+    // operator made elsewhere.
+    if (cap.revokedBy && cap.revokedBy !== 'admin:grant-revoke') continue
+    if (account && String(cap.accountId ?? '').toLowerCase() !== account) continue
+    cap.revokedAt = null
+    cap.revokedBy = null
+    cap.usedCount = 0
+    cap.expiresAt = expiresAt
+    cap.restoredAt = now
+  }
+  grant.restoredAt = now
+  return true
 }
 
 async function vaultEmail(env, db, state) {
@@ -1645,7 +1677,7 @@ async function syncKeyMatch(env, account, peer) {
 }
 
 function publicState(state) {
-  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], allowAll: agent.allowAll === true, write: agent.write === true, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '', expiresAt: typeof agent.expiresAt === 'number' ? agent.expiresAt : null }))
+  const agents = Object.entries(state.agents).map(([name, agent]) => ({ name, alias: agent.alias ?? '', note: agent.note ?? '', allow: agent.allow ?? [], groups: agent.groups ?? [], allowAll: agent.allowAll === true, write: agent.write === true, tools: Array.isArray(agent.tools) ? agent.tools : null, account: agent.account ?? '', oauth: false, createdAt: agent.createdAt ?? '', expiresAt: typeof agent.expiresAt === 'number' ? agent.expiresAt : null }))
   const seen = new Set(agents.map((agent) => agent.name))
   const now = Date.now()
   for (const token of Object.values(state.oauthTokens ?? {})) {
@@ -1653,7 +1685,7 @@ function publicState(state) {
     if (token.expiresAt && token.expiresAt <= now) continue
     seen.add(token.agent)
     const profile = state.oauthAgentProfiles?.[token.agent] ?? {}
-    agents.push({ name: token.agent, alias: profile.alias ?? '', note: profile.note ?? '', allow: profile.allow ?? [], groups: profile.groups ?? [], allowAll: profile.allowAll === true, write: profile.write === true, account: token.account ?? '', oauth: true, createdAt: token.createdAt ?? '', expiresAt: typeof token.expiresAt === 'number' ? token.expiresAt : null })
+    agents.push({ name: token.agent, alias: profile.alias ?? '', note: profile.note ?? '', allow: profile.allow ?? [], groups: profile.groups ?? [], allowAll: profile.allowAll === true, write: profile.write === true, tools: Array.isArray(profile.tools) ? profile.tools : null, account: token.account ?? '', oauth: true, createdAt: token.createdAt ?? '', expiresAt: typeof token.expiresAt === 'number' ? token.expiresAt : null })
   }
   return {
     agents,
@@ -1816,6 +1848,22 @@ async function decidePending(env, id, decision, source = 'web') {
     delete state.pending[id]
     if (decision === 'deny') {
       outcome = { denied: true, agent: entry.agent, name: entry.name }
+      return state
+    }
+    // A write approval is not a standing permission, not a read grant and not a
+    // capability: it unlocks one write of one name for ten minutes. The value is
+    // never stored here — the agent sends it again on the retry — so approving a
+    // write can no longer park a secret in the state the console exposes.
+    if (String(entry.action ?? '') === 'secret.write') {
+      const writeAccount = typeof entry.account === 'string' ? entry.account.trim() : ''
+      if (!isWellFormedAccountId(writeAccount)) {
+        outcome = { agent: entry.agent, name: entry.name, action: 'secret.write', denied: true, error: 'account-missing' }
+        return state
+      }
+      state.writeTickets ??= {}
+      for (const [tkey, ticket] of Object.entries(state.writeTickets)) if (Number(ticket?.expiresAt ?? 0) < Date.now()) delete state.writeTickets[tkey]
+      state.writeTickets[grantKey(entry.agent, entry.name)] = { agent: entry.agent, name: entry.name, account: writeAccount, createdAt: nowIso(), expiresAt: Date.now() + 10 * 60 * 1000 }
+      outcome = { agent: entry.agent, name: entry.name, action: 'secret.write', approved: true }
       return state
     }
     // Legacy entries created before action binding have no action (and often
@@ -5586,6 +5634,9 @@ export default {
           if (Array.isArray(body.groups)) agent.groups = body.groups.map(String).filter(Boolean)
           if (typeof body.allowAll === 'boolean') agent.allowAll = body.allowAll
           if (typeof body.write === 'boolean') agent.write = body.write
+          // Optional per-agent MCP surface. Empty/absent keeps today's behaviour
+          // (every tool the token can reach); a non-empty list is an allowlist.
+          if (Array.isArray(body.tools)) agent.tools = body.tools.map(String).map((tool) => tool.trim()).filter(Boolean).slice(0, 32)
           return state
         }
         const oauthExists = Object.values(state.oauthTokens ?? {}).some((token) => token.agent === name)
@@ -5599,6 +5650,7 @@ export default {
         if (Array.isArray(body.groups)) profile.groups = body.groups.map(String).filter(Boolean)
         if (typeof body.allowAll === 'boolean') profile.allowAll = body.allowAll
         if (typeof body.write === 'boolean') profile.write = body.write
+        if (Array.isArray(body.tools)) profile.tools = body.tools.map(String).map((tool) => tool.trim()).filter(Boolean).slice(0, 32)
         return state
       })
       if (!found) return fail('agent not found', 404)
@@ -5857,20 +5909,49 @@ export default {
     if (url.pathname === '/api/grants/restore' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const body = await request.json().catch(() => ({}))
-      const key = grantKey(String(body.agent ?? ''), String(body.name ?? ''))
+      const agentName = String(body.agent ?? '')
+      const itemName = String(body.name ?? '')
+      // 0 = permanent. Restoring used to force permanent for an expired grant,
+      // which turned "give it back for an hour" into "give it back forever".
+      const seconds = Math.max(0, Number(body.seconds) || 0)
       let found = false
       await updateState(env, (state) => {
-        const grant = state.grants[key]
-        if (!grant) return state
-        found = true
-        grant.revokedAt = null
-        if (grant.expiresAt && grant.expiresAt <= Date.now()) grant.expiresAt = 0
-        grant.reads = 0
+        found = restoreGrantState(state, { agent: agentName, name: itemName, seconds })
         return state
       })
       if (!found) return fail('grant not found', 404)
-      await addAudit(env, { event: 'grant.restore', agent: body.agent, name: body.name, source: 'web' })
+      await addAudit(env, { event: 'grant.restore', agent: body.agent, name: body.name, seconds, source: 'web' })
       return json({ ok: true })
+    }
+    // Batch operations from the 授权 page. The per-grant routes take one key per
+    // request, so a twenty-row selection was twenty round trips that could stop
+    // halfway; one request over one state write either applies to every row or
+    // reports the rows it could not find.
+    if (url.pathname === '/api/grants/batch' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const action = String(body.action ?? '')
+      if (action !== 'delete' && action !== 'restore') return fail('unknown action', 400)
+      const keys = (Array.isArray(body.keys) ? body.keys : []).slice(0, 500)
+        .map((entry) => ({ agent: String(entry?.agent ?? ''), name: String(entry?.name ?? '') }))
+        .filter((entry) => entry.agent && entry.name)
+      if (!keys.length) return fail('keys required', 400)
+      const seconds = Math.max(0, Number(body.seconds) || 0)
+      let changed = 0
+      const missing = []
+      await updateState(env, (state) => {
+        for (const entry of keys) {
+          if (action === 'delete') {
+            if (state.grants?.[grantKey(entry.agent, entry.name)]) { delete state.grants[grantKey(entry.agent, entry.name)]; changed++ } else missing.push(entry)
+            continue
+          }
+          if (restoreGrantState(state, { agent: entry.agent, name: entry.name, seconds })) changed++
+          else missing.push(entry)
+        }
+        return state
+      })
+      await addAudit(env, { event: 'grant.batch', action, count: changed, seconds, source: 'web' })
+      return json({ ok: true, changed, missing })
     }
     if (url.pathname === '/api/grants/update' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -6443,7 +6524,12 @@ export default {
           for (const [code, entry] of Object.entries(state.oauthCodes ?? {})) if (entry.clientId === body.clientId) delete state.oauthCodes[code]
         }
         if (body.agent) {
-          for (const [hash, token] of Object.entries(state.oauthTokens ?? {})) if (token.agent === body.agent) delete state.oauthTokens[hash]
+          for (const [hash, token] of Object.entries(state.oauthTokens ?? {})) if (token.agent === body.agent) {
+            delete state.oauthTokens[hash]
+            // The registration existed for this connection only. Leaving it behind
+            // was the one thing the removed OAuth-client page did.
+            if (token.clientId) delete state.oauthClients?.[token.clientId]
+          }
           delete state.oauthAgentProfiles?.[body.agent]
         }
         if (body.all === true) { state.oauthClients = {}; state.oauthTokens = {}; state.oauthCodes = {} }
@@ -6792,6 +6878,7 @@ const TOOL_META = {
   materialize: { title: '写入本地文件', readOnlyHint: false, destructiveHint: true },
   materialize_redeem: { title: '兑换一次性写入任务', readOnlyHint: false, destructiveHint: true },
   request_credential: { title: '创建一次性填写链接', readOnlyHint: false, destructiveHint: false },
+  put_secret: { title: '写入密钥（需审批）', readOnlyHint: false, destructiveHint: true },
   http_request: { title: '代调外部 API', readOnlyHint: false, openWorldHint: true },
 }
     if (url.pathname === '/health' && (request.method === 'GET' || request.method === 'HEAD')) return json({ ok: true })
@@ -6841,8 +6928,9 @@ const TOOL_META = {
           { name: 'materialize', description: 'Ask to write a stored credential into a file the operator has pre-approved (settings.materializePaths). The value never returns from this call: an approval records a one-shot job that the local bridge redeems once.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Item name' }, path: { type: 'string', description: 'Absolute target file path, on the allowlist' }, key: { type: 'string', description: 'Variable name to write, e.g. OPENAI_API_KEY' } }, required: ['name', 'path', 'key'], additionalProperties: false } },
           { name: 'materialize_redeem', description: 'Redeem an approved materialize job once. Returns the value for the local bridge to write; the job cannot be redeemed twice.', inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'Job id from the pending approval' } }, required: ['id'], additionalProperties: false } },
           { name: 'request_credential', description: 'Create a secure one-time link for a human to fill in a missing credential; the broker stores it and grants this agent access.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Suggested item name' }, description: { type: 'string', description: 'What the credential is for' } }, required: ['name'] } },
+          { name: 'put_secret', description: 'Store or update a credential. Requires human approval: the first call returns pending-approval with an approvalUrl and stores nothing; after the operator approves, call it again with the same arguments within 10 minutes to actually write. Pass only the fields you are changing.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Item name (exact, trimmed)' }, value: { type: 'string', description: 'Secret value; omit to keep the stored one' }, username: { type: 'string' }, totp: { type: 'string', description: 'Base32 TOTP secret' }, url: { type: 'string' }, notes: { type: 'string' }, group: { type: 'string', description: 'Folder/group, required to create an item in a group' } }, required: ['name'], additionalProperties: false } },
           { name: 'http_request', description: 'Make an HTTPS request with a secret injected server-side. Method allowlist (default GET/POST, extend via HTTP_ALLOW_METHODS; max 16 chars). Path prefix allowlist via HTTP_ALLOW_PATHS (empty = no path restriction). headerName allowlist: Authorization, X-Api-Key, Api-Key, X-Auth-Token (case-insensitive); authPrefix max 32 chars, no CR/LF. Custom headers sanitized (name /^[A-Za-z0-9-]+$/, value <=4KB, max 20; host/content-length/connection/cookie/set-cookie/authorization and other sensitive hops filtered). Body <=64KB as string; GET/HEAD must not send body. Only https, no userinfo, default port 443 or HTTP_ALLOWED_PORTS. The secret is never returned to the caller.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' }, url: { type: 'string', description: 'HTTPS target URL (no userinfo; path must match HTTP_ALLOW_PATHS prefixes when set; port 443 or HTTP_ALLOWED_PORTS)' }, method: { type: 'string', description: 'HTTP method, uppercased (default GET; non-GET/POST requires HTTP_ALLOW_METHODS; max 16 chars)' }, headers: { type: 'object', description: 'Extra headers (sanitized: name /^[A-Za-z0-9-]+$/, value <=4KB, max 20; sensitive/hop headers filtered and cannot override the injected secret header)' }, body: { type: 'string', description: 'Request body as string (<=64KB; GET/HEAD must not include body)' }, headerName: { type: 'string', description: 'Header to inject the secret into (allowlist: Authorization, X-Api-Key, Api-Key, X-Auth-Token; default Authorization)' }, authPrefix: { type: 'string', description: 'Prefix before the secret (default "Bearer ", max 32 chars, no CR/LF)' } }, required: ['name', 'url'] } },
-        ].map((tool) => ({ ...tool, annotations: TOOL_META[tool.name] ?? {} })) })
+        ].filter((tool) => !Array.isArray(resolved.agent.tools) || !resolved.agent.tools.length || resolved.agent.tools.includes(tool.name)).map((tool) => ({ ...tool, annotations: TOOL_META[tool.name] ?? {} })) })
       }
       if (body.method === 'tools/call') {
         const name = body.params?.name
@@ -6855,7 +6943,46 @@ const TOOL_META = {
         const pendingText = (access) => text({ status: 'pending-approval', requestId: access.requestId ?? '', approvalUrl: access.approvalUrl ?? '', retryAfterSeconds: 5, next: '批准后重新调用同一个工具即可取到值；不需要再申请一次', message: 'pending approval: ' + (access.approvalUrl ?? '') })
         const session = await getSession(env)
         if (!session) return result(text('vault locked; open the broker page or run unlock.mjs', true))
+        // Per-agent MCP surface. An empty list means "every tool", so agents created
+        // before this setting keep working; a non-empty list is an allowlist.
+        const allowedTools = Array.isArray(resolved.agent.tools) && resolved.agent.tools.length ? resolved.agent.tools : null
+        if (allowedTools && !allowedTools.includes(name)) return result(text('this agent is restricted to: ' + allowedTools.join(', ') + ' — ' + name + ' is not allowed', true))
         try {
+          if (name === 'put_secret') {
+            const itemName = argName()
+            if (!itemName) return result(text('name is required', true))
+            const fields = {}
+            for (const key of ['value', 'username', 'totp', 'url', 'notes', 'group']) if (typeof args[key] === 'string') fields[key] = args[key]
+            if (!Object.keys(fields).length) return result(text('nothing to write: pass value, username, totp, url, notes or group', true))
+            const ticketKey = grantKey(resolved.name, itemName)
+            const ticket = resolved.state.writeTickets?.[ticketKey] ?? null
+            const ticketLive = Boolean(ticket) && Number(ticket.expiresAt ?? 0) > Date.now()
+              && String(ticket.account ?? '').toLowerCase() === String(session.email).toLowerCase()
+            if (!ticketLive) {
+              // Same pending shape as a read request, so the console, Telegram and
+              // the push notifications surface a write without a second code path.
+              let pendingId = findPending(resolved.state, resolved.name, itemName, 'secret.write')
+              if (!pendingId) {
+                pendingId = crypto.randomUUID()
+                await updateState(env, (next) => { next.pending[pendingId] = { id: pendingId, agent: resolved.name, name: itemName, account: session.email, action: 'secret.write', createdAt: nowIso(), targetOrigin: '' }; return next })
+                await addAudit(env, { event: 'request.create', agent: resolved.name, name: itemName, action: 'secret.write' })
+                await notifyPending(env, url.origin, { id: pendingId, agent: resolved.name, name: itemName, action: 'secret.write', createdAt: nowIso() }, ctx).catch(() => {})
+              }
+              return result(pendingText({ requestId: pendingId, approvalUrl: url.origin + '/#pending' }))
+            }
+            if (!agentInScope(resolved.agent, resolved.state.itemGroups, itemName, fields.group)) return result(text('agent not allowed to write this item: it is outside the agent scope', true))
+            // A new item needs a value; metadata alone would create an empty entry
+            // every later read has to special-case.
+            const existing = await findCipherRow(env, env.NODEWARDEN_DB, session, itemName)
+            if (!existing && !fields.value) return result(text('value is required to create a new item', true))
+            // One approval, one write. The ticket is spent before the write so a
+            // crash cannot replay it later with a different value.
+            await updateState(env, (next) => { delete next.writeTickets?.[ticketKey]; return next })
+            if (existing) await updateCipher(env, env.NODEWARDEN_DB, session, itemName, fields)
+            else await createCipher(env, env.NODEWARDEN_DB, session, { name: itemName, ...fields })
+            await addAudit(env, { event: 'secret.write', agent: resolved.name, name: itemName, action: 'secret.write', source: 'approval' })
+            return result(text({ status: 'written', name: itemName, updated: Boolean(existing) }))
+          }
           if (name === 'explain_access') {
             const explained = await explainAccess(env, { resolved, session, name: argName(), action: String(args.action ?? 'secret.read'), origin: args.origin ? String(args.origin) : '', url: args.url ? String(args.url) : '' })
             return result(text(explained))

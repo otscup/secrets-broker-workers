@@ -28,6 +28,10 @@ const state = {
   // the row could never appear.
 }
 state.grants = [{ agent: 'dsh', name: 'tavily-api-key', mode: '24h', createdAt: new Date().toISOString(), expiresAt: Date.now() + 3600e3, reads: 0, maxReads: null, revokedAt: null }]
+// A second row so the bulk bar has something to select more than one of. It
+// targets the same credential, so the readable-credential counts A16 relies on
+// still say 1.
+state.grants.push({ agent: 'other', name: 'tavily-api-key', mode: '24h', createdAt: new Date().toISOString(), expiresAt: Date.now() + 3600e3, reads: 0, maxReads: null, revokedAt: null })
 // One refused read, keyed by the agent's identifier. The row has to show the
 // name the operator gave that agent (`DSH 桌面助手`), not `dsh`: the identifier
 // is what the token belongs to, and nobody recognises it in a list.
@@ -61,7 +65,7 @@ const ITEMS_DELAY_MS = 900
 
 const routes = {
   '/api/me': () => ({ email: 'vault@example.invalid', name: 'Vault', avatarUrl: '', siteName: 'Test', unlocked: true, expiresAt: Date.now() + 3600e3, pending: 1 }),
-  '/api/state': () => state,
+  '/api/state': () => { stateLoads++; return state },
   '/api/items': () => items,
   '/api/stats': () => stats,
   '/api/settings': () => ({ settings: {}, profile: {} }),
@@ -71,10 +75,17 @@ const routes = {
 // Saving from the detail page used to close #modal, which is hidden while the
 // page is open, so the stale page stayed on screen. A5 drives the real button.
 const writes = []
+// The bulk bar posts one request for every ticked row, so the test has to see
+// the body, not just the path.
+const posts = []
+let stateLoads = 0
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
   if (req.method === 'POST') {
     writes.push(url.pathname)
+    let body = ''
+    for await (const chunk of req) body += chunk
+    posts.push({ path: url.pathname, body })
     res.writeHead(200, { 'content-type': 'application/json' })
     return res.end('{"ok":true}')
   }
@@ -304,6 +315,37 @@ try {
   notice.hidden && notice.shown && notice.extend
     ? pass('A14 reminders stay out of the bar and carry 延期 in the sheet')
     : fail('A14', JSON.stringify(notice).slice(0, 200))
+
+  // A19 - 选择 turns every grant row into a tick box and shows the bulk bar.
+  // The bar is the only way to remove twenty grants at once, so a selector
+  // rename that quietly leaves it empty has to fail here.
+  await evaluate("document.querySelector('#nav [data-view=grants]').click()")
+  await wait(800)
+  const before = stateLoads
+  await evaluate("document.getElementById('grants-select').click()")
+  await wait(300)
+  const bulk = await evaluate(`(() => {
+    const boxes = [...document.querySelectorAll('.grant-select')]
+    const bar = document.getElementById('grants-bulk')
+    boxes.forEach((b) => { b.checked = true; b.dispatchEvent(new Event('change', { bubbles: true })) })
+    return { boxes: boxes.length, visible: !bar.classList.contains('hidden'), count: document.getElementById('grants-bulk-count').textContent }
+  })()`)
+  bulk.boxes === 2 && bulk.visible && /2/.test(bulk.count)
+    ? pass('A19 选择 reveals a tick box per grant and counts the selection')
+    : fail('A19', JSON.stringify(bulk))
+
+  // A20 - 批量删除 sends one request carrying every ticked grant, then reloads.
+  await evaluate("document.getElementById('grants-bulk-delete').click()")
+  await wait(500)
+  await evaluate("document.querySelector('.ask__yes').click()")
+  await wait(1200)
+  const batch = posts.filter((p) => p.path === '/api/grants/batch')
+  let sent = null
+  try { sent = batch.length ? JSON.parse(batch[batch.length - 1].body) : null } catch {}
+  const keys = sent && Array.isArray(sent.keys) ? sent.keys : []
+  batch.length === 1 && sent.action === 'delete' && keys.length === 2 && stateLoads > before
+    ? pass('A20 批量删除 posts both grants and reloads the page')
+    : fail('A20', JSON.stringify({ batch: batch.length, sent, stateLoads, before }).slice(0, 240))
 
   // A11 - nothing threw while all of that happened.
   problems.length === 0 ? pass('A11 no runtime errors') : fail('A11', problems.slice(0, 3).join(' | '))
