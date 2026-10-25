@@ -25,6 +25,7 @@ import { createBridge } from './bridge.mjs'
 import { login } from './oauth.mjs'
 import { runMaterialize } from './materialize.mjs'
 import { runSync } from './sync.mjs'
+import { detect, adapters, plan, applyPlan } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
 
@@ -43,6 +44,9 @@ Usage
                                  ask, then write an approved credential into a file
   secrets-broker sync --remote URL
                                  compare this broker with another one, read-only
+  secrets-broker agents detect   list the MCP clients on this machine
+  secrets-broker agents connect [--id codex] [--apply]
+                                 add this broker to their config (dry run by default)
 
 Environment
   BROKER_URL          broker base URL (default ${DEFAULT_URL})
@@ -94,6 +98,62 @@ async function main() {
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
     process.stdout.write('secrets-broker ' + pkg.version + '\n')
     return 0
+  }
+
+  if (command === 'agents') {
+    const sub = argv[1] && !argv[1].startsWith('-') ? argv[1] : 'detect'
+    const flag = (name) => {
+      const index = argv.indexOf(name)
+      return index >= 0 ? argv[index + 1] : ''
+    }
+    const only = flag('--id')
+    const write = argv.includes('--apply')
+    if (sub === 'detect') {
+      const found = detect().filter((row) => !only || row.id === only)
+      if (!found.length) {
+        process.stdout.write('no known MCP clients found in this user profile\n')
+        return 0
+      }
+      const rows = found.map((row) => [
+        row.configured ? 'configured' : row.present ? 'found' : 'no file',
+        row.id.padEnd(15, ' '),
+        row.name.padEnd(16, ' '),
+        row.file,
+        row.error ? '(' + row.error + ')' : '',
+      ].join('  '))
+      process.stdout.write(rows.join('\n') + '\n')
+      return 0
+    }
+    if (sub === 'connect') {
+      const url = brokerUrl()
+      const targets = adapters().filter((adapter) => !only || adapter.id === only)
+      if (!targets.length) {
+        process.stderr.write('no client matches --id ' + only + '\n')
+        return 2
+      }
+      let changed = 0
+      for (const adapter of targets) {
+        const planned = plan(adapter, url)
+        if (planned.action === 'skip') {
+          if (planned.configured) process.stdout.write(planned.name + ' already points at a broker\n')
+          continue
+        }
+        if (!write) {
+          process.stdout.write('# ' + planned.name + ' (' + planned.file + ') would get:\n')
+          const snippet = planned.content.split('\n').filter((line) => /secrets-broker|BROKER_URL|command|args/.test(line)).slice(0, 6)
+          process.stdout.write(snippet.join('\n') + '\n')
+          continue
+        }
+        applyPlan(planned)
+        changed += 1
+        process.stdout.write('updated ' + planned.name + ' (' + planned.file + '), backup alongside as .secrets-broker.bak\n')
+      }
+      if (!write) process.stdout.write('\nnothing was written. Add --apply to make these changes.\n')
+      else process.stdout.write(changed ? '\n' + changed + ' client(s) updated; restart them to pick up the server.\n' : '\nnothing to change.\n')
+      return 0
+    }
+    process.stderr.write('usage: secrets-broker agents <detect|connect> [--id codex] [--apply]\n')
+    return 2
   }
 
   if (command === 'status') return status()

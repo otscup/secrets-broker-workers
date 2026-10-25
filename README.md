@@ -112,6 +112,8 @@ leaving it in the agent's context.
 | `secrets-broker status` | which broker, which store, is the token still valid |
 | `secrets-broker logout` | forget the stored token |
 | `secrets-broker sync --remote URL` | preview what differs from another broker (read-only) |
+| `secrets-broker agents detect` | list the MCP clients installed for this user, and whether each already points at a broker |
+| `secrets-broker agents connect --apply` | add this broker to those client configs (dry run without `--apply`) |
 
 | Variable | Meaning |
 |---|---|
@@ -121,6 +123,38 @@ leaving it in the agent's context.
 | `BROKER_TOKEN_STORE` | `file` or `keychain`, to force a backend |
 | `BROKER_NO_BROWSER=1` | print URLs instead of opening a browser |
 | `BROKER_REMOTE_URL` / `BROKER_REMOTE_TOKEN` | the other broker for `sync`, and its token |
+
+### Point an agent at this broker automatically
+
+The client configs are the annoying part: every agent wants its own file, in its
+own format, in a different directory. Two commands handle that.
+
+```bash
+secrets-broker agents detect            # what is installed, and what already points here
+secrets-broker agents connect           # show the exact snippet each file would get
+secrets-broker agents connect --apply   # write it
+```
+
+What it looks at: `~/.codex/config.toml`, `~/.claude.json`,
+`claude_desktop_config.json` (Claude Desktop), `Code/User/mcp.json` (VS Code),
+`Cursor/User/mcp.json`, `Windsurf/User/mcp.json`, `~/.gemini/settings.json`.
+
+What it will not do:
+
+- **No credentials.** The entry is `npx -y secrets-broker-workers` with
+  `BROKER_URL`; the bridge logs itself in through the browser and keeps the
+  token in the OS keychain. Nothing secret is written into an agent config.
+- **No rewriting.** JSON is spliced as text so comments and key order survive;
+  TOML gets one `[mcp_servers.secrets-broker]` block wrapped in
+  `# >>> secrets-broker` / `# <<< secrets-broker` comments so a human can find
+  and remove it later.
+- **No guessing.** A file that does not parse is reported, not appended to. An
+  agent that already points at any broker is left alone, even if the entry has
+  another name.
+- **No silent writes.** Without `--apply` nothing is written; with it, the
+  original is copied to `<file>.secrets-broker.bak` first.
+
+Restart the client afterwards — these files are read once at startup.
 
 ### Comparing two brokers
 

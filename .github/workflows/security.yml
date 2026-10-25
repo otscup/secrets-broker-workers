@@ -149,6 +149,8 @@ jobs:
         run: npm run test:ui-item-page
       - name: Local bridge (cli)
         run: npm run test:cli
+      - name: Local client discovery (cli)
+        run: npm run test:agents
       - name: Materialise allowlist (Miniflare)
         run: npm run test:materialize
       - name: Explain access (Miniflare)
