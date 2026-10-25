@@ -3878,7 +3878,7 @@ export default {
     if (url.pathname === '/api/plugin/pending' && request.method === 'GET') {
       if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
       const state = await loadState(env)
-      return json({ pending: Object.values(state.pending ?? {}).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, createdAt: entry.createdAt })), count: Object.keys(state.pending ?? {}).length })
+      return json({ pending: Object.values(state.pending ?? {}).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, action: entry.action, targetOrigin: entry.targetOrigin ?? '', createdAt: entry.createdAt })), count: Object.keys(state.pending ?? {}).length })
     }
     // Read-only: which agents are using which credentials, derived from the audit
     // trail and the live capabilities. This is the "who is using my keys" fact

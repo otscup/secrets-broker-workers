@@ -133,6 +133,19 @@ const pluginGet = (path) => mf.dispatchFetch('https://broker.test' + path, { hea
   else fail('U10', String(anon.status))
 }
 
+// U11: the panel must show what it is asking the human to approve. A pending
+// entry carries the action and the site, so the card can say "代持调用 ·
+// https://api.example.com" instead of "agent wants key-a".
+{
+  const st = await stub.fetch('https://do/state').then((r) => r.json()).then((p) => p.state)
+  st.pending = { p3: { id: 'p3', agent: 'agent-c', name: 'key-c', action: 'secret.use', targetOrigin: 'https://api.example.com', createdAt: new Date().toISOString() } }
+  await stub.fetch('https://do/state', { method: 'PUT', body: JSON.stringify(st) })
+  const body = await (await pluginGet('/api/plugin/pending')).json()
+  const row = (body.pending ?? []).find((entry) => entry.id === 'p3') ?? {}
+  if (row.action === 'secret.use' && row.targetOrigin === 'https://api.example.com') pass('U11 pending carries the action and its target')
+  else fail('U11', JSON.stringify(row))
+}
+
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== plugin usage + wait ' + passed + '/' + results.length + ' passed ====')
