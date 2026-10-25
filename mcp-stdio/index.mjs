@@ -5,7 +5,7 @@
  * The bridge itself now lives in cli/ and is published as `secrets-broker`,
  * which adds keychain storage and the local approval window. Prefer:
  *
- *   npx -y @otscup/secrets-broker
+ *   node cli/index.mjs
  */
 import { main } from '../cli/index.mjs'
 import { log } from '../cli/approval.mjs'
