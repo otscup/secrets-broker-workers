@@ -20,6 +20,7 @@ class El {
     return c
   }
   append(...c) { for (const child of c) this.appendChild(child) }
+  replaceChildren(...c) { this.children = []; this._html = ''; for (const child of c) if (child) this.appendChild(child) }
   get firstChild() { return this.children[0] ?? null }
   set innerHTML(v) { this._html = v; this.children = [] }
   get innerHTML() { return this._html }
@@ -27,7 +28,17 @@ class El {
   contains(node) { if (node === this) return true; return this.children.some((c) => c.contains && c.contains(node)) }
   focus() { doc.activeElement = this }
   remove() { this.removed = true; for (const host of [doc.body, ...nodes]) { const at = host.children.indexOf(this); if (at >= 0) host.children.splice(at, 1) } }
-  querySelector() { return null }
+  // Enough of a selector engine for the popup: .class, #id and TAG, descendants only.
+  querySelectorAll(selector) {
+    const hit = (n) => selector.startsWith('.') ? String(n.className || '').split(/\s+/).includes(selector.slice(1))
+      : selector.startsWith('#') ? n.id === selector.slice(1)
+      : n.tagName === selector.toUpperCase()
+    const found = []
+    const walk = (n) => { for (const c of n.children ?? []) { if (hit(c)) found.push(c); walk(c) } }
+    walk(this)
+    return found
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null }
   addEventListener() {}
 }
 
@@ -71,7 +82,10 @@ for (; i < client.length; i++) {
   if (client[i] === '{') depth++
   else if (client[i] === '}') { depth--; if (depth === 0) { end = i; break } }
 }
-const fn = new Function('ctx', client.slice(start, end + 1) + '\n return startPopup(ctx)')
+// startPopup injects the shared stylesheet through ensureCss, which lives
+// outside the slice; the mock DOM has no <head>, and this suite is about
+// behaviour, so the stylesheet is stubbed.
+const fn = new Function('ctx', 'const ensureCss = () => {}\n' + client.slice(start, end + 1) + '\n return startPopup(ctx)')
 
 const out = []
 const record = (name, ok, detail) => { out.push({ name, ok, detail }); console.log((ok ? 'PASS  ' : 'FAIL  ') + name + (ok ? '' : ' :: ' + detail)) }
@@ -82,7 +96,7 @@ const findLabelled = (root, label, tag) => collect(root).find((n) => n.tagName =
 // The header close button is also '×', so the delete control is picked by its
 // title, which names the item it would remove.
 const findDelete = (root) => collect(root).find((n) => n.tagName === 'BUTTON' && String(n.textContent ?? n._html) === '×' && String(n.title ?? '').startsWith('从 vault 删除'))
-const panel = () => doc.body.children.find((c) => c.id !== 'secrets-broker-launcher' && !c.removed) ?? null
+const panel = () => doc.getElementById('secrets-broker-sheet')
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 const cleanup = fn({})
@@ -90,8 +104,9 @@ const launcher = doc.body.children.find((c) => c.id === 'secrets-broker-launcher
 if (!launcher) { console.log('FAIL launcher missing'); process.exit(1) }
 launcher.onclick()
 await sleep(200)
-const overlay = doc.body.children.find((c) => c !== launcher)
+const overlay = doc.getElementById('secrets-broker-sheet')
 if (!overlay) { console.log('FAIL panel did not open'); process.exit(1) }
+const backdrop = doc.getElementById('secrets-broker-backdrop')
 
 // C1: the open request can be declined, so the prompt stops coming back.
 const skip = findButton(overlay, '取消（不填了）')
@@ -142,9 +157,9 @@ if (doc.body.children.includes(overlay)) {
     activityChip.onclick()
     await sleep(600)
     const nowOn = findButton(panel(), '动态')
-    // The active chip is the one painted with the brand fill.
-    const active = nowOn && String(nowOn.style.cssText).includes('#e8f7f4')
-    record('C5 a tab click during a load is not swallowed', Boolean(active), String(nowOn && nowOn.style.cssText))
+    // The active chip is the one marked aria-selected; the fill is CSS now.
+    const active = Boolean(nowOn) && nowOn['aria-selected'] === 'true'
+    record('C5 a tab click during a load is not swallowed', active, JSON.stringify(nowOn && nowOn['aria-selected']))
   }
 }
 
@@ -233,11 +248,13 @@ if (doc.body.children.includes(overlay)) {
   const x = box ? collect(box).find((n) => n.tagName === 'BUTTON' && String(n.textContent ?? '') === '×' && !String(n.title ?? '').startsWith('从 vault 删除')) : null
   if (!x) record('C10 the header × closes immediately', false, 'no close button')
   else {
-    const before = doc.body.children.filter((c) => c.id !== 'secrets-broker-launcher').length
+    // Both floating surfaces must go: the sheet and the dimming backdrop.
+    const before = Boolean(doc.getElementById('secrets-broker-sheet'))
     x.onclick()
     await sleep(30)
-    const after = doc.body.children.filter((c) => c.id !== 'secrets-broker-launcher').length
-    record('C10 the header × closes immediately', before === 1 && after === 0, JSON.stringify({ before, after }))
+    const sheet = doc.getElementById('secrets-broker-sheet')
+    const shade = doc.getElementById('secrets-broker-backdrop')
+    record('C10 the header × closes immediately', before && !sheet && !shade, JSON.stringify({ before, sheet: Boolean(sheet), shade: Boolean(shade) }))
   }
 }
 

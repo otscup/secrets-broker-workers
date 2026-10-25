@@ -57,6 +57,124 @@ window.__ModuleLoader__.load({
       danger: { border: "1px solid var(--dsw-alias-border-l2)", background: "transparent", color: "var(--dsw-alias-state-error-primary, #c0392b)", font: "inherit", borderRadius: "7px", padding: "5px 10px", cursor: "pointer", fontSize: "12px" }
     };
 
+    // ================= THEME TOKENS - the only place a colour, size, radius,
+    // spacing or duration is spelled out. Components below reference tokens or
+    // these class names; nothing else in this file may hard-code one.
+    // Light and dark are both defined here: the sheet reads --sb-* variables, so
+    // one CSS block covers both appearances.
+    const SB_CSS = `
+.sb-scope {
+  --sb-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --sb-font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --sb-fs-body: 17px; --sb-fs-sub: 15px; --sb-fs-cap: 13px; --sb-fs-mini: 11px;
+  --sb-lh-body: 22px; --sb-lh-sub: 20px; --sb-lh-cap: 18px;
+  --sb-sp-1: 4px; --sb-sp-2: 8px; --sb-sp-3: 12px; --sb-sp-4: 16px; --sb-sp-5: 20px;
+  --sb-r-small: 8px; --sb-r-card: 12px; --sb-r-sheet: 20px; --sb-r-pill: 999px;
+  --sb-touch: 44px;
+  --sb-ease: cubic-bezier(.32,.72,0,1);
+  --sb-ease-back: cubic-bezier(.34,1.32,.64,1);
+  --sb-dur: .3s;
+  --sb-bg: #F2F2F7; --sb-card: #FFFFFF; --sb-elevated: #FFFFFF; --sb-fill: rgba(120,120,128,.12);
+  --sb-label: #000000; --sb-label-2: rgba(60,60,67,.6); --sb-label-3: rgba(60,60,67,.3);
+  --sb-sep: rgba(60,60,67,.18);
+  --sb-blue: #007AFF; --sb-green: #34C759; --sb-red: #FF3B30; --sb-orange: #FF9500;
+  --sb-on-accent: #FFFFFF;
+  --sb-shadow-card: 0 1px 2px rgba(0,0,0,.05);
+  --sb-shadow-sheet: 0 12px 40px rgba(0,0,0,.18);
+  font-family: var(--sb-font); color: var(--sb-label);
+  -webkit-font-smoothing: antialiased;
+}
+@media (prefers-color-scheme: dark) {
+  .sb-scope {
+    --sb-bg: #000000; --sb-card: #1C1C1E; --sb-elevated: #2C2C2E; --sb-fill: rgba(120,120,128,.32);
+    --sb-label: #FFFFFF; --sb-label-2: rgba(235,235,245,.6); --sb-label-3: rgba(235,235,245,.3);
+    --sb-sep: rgba(84,84,88,.6);
+    --sb-blue: #0A84FF; --sb-green: #30D158; --sb-red: #FF453A; --sb-orange: #FF9F0A;
+    --sb-shadow-card: 0 1px 2px rgba(0,0,0,.4);
+    --sb-shadow-sheet: 0 12px 44px rgba(0,0,0,.6);
+  }
+}
+html[data-theme="dark"] .sb-scope, html.dark .sb-scope, html[data-dsw-theme="dark"] .sb-scope,
+html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
+  --sb-bg: #000000; --sb-card: #1C1C1E; --sb-elevated: #2C2C2E; --sb-fill: rgba(120,120,128,.32);
+  --sb-label: #FFFFFF; --sb-label-2: rgba(235,235,245,.6); --sb-label-3: rgba(235,235,245,.3);
+  --sb-sep: rgba(84,84,88,.6);
+  --sb-blue: #0A84FF; --sb-green: #30D158; --sb-red: #FF453A; --sb-orange: #FF9F0A;
+  --sb-shadow-sheet: 0 12px 44px rgba(0,0,0,.6);
+}
+.sb-launcher { position: fixed; right: var(--sb-sp-4); bottom: var(--sb-sp-4); z-index: 2147483001; width: var(--sb-touch); height: var(--sb-touch); display: grid; place-items: center; border: 0; border-radius: 14px; background: var(--sb-card); color: var(--sb-blue); font-size: 20px; cursor: pointer; box-shadow: var(--sb-shadow-sheet); transition: transform var(--sb-dur) var(--sb-ease-back), box-shadow var(--sb-dur) var(--sb-ease); }
+.sb-launcher:hover { transform: translateY(-2px) scale(1.04); }
+.sb-launcher:active { transform: scale(.96); box-shadow: inset 0 2px 6px rgba(0,0,0,.16); }
+.sb-badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; border-radius: var(--sb-r-pill); background: var(--sb-red); color: #fff; font-size: var(--sb-fs-mini); line-height: 18px; text-align: center; padding: 0 var(--sb-sp-1); }
+.sb-badge > span { display: block; animation: sb-roll var(--sb-dur) var(--sb-ease) both; }
+.sb-backdrop { position: fixed; inset: 0; z-index: 2147482999; background: rgba(0,0,0,.28); backdrop-filter: blur(2px); animation: sb-fade var(--sb-dur) var(--sb-ease) both; }
+.sb-sheet { position: fixed; right: 16px; bottom: 16px; z-index: 2147483000; width: min(400px, calc(100vw - 32px)); max-height: min(78vh, 660px); display: flex; flex-direction: column; overflow: hidden; background: var(--sb-bg); border-radius: var(--sb-r-sheet); box-shadow: var(--sb-shadow-sheet); transform-origin: bottom right; animation: sb-sheet-in var(--sb-dur) var(--sb-ease) both; }
+.sb-nav { display: flex; align-items: center; gap: var(--sb-sp-2); padding: var(--sb-sp-3) var(--sb-sp-4); background: var(--sb-card); border-bottom: 1px solid var(--sb-sep); flex: 0 0 auto; }
+.sb-nav-title { flex: 1; font-size: var(--sb-fs-body); font-weight: 600; line-height: var(--sb-lh-body); letter-spacing: -.01em; }
+.sb-nav-sub { font-size: var(--sb-fs-cap); color: var(--sb-label-2); font-weight: 400; }
+.sb-icon-btn { min-width: var(--sb-touch); min-height: var(--sb-touch); display: grid; place-items: center; border: 0; background: transparent; color: var(--sb-blue); font: inherit; font-size: var(--sb-fs-body); cursor: pointer; border-radius: var(--sb-r-small); transition: transform var(--sb-dur) var(--sb-ease-back), background var(--sb-dur) var(--sb-ease); }
+.sb-icon-btn:active { transform: scale(.96); background: var(--sb-fill); }
+.sb-seg { display: flex; gap: 2px; margin: var(--sb-sp-3) var(--sb-sp-4) var(--sb-sp-2); padding: 2px; background: var(--sb-fill); border-radius: var(--sb-r-small); flex: 0 0 auto; }
+.sb-seg-btn { flex: 1; min-height: 32px; border: 0; background: transparent; color: var(--sb-label); font: inherit; font-size: var(--sb-fs-cap); border-radius: 6px; cursor: pointer; transition: background var(--sb-dur) var(--sb-ease), transform var(--sb-dur) var(--sb-ease-back); }
+.sb-seg-btn[aria-selected="true"] { background: var(--sb-card); box-shadow: var(--sb-shadow-card); font-weight: 600; }
+.sb-seg-btn:active { transform: scale(.97); }
+.sb-body { flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; padding: 0 var(--sb-sp-3) var(--sb-sp-4); }
+.sb-group-head { padding: var(--sb-sp-3) var(--sb-sp-2) var(--sb-sp-1); font-size: var(--sb-fs-cap); color: var(--sb-label-2); text-transform: none; }
+.sb-card { background: var(--sb-card); border-radius: var(--sb-r-card); box-shadow: var(--sb-shadow-card); margin-bottom: var(--sb-sp-2); overflow: hidden; }
+.sb-row { display: flex; align-items: center; gap: var(--sb-sp-2); min-height: var(--sb-touch); padding: var(--sb-sp-3) var(--sb-sp-4); cursor: pointer; transition: background var(--sb-dur) var(--sb-ease), transform var(--sb-dur) var(--sb-ease-back); }
+.sb-row + .sb-row { border-top: 1px solid var(--sb-sep); }
+.sb-row:active { background: var(--sb-fill); transform: scale(.995); }
+.sb-row-main { flex: 1; min-width: 0; }
+.sb-row-title { font-size: var(--sb-fs-body); line-height: var(--sb-lh-body); font-weight: 600; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-row-sub { font-size: var(--sb-fs-cap); line-height: var(--sb-lh-cap); color: var(--sb-label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-chev { color: var(--sb-label-3); font-size: var(--sb-fs-sub); flex: 0 0 auto; }
+.sb-btn { min-height: 32px; padding: 0 var(--sb-sp-3); border: 0; border-radius: var(--sb-r-pill); background: var(--sb-fill); color: var(--sb-label); font: inherit; font-size: var(--sb-fs-cap); cursor: pointer; transition: transform var(--sb-dur) var(--sb-ease-back), box-shadow var(--sb-dur) var(--sb-ease), opacity var(--sb-dur) var(--sb-ease); }
+.sb-btn:active { transform: scale(.96); box-shadow: inset 0 2px 6px rgba(0,0,0,.16); }
+.sb-btn[disabled] { opacity: .45; cursor: default; }
+.sb-btn--primary { background: var(--sb-blue); color: var(--sb-on-accent); font-weight: 600; }
+.sb-btn--danger { background: transparent; color: var(--sb-red); }
+.sb-btn--wide { width: 100%; min-height: var(--sb-touch); font-size: var(--sb-fs-sub); }
+.sb-actions { display: flex; gap: var(--sb-sp-2); flex-wrap: wrap; }
+.sb-actions--split > .sb-btn { flex: 1 1 0; width: auto; }
+.sb-table { width: 100%; border-collapse: collapse; font-size: var(--sb-fs-cap); }
+.sb-table th { text-align: left; font-weight: 400; color: var(--sb-label-2); padding: var(--sb-sp-2) var(--sb-sp-3); border-bottom: 1px solid var(--sb-sep); font-size: var(--sb-fs-mini); }
+.sb-table td { padding: var(--sb-sp-2) var(--sb-sp-3); border-bottom: 1px solid var(--sb-sep); color: var(--sb-label); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.sb-table tr:last-child td { border-bottom: 0; }
+.sb-kv { display: flex; justify-content: space-between; gap: var(--sb-sp-3); padding: var(--sb-sp-2) var(--sb-sp-4); font-size: var(--sb-fs-sub); line-height: var(--sb-lh-sub); }
+.sb-kv + .sb-kv { border-top: 1px solid var(--sb-sep); }
+.sb-kv dt { color: var(--sb-label-2); }
+.sb-kv dd { margin: 0; text-align: right; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-empty { padding: var(--sb-sp-5) var(--sb-sp-4); text-align: center; color: var(--sb-label-2); font-size: var(--sb-fs-sub); }
+.sb-input { width: 100%; box-sizing: border-box; min-height: var(--sb-touch); padding: 0 var(--sb-sp-3); border: 1px solid var(--sb-sep); border-radius: var(--sb-r-small); background: var(--sb-card); color: var(--sb-label); font: inherit; font-size: var(--sb-fs-sub); margin-bottom: var(--sb-sp-2); }
+.sb-input:focus { outline: 2px solid var(--sb-blue); outline-offset: -1px; }
+.sb-page { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--sb-bg); transform: translateX(100%); transition: transform var(--sb-dur) var(--sb-ease); z-index: 2; }
+.sb-page[data-in="true"] { transform: translateX(0); }
+.sb-host { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.sb-foot { flex: 0 0 auto; padding: var(--sb-sp-3) var(--sb-sp-4) var(--sb-sp-4); background: var(--sb-card); border-top: 1px solid var(--sb-sep); }
+.sb-chip { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: var(--sb-r-pill); font-size: var(--sb-fs-mini); background: var(--sb-fill); color: var(--sb-label-2); }
+.sb-chip--blue { background: rgba(0,122,255,.14); color: var(--sb-blue); }
+.sb-chip--red { background: rgba(255,59,48,.14); color: var(--sb-red); }
+.sb-chip--green { background: rgba(52,199,89,.16); color: var(--sb-green); }
+.sb-roll { display: inline-block; overflow: hidden; height: 18px; line-height: 18px; }
+.sb-roll > span { display: block; animation: sb-roll var(--sb-dur) var(--sb-ease) both; }
+.sb-log { display: flex; align-items: baseline; gap: var(--sb-sp-2); padding: var(--sb-sp-2) var(--sb-sp-4); font-size: var(--sb-fs-cap); line-height: var(--sb-lh-cap); }
+.sb-log + .sb-log { border-top: 1px solid var(--sb-sep); }
+.sb-log-time { color: var(--sb-label-3); font-family: var(--sb-font-mono); font-size: var(--sb-fs-mini); flex: 0 0 auto; }
+.sb-log-what { color: var(--sb-label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes sb-fade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes sb-sheet-in { from { opacity: 0; transform: translateY(18px) scale(.94); border-radius: 28px } to { opacity: 1; transform: none; border-radius: var(--sb-r-sheet) } }
+@keyframes sb-roll { from { transform: translateY(60%); opacity: .2 } to { transform: translateY(0); opacity: 1 } }
+@keyframes sb-flash { 0% { background: rgba(0,122,255,.14) } 100% { background: transparent } }
+@media (prefers-reduced-motion: reduce) { .sb-scope *, .sb-sheet, .sb-page { animation: none !important; transition: none !important } }
+`;
+    function ensureCss() {
+      if (document.getElementById('sb-theme')) return;
+      const style = document.createElement('style');
+      style.id = 'sb-theme';
+      style.textContent = SB_CSS;
+      document.head.appendChild(style);
+    }
+
     function View({ t }) {
       const [state, setState] = react.useState({ status: "loading", pending: [], requests: [] });
       const load = () => {
@@ -95,8 +213,14 @@ window.__ModuleLoader__.load({
       if (state.status === "error") children.push(react.createElement("p", { style: s.intro }, t("error") + " " + (state.error || "")));
       if (state.status === "ready" && state.pending.length === 0) children.push(react.createElement("p", { style: s.intro }, t("empty")));
       for (const entry of state.pending) {
+        // An approval is for one action against one target, so both belong on the
+        // card: "read the value" and "use it against api.example.com" are not the
+        // same request to agree to.
+        const actionLabel = { "secret.read": "读取明文", "secret.use": "代持调用", "secret.fill": "网页填充", "secret.materialize": "写入本地文件" }[entry.action] || entry.action || "";
+        const targetLine = [actionLabel, entry.targetOrigin].filter(Boolean).join(" · ");
         children.push(react.createElement("div", { key: entry.id, style: s.card },
           react.createElement("p", { style: s.title }, (entry.agent || "Agent") + " → " + (entry.name || "")),
+          targetLine ? react.createElement("p", { style: s.meta }, targetLine) : null,
           react.createElement("p", { style: s.meta }, t("created") + ": " + (entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "")),
           react.createElement("div", { style: s.buttons },
             react.createElement("button", { type: "button", style: s.primary, onClick: () => decide(entry.id, "once") }, t("approveOnce")),
@@ -160,6 +284,9 @@ window.__ModuleLoader__.load({
       // pop the panel the operator just dismissed straight back open.
       let seenIds = [];
       let overlay = null;
+      // The sheet's scroll body and its backdrop live as long as the sheet does.
+      let body = null;
+      let backdropEl = null;
       let busy = false;
       let queued = false;
       let firstLoad = true;
@@ -167,12 +294,25 @@ window.__ModuleLoader__.load({
       // Tabs, so the popup is useful when nothing is waiting: the queue is one
       // tab, "recent activity" and "add a key" are the others.
       let tab = 'queue';
-      const styleButton = "border:1px solid #d8e0ec;background:#fff;color:#152033;border-radius:6px;padding:5px 8px;font:12px system-ui;cursor:pointer";
-      const stylePrimary = "border:0;background:#0f9d8a;color:#fff;border-radius:6px;padding:6px 9px;font:12px system-ui;cursor:pointer";
-      const styleDanger = "border:1px solid #e3b4b0;background:#fff;color:#c0392b;border-radius:6px;padding:5px 8px;font:12px system-ui;cursor:pointer";
-      const styleInput = "width:100%;box-sizing:border-box;border:1px solid #d8e0ec;border-radius:6px;padding:6px;margin:3px 0;font:12px system-ui";
-      const mk = (tag, text, style) => { const el = document.createElement(tag); if (text) el.textContent = text; if (style) el.style.cssText = style; return el; };
-      const remove = () => { if (overlay) { overlay.remove(); overlay = null } };
+      ensureCss();
+      // Class names, not style strings: the look lives in SB_CSS tokens only.
+      const styleButton = "sb-btn";
+      const stylePrimary = "sb-btn sb-btn--primary";
+      const styleDanger = "sb-btn sb-btn--danger";
+      // The remaining tabs set .style.cssText directly, so this one stays a
+      // cssText - but every value in it is a token.
+      const styleInput = "width:100%;box-sizing:border-box;min-height:var(--sb-touch);padding:0 var(--sb-sp-3);border:1px solid var(--sb-sep);border-radius:var(--sb-r-small);background:var(--sb-card);color:var(--sb-label);font:inherit;font-size:var(--sb-fs-sub);margin-bottom:var(--sb-sp-2)";
+      // A bare class name goes to className; anything with a ; or : stays cssText.
+      const mk = (tag, text, style) => { const el = document.createElement(tag); if (text) el.textContent = text; if (style) { if (/[;:]/.test(style)) el.style.cssText = style; else el.className = style } return el; };
+      const cls = (tag, className, text) => { const el = document.createElement(tag); if (className) el.className = className; if (text != null) el.textContent = text; return el };
+      const remove = () => {
+        if (backdropEl) { backdropEl.remove(); backdropEl = null }
+        if (overlay) { overlay.remove(); overlay = null; body = null }
+        // The launcher steps aside while the sheet is up, so two floating
+        // surfaces never stack in the same corner.
+        const launcher = document.getElementById('secrets-broker-launcher');
+        if (launcher) launcher.style.display = '';
+      };
       // Closing counts what was on screen as seen, so the 15s poll does not
       // reopen the panel the operator just dismissed.
       const close = () => {
@@ -191,10 +331,8 @@ window.__ModuleLoader__.load({
         launcher.id = 'secrets-broker-launcher';
         launcher.type = 'button';
         launcher.title = 'Secrets Broker';
+        launcher.className = 'sb-launcher sb-scope';
         launcher.textContent = '🔐';
-        launcher.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147482999;width:40px;height:40px;border-radius:13px;border:1px solid #d8e0ec;background:#fff;color:#152033;font-size:18px;cursor:pointer;box-shadow:0 8px 22px rgba(15,23,42,.12);transition:transform .18s ease,box-shadow .18s ease';
-        launcher.onmouseenter = () => { launcher.style.transform = 'translateY(-2px) scale(1.04)'; launcher.style.boxShadow = '0 12px 28px rgba(15,23,42,.2)' };
-        launcher.onmouseleave = () => { launcher.style.transform = ''; launcher.style.boxShadow = '0 8px 22px rgba(15,23,42,.12)' };
         launcher.onclick = () => {
           if (overlay) { close(); return }
           // A dismissal only silences the panel; opening it deliberately shows
@@ -215,12 +353,15 @@ window.__ModuleLoader__.load({
         if (!launcher) return;
         const dot = document.getElementById('secrets-broker-badge');
         if (!count) { if (dot) dot.remove(); return }
-        if (dot) { dot.textContent = String(count); return }
-        const pill = document.createElement('span');
+        // Re-paint through .sb-roll so a changed number rolls in like a meter
+        // instead of snapping, the way a counter should settle.
+        if (dot) {
+          if (dot.textContent === String(count)) return;
+          dot.replaceChildren(cls('span', '', String(count)));
+          return;
+        }
+        const pill = cls('span', 'sb-badge', String(count));
         pill.id = 'secrets-broker-badge';
-        pill.textContent = String(count);
-        pill.style.cssText = 'position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;border-radius:9px;background:#e05252;color:#fff;font:10px/16px system-ui;text-align:center;padding:0 4px';
-        launcher.style.position = 'fixed';
         launcher.appendChild(pill);
       };
       // Last payload, so a tab click paints at once instead of waiting on the
@@ -276,65 +417,141 @@ window.__ModuleLoader__.load({
           if (firstLoad) { firstLoad = false; if (!showEmpty) return }
           if (empty && !showEmpty) { remove(); return }
           if (!overlay) {
-            overlay = document.createElement('div');
-            overlay.style.cssText = 'position:fixed;right:18px;bottom:68px;z-index:2147483000;width:min(390px,calc(100vw - 24px));max-height:min(74vh,640px);overflow:auto;background:#fff;color:#152033;border:1px solid #d8e0ec;border-radius:14px;box-shadow:0 16px 50px rgba(15,23,42,.25);padding:14px;font:13px/1.5 system-ui;animation:sb-in .16s ease-out';
+            backdropEl = cls('div', 'sb-backdrop sb-scope');
+            backdropEl.id = 'secrets-broker-backdrop';
+            backdropEl.onclick = () => close();
+            document.body.appendChild(backdropEl);
+            overlay = cls('div', 'sb-sheet sb-scope');
+            overlay.id = 'secrets-broker-sheet';
+            overlay.setAttribute('role', 'dialog');
+            overlay.setAttribute('aria-label', 'Secrets Broker');
             document.body.appendChild(overlay);
-            // A one-line entrance, so the panel does not just snap into place.
-            const style = document.createElement('style');
-            style.textContent = '@keyframes sb-in{from{opacity:0;transform:translateY(6px) scale(.99)}to{opacity:1;transform:none}}@keyframes sb-flash{0%{background:#e8f7f4}100%{background:transparent}}';
-            overlay.appendChild(style);
+            const launcherEl = document.getElementById('secrets-broker-launcher');
+            if (launcherEl) launcherEl.style.display = 'none';
+            const nav = cls('div', 'sb-nav');
+            const titles = cls('div', 'sb-row-main');
+            titles.appendChild(cls('div', 'sb-nav-title', 'Secrets Broker'));
+            titles.appendChild(cls('div', 'sb-nav-sub', '密钥授权'));
+            nav.appendChild(titles);
+            // This must not be named `close`: a const here shadows the close()
+            // function above, so the handler called the button itself, recursively.
+            // That recursion is what made the × take seconds to dismiss.
+            const closeButton = cls('button', 'sb-icon-btn', '×');
+            closeButton.setAttribute('aria-label', '关闭');
+            closeButton.onclick = () => close();
+            nav.appendChild(closeButton);
+            overlay.appendChild(nav);
+            const seg = cls('div', 'sb-seg');
+            seg.setAttribute('role', 'tablist');
+            for (const [id, label] of [['queue', '待办'], ['activity', '动态'], ['add', '添加']]) {
+              const chip = cls('button', 'sb-seg-btn', label);
+              chip.dataset.tab = id;
+              chip.setAttribute('role', 'tab');
+              chip.onclick = () => { tab = id; showEmpty = true; load(true) };
+              seg.appendChild(chip);
+            }
+            overlay.appendChild(seg);
+            const host = cls('div', 'sb-host');
+            body = cls('div', 'sb-body');
+            host.appendChild(body);
+            overlay.appendChild(host);
           }
+          for (const chip of overlay.querySelectorAll('.sb-seg-btn')) chip.setAttribute('aria-selected', chip.dataset.tab === tab ? 'true' : 'false');
           // Collect the nodes, then append them in one pass. No fragment, no
           // repeated reflow, and a minimal DOM stub can drive this too.
           const out = [];
 
-          const head = mk('div', '', 'display:flex;align-items:center;gap:8px;margin-bottom:8px');
-          head.appendChild(mk('b', 'Secrets Broker', 'font-size:14px;flex:1'));
-          for (const [id, label] of [['queue', '待办'], ['activity', '动态'], ['add', '添加']]) {
-            const chip = mk('button', label, 'border:1px solid ' + (tab === id ? '#0f9d8a' : '#d8e0ec') + ';background:' + (tab === id ? '#e8f7f4' : '#fff') + ';color:' + (tab === id ? '#0b7d6d' : '#6b7890') + ';border-radius:999px;padding:3px 9px;font:11.5px system-ui;cursor:pointer');
-            chip.onclick = () => { tab = id; showEmpty = true; load(true) };
-            head.appendChild(chip);
-          }
-          // This must not be named `close`: a const here shadows the close()
-          // function above, so the handler called the button itself, recursively.
-          // That recursion is what made the × take seconds to dismiss.
-          const closeButton = mk('button', '×', 'border:0;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:#6b7890');
-          closeButton.onclick = () => close();
-          head.appendChild(closeButton);
-          out.push(head);
-
           if (tab === 'queue') {
-            if (empty) out.push(mk('div', '没有待审批或待补充的请求。', 'font-size:12px;color:#6b7890;padding:6px 0'));
-            for (const entry of pending) {
-              const card = mk('div', '', 'border:1px solid #e3e9f2;border-radius:10px;padding:9px;margin:8px 0');
-              card.appendChild(mk('div', (entry.agent || 'Agent') + ' → ' + (entry.name || ''), 'font-weight:600;margin-bottom:6px'));
-              const row = mk('div', '', 'display:flex;gap:6px;flex-wrap:wrap');
-              for (const [decision, label, style] of [['once', '本次', stylePrimary], ['24h', '24h', styleButton], ['always', '永久', styleButton], ['deny', '拒绝', styleDanger]]) {
-                const button = mk('button', label, style);
-                button.onclick = async () => {
-                  button.disabled = true;
-                  try {
-                    await fetch('/api/secrets-broker/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, decision }) });
-                    card.style.animation = 'sb-flash .5s ease';
-                    setTimeout(load, 350);
-                  } catch { button.disabled = false }
-                };
-                row.appendChild(button);
+            const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持调用', 'secret.fill': '网页填充', 'secret.materialize': '写入本地文件', 'secret.write': '写入密钥' };
+            // Detail is a push page, not a dialog: the list stays underneath and
+            // the next screen slides in from the right, the way iOS does it.
+            const openDetail = (entry) => {
+              const host = overlay.querySelector('.sb-host');
+              if (!host || overlay.querySelector('.sb-page')) return;
+              const page = cls('div', 'sb-page');
+              const nav = cls('div', 'sb-nav');
+              const back = cls('button', 'sb-icon-btn', '\u2039');
+              back.setAttribute('aria-label', '返回');
+              back.onclick = () => page.remove();
+              nav.appendChild(back);
+              const titles = cls('div', 'sb-row-main');
+              titles.appendChild(cls('div', 'sb-nav-title', entry.name || '授权详情'));
+              titles.appendChild(cls('div', 'sb-nav-sub', entry.agent || 'Agent'));
+              nav.appendChild(titles);
+              page.appendChild(nav);
+              const pageBody = cls('div', 'sb-body');
+              const group = cls('div', 'sb-card');
+              const kv = (label, value) => {
+                const row = cls('dl', 'sb-kv');
+                row.appendChild(cls('dt', '', label));
+                row.appendChild(cls('dd', '', value));
+                group.appendChild(row);
+              };
+              kv('动作', actionLabel[entry.action] || entry.action || '—');
+              if (entry.targetOrigin) kv('目标', entry.targetOrigin);
+              kv('请求时间', entry.createdAt ? new Date(entry.createdAt).toLocaleString() : '—');
+              if (entry.reason) kv('理由', entry.reason);
+              pageBody.appendChild(group);
+              page.appendChild(pageBody);
+              const foot = cls('div', 'sb-foot');
+              const decideOn = (decision) => async (button) => {
+                button.disabled = true;
+                try {
+                  await fetch('/api/secrets-broker/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, decision }) });
+                  page.remove();
+                  load();
+                } catch { button.disabled = false }
+              };
+              // One primary answer, then the two longer durations side by side,
+              // so the page does not shout three equally blue buttons.
+              const once = cls('button', 'sb-btn sb-btn--primary sb-btn--wide', '本次');
+              once.onclick = () => decideOn('once')(once);
+              const longer = cls('div', 'sb-actions sb-actions--split');
+              longer.style.cssText = 'margin-top:var(--sb-sp-2)';
+              for (const [decision, label] of [['24h', '24 小时'], ['always', '永久']]) {
+                const button = cls('button', 'sb-btn sb-btn--wide', label);
+                button.onclick = () => decideOn(decision)(button);
+                longer.appendChild(button);
               }
-              card.appendChild(row);
+              const deny = cls('button', 'sb-btn sb-btn--danger sb-btn--wide', '拒绝');
+              deny.onclick = () => decideOn('deny')(deny);
+              foot.replaceChildren(once, longer, deny);
+              page.appendChild(foot);
+              // The pushed page covers the sheet's own nav and tabs, the way a
+              // navigation push replaces the whole screen on iOS.
+              overlay.appendChild(page);
+              requestAnimationFrame(() => page.setAttribute('data-in', 'true'));
+            };
+            if (!pending.length && !requests.length) out.push(cls('div', 'sb-empty', '没有待审批或待补充的请求。'));
+            if (pending.length) {
+              out.push(cls('div', 'sb-group-head', '待审批 · ' + pending.length));
+              const card = cls('div', 'sb-card');
+              for (const entry of pending) {
+                const row = cls('div', 'sb-row');
+                const main = cls('div', 'sb-row-main');
+                main.appendChild(cls('div', 'sb-row-title', (entry.agent || 'Agent') + ' → ' + (entry.name || '')));
+                const meta = [actionLabel[entry.action] || entry.action, entry.targetOrigin].filter(Boolean).join(' · ');
+                main.appendChild(cls('div', 'sb-row-sub', meta || '批准后可读取'));
+                row.appendChild(main);
+                row.appendChild(cls('span', 'sb-chev', '\u203a'));
+                row.onclick = () => openDetail(entry);
+                card.appendChild(row);
+              }
               out.push(card);
             }
             for (const entry of requests) {
               const draft = drafts.get(entry.id) || {};
-              const card = mk('div', '', 'border:1px solid #cfe8e2;background:#f5fbf9;border-radius:10px;padding:9px;margin:8px 0');
-              card.appendChild(mk('div', '需要补充：' + (entry.name || ''), 'font-weight:600;margin-bottom:6px'));
-              if (entry.description) card.appendChild(mk('div', entry.description, 'font-size:11px;color:#6b7890;margin-bottom:6px'));
-              const nameInput = mk('input'); nameInput.value = draft.name ?? entry.name ?? ''; nameInput.placeholder = '名称'; nameInput.style.cssText = styleInput;
-              const userInput = mk('input'); userInput.value = draft.username ?? ''; userInput.placeholder = '用户名（可选）'; userInput.style.cssText = styleInput;
-              const valueInput = mk('input'); valueInput.value = draft.value ?? ''; valueInput.type = 'password'; valueInput.placeholder = '密钥'; valueInput.style.cssText = styleInput;
+              out.push(cls('div', 'sb-group-head', '需要补充 · ' + (entry.name || '')));
+              const card = cls('div', 'sb-card');
+              const pad = cls('div', '', '');
+              pad.style.cssText = 'padding:var(--sb-sp-3) var(--sb-sp-4)';
+              if (entry.description) pad.appendChild(cls('div', 'sb-row-sub', entry.description));
+              const nameInput = mk('input', '', 'sb-input'); nameInput.value = draft.name ?? entry.name ?? ''; nameInput.placeholder = '名称';
+              const userInput = mk('input', '', 'sb-input'); userInput.value = draft.username ?? ''; userInput.placeholder = '用户名（可选）';
+              const valueInput = mk('input', '', 'sb-input'); valueInput.value = draft.value ?? ''; valueInput.type = 'password'; valueInput.placeholder = '密钥';
               const updateDraft = () => drafts.set(entry.id, { name: nameInput.value, username: userInput.value, value: valueInput.value });
               nameInput.oninput = updateDraft; userInput.oninput = updateDraft; valueInput.oninput = updateDraft;
-              const save = mk('button', '保存并授权', stylePrimary); save.style.width = '100%'; save.style.marginTop = '4px';
+              const save = cls('button', 'sb-btn sb-btn--primary sb-btn--wide', '保存并授权');
               save.onclick = async () => {
                 if (!valueInput.value) return;
                 save.disabled = true;
@@ -346,10 +563,10 @@ window.__ModuleLoader__.load({
                   load();
                 } catch (error) { save.disabled = false; save.textContent = String(error.message || error) }
               };
-              card.append(nameInput, userInput, valueInput, save);
               // Optional: the operator may not have this key at all. Cancelling
               // removes the request, so the prompt stops coming back.
-              const skip = mk('button', '取消（不填了）', styleButton); skip.style.width = '100%'; skip.style.marginTop = '4px';
+              const skip = cls('button', 'sb-btn sb-btn--wide', '取消（不填了）');
+              skip.style.cssText = 'margin-top:var(--sb-sp-2)';
               skip.onclick = async () => {
                 skip.disabled = true;
                 try {
@@ -361,23 +578,31 @@ window.__ModuleLoader__.load({
                   load();
                 } catch (error) { skip.disabled = false; skip.textContent = String(error.message || error) }
               };
-              card.appendChild(skip);
+              pad.append(nameInput, userInput, valueInput, save, skip);
+              card.appendChild(pad);
               out.push(card);
             }
             const caps = Array.isArray(usageResponse && usageResponse.capabilities) ? usageResponse.capabilities : [];
             if (caps.length) {
-              const card = mk('div', '', 'border:1px solid #e3e9f2;background:#fbfcfe;border-radius:10px;padding:9px;margin:8px 0');
-              card.appendChild(mk('div', 'Agent 权限（只读）', 'font-weight:600;margin-bottom:4px'));
-              const byAgent = new Map();
-              for (const cap of caps) { const list = byAgent.get(cap.agent) || []; list.push(cap); byAgent.set(cap.agent, list) }
-              for (const [agent, list] of byAgent) {
-                card.appendChild(mk('div', agent, 'font-size:12px;font-weight:600;margin-top:5px'));
-                for (const cap of list) {
-                  const left = cap.usesLeft == null ? '不限次数' : '剩余 ' + cap.usesLeft + '/' + cap.maxUses;
-                  const until = cap.expiresAt ? '到期 ' + new Date(cap.expiresAt).toLocaleString() : '永久';
-                  card.appendChild(mk('div', '· ' + (cap.name || '') + ' · ' + (cap.action || '') + ' · ' + left + ' · ' + until, 'font-size:11px;color:#6b7890'));
-                }
+              out.push(cls('div', 'sb-group-head', 'Agent 权限'));
+              const card = cls('div', 'sb-card');
+              const table = cls('table', 'sb-table');
+              const thead = document.createElement('thead');
+              const headerRow = document.createElement('tr');
+              for (const label of ['条目', '动作', '剩余', '到期']) headerRow.appendChild(cls('th', '', label));
+              thead.appendChild(headerRow);
+              table.appendChild(thead);
+              const tbody = document.createElement('tbody');
+              for (const cap of caps) {
+                const tr = document.createElement('tr');
+                tr.appendChild(cls('td', '', cap.name || ''));
+                tr.appendChild(cls('td', '', cap.action || ''));
+                tr.appendChild(cls('td', '', cap.usesLeft == null ? '不限' : cap.usesLeft + '/' + cap.maxUses));
+                tr.appendChild(cls('td', '', cap.expiresAt ? new Date(cap.expiresAt).toLocaleDateString() : '永久'));
+                tbody.appendChild(tr);
               }
+              table.appendChild(tbody);
+              card.appendChild(table);
               out.push(card);
             }
           }
@@ -487,8 +712,9 @@ window.__ModuleLoader__.load({
             out.push(list);
           }
 
-          overlay.innerHTML = '';
-          for (const node of out) overlay.appendChild(node);
+          // Replace the body in one pass: the sheet's nav and segmented control
+          // stay put, so a poll repaint never re-animates the whole panel.
+          if (body) body.replaceChildren(...out);
         } finally {
           // A cache paint must not clear a real load's in-flight flag.
           if (!fromCache) {

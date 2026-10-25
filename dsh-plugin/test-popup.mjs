@@ -29,6 +29,17 @@ class El {
   get innerHTML() { return this._html }
   remove() { this.removed = true }
   querySelector(sel) { return this.children.find((c) => c._matches === sel) ?? null }
+  // Enough of a selector engine for the sheet: .class, #id and TAG, descendants only.
+  querySelectorAll(selector) {
+    const hit = (n) => selector.startsWith('.') ? String(n.className || '').split(/\s+/).includes(selector.slice(1))
+      : selector.startsWith('#') ? n.id === selector.slice(1)
+      : n.tagName === selector.toLowerCase()
+    const found = []
+    const walk = (n) => { for (const c of n.children ?? []) { if (hit(c)) found.push(c); walk(c) } }
+    walk(this)
+    return found
+  }
+  replaceChildren(...c) { this.children = []; this._html = ''; for (const x of c) if (x) this.appendChild(x) }
   addEventListener() {}
 }
 const doc = {
@@ -56,7 +67,9 @@ for (; i < client.length; i++) {
   else if (client[i] === '}') { depth--; if (depth === 0) { end = i; break } }
 }
 const body = client.slice(start, end + 1)
-const fn = new Function('ctx', body + '\n return startPopup(ctx)')
+// ensureCss lives outside the slice and the stub has no <head>; the stylesheet
+// is covered by the screenshot suite, so it is stubbed here.
+const fn = new Function('ctx', 'const ensureCss = () => {}\n' + body + '\n return startPopup(ctx)')
 
 const cleanup = fn({})
 const launcher = doc.body.children.find((c) => c.id === 'secrets-broker-launcher')
@@ -72,11 +85,11 @@ const textOf = (node) => {
   return out
 }
 setTimeout(() => {
-  const overlay = doc.body.children.find((c) => c !== launcher)
+  const overlay = doc.getElementById('secrets-broker-sheet')
   if (!overlay) { console.log('FAIL empty panel did not open'); process.exit(1) }
   const all = textOf(overlay)
-  // The popup is useful when nothing is pending: tabs for the queue, recent
-  // activity and adding a key are always there.
+  // The popup is useful when nothing is pending: a segmented control with the
+  // queue, recent activity and adding a key is always there.
   const hasTabs = all.includes('待办') && all.includes('动态') && all.includes('添加')
   if (!hasTabs) { console.log('FAIL tabs missing in: ' + all.slice(0, 120)); process.exit(1) }
   console.log('PASS empty panel opens with tabs')
