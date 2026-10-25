@@ -5952,6 +5952,63 @@ export default {
       await addAudit(env, { event: 'sync.compare', url: remote.url, counts: summary.counts })
       return json({ ok: true, local: { count: mine.length }, remote: { count: (theirs.items ?? []).length, account: theirs.account ?? '' }, ...summary })
     }
+    // Comparing told you what differs; this writes the half that comes this way.
+    // It only ever adds or overwrites rows the peer has a newer version of: a
+    // tombstone on the peer is reported, not applied, because deleting the only
+    // copy of a credential on the strength of one comparison is how a sync bug
+    // eats a vault.
+    if (url.pathname === '/api/sync/apply' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const state = await loadState(env)
+      const remote = state.settings?.remoteBroker
+      if (!remote?.url || !remote?.tokenWrapped) return fail('还没有配置远端，先填地址和令牌', 409)
+      const session = await getSession(env)
+      let account = session?.email || ''
+      if (session && account !== (state.settings?.vaultEmail ?? '')) account = ''
+      if (!account) account = await vaultEmail(env, env.NODEWARDEN_DB, state).catch(() => '')
+      if (!account) return fail('这台 broker 还没有配置 vault 账户', 409)
+      const mine = await vaultCipherRows(env, account)
+      if (!mine) return fail('vault 数据库里没有这个用户（是不是还没初始化？）', 409)
+      const owner = await env.NODEWARDEN_DB.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').bind(account).first().catch(() => null)
+      if (!owner) return fail('vault 数据库里没有这个用户（是不是还没初始化？）', 409)
+      let peerToken = ''
+      try { peerToken = decoder.decode(await unwrapWithKek(remote.tokenWrapped, await kekBytes(env))) } catch (error) { return fail('保存的远端令牌解不开（SESSION_KEK 换过？），请重新填一次', 409) }
+      let theirs
+      try { theirs = await pullRemote(remote.url, peerToken) } catch (error) {
+        await addAudit(env, { event: 'sync.apply-deny', url: remote.url, reason: error.message.slice(0, 120) })
+        return fail('远端没有给出结果：' + error.message, 502)
+      }
+      const localById = new Map(mine.map((row) => [row.id, row]))
+      const wanted = (theirs.items ?? []).filter((row) => {
+        if (!row?.id || !row.name || !row.data) return false
+        const here = localById.get(row.id)
+        if (!here) return true
+        if (row.deletedAt) return false
+        if (here.deletedAt) return true
+        return String(row.updatedAt ?? '') > String(here.updatedAt ?? '')
+      })
+      const insert = env.NODEWARDEN_DB.prepare(
+        'INSERT OR REPLACE INTO ciphers (id, user_id, type, folder_id, name, notes, data, key, favorite, reprompt, created_at, updated_at, deleted_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)',
+      )
+      let applied = 0
+      const failed = []
+      for (const row of wanted.slice(0, 500)) {
+        try {
+          await insert.bind(row.id, owner.id, row.type ?? 1, row.folderId ?? null, row.name, row.notes ?? null, row.data, row.key ?? null, row.createdAt ?? nowIso(), row.updatedAt ?? nowIso(), row.deletedAt ?? null, row.archivedAt ?? null).run()
+          applied += 1
+        } catch (error) {
+          failed.push(row.id)
+        }
+      }
+      const summary = diffSummary(diffVaults(mine, theirs.items))
+      await mutateState(env, [
+        { op: 'set', path: ['settings', 'remoteBroker', 'lastCount'], value: theirs.count ?? theirs.items.length },
+        { op: 'set', path: ['settings', 'remoteBroker', 'lastCompareAt'], value: nowIso() },
+      ])
+      await addAudit(env, { event: 'sync.apply', url: remote.url, applied, failed: failed.length, counts: summary.counts })
+      return json({ ok: true, applied, failed, pulled: wanted.length, total: (theirs.items ?? []).length, counts: summary.counts })
+    }
+
     // ── Sync devices ───────────────────────────────────────────────────────
     // The token below belongs to another broker installation, not to an agent.
     // It is handed out once (the panel shows it a single time), stored as a

@@ -260,6 +260,20 @@ try {
   const picked = await evaluate("document.querySelector('.pick-row [data-share-agent]').checked")
   pickCount > 0 && picked ? pass('A10 share list offers ' + pickCount + ' tappable target(s)') : fail('A10', JSON.stringify({ pickCount, picked }))
 
+  // A18 - deleting asks in the page, not through confirm(): a sandboxed frame
+  // silently refuses the native dialog, and the click then does nothing at all.
+  const deletesBefore = writes.filter((w) => w === '/api/items/delete').length
+  await evaluate("document.getElementById('mi-delete').click()")
+  await wait(400)
+  const askShown = await evaluate("Boolean(document.querySelector('.ask'))")
+  await evaluate("document.querySelector('.ask__yes').click()")
+  await wait(900)
+  const deletesAfter = writes.filter((w) => w === '/api/items/delete').length
+  const askGone = await evaluate("!document.querySelector('.ask')")
+  askShown && askGone && deletesAfter === deletesBefore + 1
+    ? pass('A18 deleting asks in the page and posts exactly one delete')
+    : fail('A18', JSON.stringify({ askShown, askGone, deletesBefore, deletesAfter }))
+
   // A12 - a credential with no expiry date must not be drawn as expired.
   const expiry = await evaluate("(() => { const rows = [...document.querySelectorAll('#items-box .ios-row')]; return { rows: rows.length, expired: /已过期/.test(rows.map((r) => r.textContent).join(' ')) } })()")
   expiry.rows > 0 && !expiry.expired ? pass('A12 a credential with no expiry is not marked expired') : fail('A12', JSON.stringify(expiry))

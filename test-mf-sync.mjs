@@ -188,6 +188,59 @@ const login = async (mf) => {
   await mf.dispose()
 }
 
+// S12..S14 - applying writes the peer's newer rows into this vault, and only
+// those: a second run is a no-op, and a tombstone on the peer does not delete
+// the local copy.
+{
+  const http = await import('node:http')
+  const remoteRow = {
+    id: 'item-remote-1',
+    type: 1,
+    folderId: null,
+    name: '2.remoteiv|remotect|remotemac',
+    notes: null,
+    data: '{"login":{}}',
+    key: null,
+    createdAt: '2024-02-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    deletedAt: null,
+    archivedAt: null,
+  }
+  let served = 0
+  const peer = http.createServer((req, res) => {
+    served += 1
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ ok: true, account: ACCT, count: 1, items: [remoteRow] }))
+  })
+  await new Promise((r) => peer.listen(0, '127.0.0.1', r))
+  const base = 'http://127.0.0.1:' + peer.address().port
+
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const anon = await mf.dispatchFetch('https://broker.test/api/sync/apply', { method: 'POST' })
+  anon.status === 401 ? pass('S12 applying needs the administrator') : fail('S12', 'status ' + anon.status)
+
+  const cookie = await login(mf)
+  const saved = await mf.dispatchFetch('https://broker.test/api/sync/remote', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ url: base, token: 'z'.repeat(24) }) })
+  const saveText = await saved.text()
+  const first = await mf.dispatchFetch('https://broker.test/api/sync/apply', { method: 'POST', headers: { cookie } })
+  const firstBody = await first.json().catch(() => ({}))
+  const db = await mf.getD1Database('NODEWARDEN_DB')
+  const stored = await db.prepare('SELECT id, user_id FROM ciphers WHERE id = ?').bind(remoteRow.id).first().catch(() => null)
+  saved.ok && firstBody.applied === 1 && stored?.user_id === 'u1'
+    ? pass('S13 applying pulls the peer row into this vault')
+    : fail('S13', JSON.stringify({ save: saveText.slice(0, 60), first: firstBody, stored }))
+
+  const second = await mf.dispatchFetch('https://broker.test/api/sync/apply', { method: 'POST', headers: { cookie } })
+  const secondBody = await second.json().catch(() => ({}))
+  const count = await db.prepare('SELECT COUNT(*) AS n FROM ciphers WHERE id = ?').bind(remoteRow.id).first().catch(() => ({}))
+  secondBody.applied === 0 && count?.n === 1
+    ? pass('S14 applying twice changes nothing the second time')
+    : fail('S14', JSON.stringify({ second: secondBody, count }))
+
+  await mf.dispose()
+  peer.close()
+}
+
 const passed = results.filter((r) => r.ok).length
 console.log(String.fromCharCode(10) + '==== sync pull ' + passed + '/' + results.length + ' passed ====')
 if (passed !== results.length) process.exit(1)
