@@ -1,4 +1,4 @@
-﻿window.__ModuleLoader__.load({
+window.__ModuleLoader__.load({
   id: "dsh-secrets-broker",
   factory: (require) => {
     var module = { exports: {} };
@@ -652,7 +652,7 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
 
           if (tab === 'activity') {
             const items = Array.isArray(activityResponse.activity) ? activityResponse.activity : [];
-            if (!items.length) out.push(mk('div', '还没有活动记录。', 'font-size:12px;color:#6b7890;padding:6px 0'));
+            if (!items.length) out.push(mk('div', '还没有活动记录。', 'font-size:var(--sb-fs-cap);color:var(--sb-label-2);padding:6px 0'));
             for (const entry of items) {
               // 12 rows of bare HH:MM:SS read as today even when they are from
               // yesterday, so a row that is not today carries its date.
@@ -663,26 +663,26 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
                 : at;
               const who = entry.agent || '系统';
               const what = entry.name ? '「' + entry.name + '」' : '';
-              const row = mk('div', '', 'display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid #f0f3f8;font-size:12px');
-              row.appendChild(mk('span', stamp, 'color:#9aa6b8;font:11px/1.4 ui-monospace,monospace;flex:0 0 auto'));
-              row.appendChild(mk('span', eventLabel(entry.event), 'color:' + (entry.ok ? '#0b7d6d' : '#c0392b') + ';flex:0 0 auto'));
-              row.appendChild(mk('span', who + ' ' + what, 'color:#6b7890;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
+              const row = mk('div', '', 'display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--sb-sep);font-size:var(--sb-fs-cap)');
+              row.appendChild(mk('span', stamp, 'color:var(--sb-label-3);font:11px/1.4 ui-monospace,monospace;flex:0 0 auto'));
+              row.appendChild(mk('span', eventLabel(entry.event), 'color:' + (entry.ok ? 'var(--sb-green)' : 'var(--sb-red)') + ';flex:0 0 auto'));
+              row.appendChild(mk('span', who + ' ' + what, 'color:var(--sb-label-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
               out.push(row);
             }
           }
 
           if (tab === 'add') {
-            out.push(mk('div', '存一个密钥。名称必填，值只在你和 broker 之间。', 'font-size:11.5px;color:#6b7890;margin-bottom:6px'));
+            out.push(mk('div', '存一个密钥。名称必填，值只在你和 broker 之间。', 'font-size:var(--sb-fs-cap);color:var(--sb-label-2);margin-bottom:6px'));
             // The kind decides what an Agent may do with the key, so it sits
             // first. It lives in `add` like `tab` does: every poll rebuilds the
             // form, and a reset chip would silently misclassify the next save.
             const kindRow = mk('div', '', 'display:flex;gap:6px;margin:2px 0 4px');
             for (const [value, label] of [['', '未分类'], ['api', 'API key'], ['web', '网站登录']]) {
-              const chip = mk('button', label, 'border:1px solid ' + (add.kind === value ? '#0f9d8a' : '#d8e0ec') + ';background:' + (add.kind === value ? '#e8f7f4' : '#fff') + ';color:' + (add.kind === value ? '#0b7d6d' : '#6b7890') + ';border-radius:999px;padding:3px 9px;font:11.5px system-ui;cursor:pointer');
+              const chip = mk('button', label, 'border:1px solid ' + (add.kind === value ? 'var(--sb-blue)' : 'var(--sb-sep)') + ';background:' + (add.kind === value ? 'var(--sb-blue)' : 'var(--sb-card)') + ';color:' + (add.kind === value ? 'var(--sb-on-accent)' : 'var(--sb-label-2)') + ';border-radius:var(--sb-r-pill);padding:4px 10px;font:var(--sb-fs-cap) var(--sb-font);cursor:pointer');
               chip.onclick = () => { add.kind = value; load(true) };
               kindRow.appendChild(chip);
             }
-            out.push(kindRow, mk('div', 'API key 可以授权给 Agent 读取；网站登录只回填到这些站点，永远读不到明文。', 'font-size:11px;color:#9aa6b8;margin-bottom:6px'));
+            out.push(kindRow, mk('div', 'API key 可以授权给 Agent 读取；网站登录只回填到这些站点，永远读不到明文。', 'font-size:var(--sb-fs-mini);color:var(--sb-label-3);margin-bottom:6px'));
             const originsInput = mk('textarea');
             originsInput.placeholder = 'https://example.com，一行一个站点';
             originsInput.style.cssText = styleInput + ';height:52px;resize:vertical';
@@ -695,15 +695,15 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
             const valueInput = mk('input'); valueInput.placeholder = '密钥值'; valueInput.type = 'password'; valueInput.style.cssText = styleInput; valueInput.value = add.value || ''; valueInput.oninput = () => { add.value = valueInput.value };
             const urlInput = mk('input'); urlInput.placeholder = '网址（可选）'; urlInput.style.cssText = styleInput; urlInput.value = add.url || ''; urlInput.oninput = () => { add.url = urlInput.value };
             const noteInput = mk('input'); noteInput.placeholder = '备注（可选）'; noteInput.style.cssText = styleInput; noteInput.value = add.notes || ''; noteInput.oninput = () => { add.notes = noteInput.value };
-            const hint = mk('div', '', 'font-size:11px;min-height:16px;margin-top:4px');
+            const hint = mk('div', '', 'font-size:var(--sb-fs-mini);min-height:16px;margin-top:4px');
             const originsList = () => String(add.origins || '').split('\n').map((line) => line.trim()).filter(Boolean);
             const save = mk('button', '保存到 vault', stylePrimary); save.style.width = '100%'; save.style.marginTop = '6px';
             save.onclick = async () => {
-              if (!nameInput.value.trim()) { hint.textContent = '名称必填'; hint.style.color = '#c0392b'; return }
-              if (!valueInput.value) { hint.textContent = '密钥值必填'; hint.style.color = '#c0392b'; return }
-              if (add.kind === 'web' && !originsList().length) { hint.textContent = '网站登录至少填一个站点'; hint.style.color = '#c0392b'; return }
+              if (!nameInput.value.trim()) { hint.textContent = '名称必填'; hint.style.color = 'var(--sb-red)'; return }
+              if (!valueInput.value) { hint.textContent = '密钥值必填'; hint.style.color = 'var(--sb-red)'; return }
+              if (add.kind === 'web' && !originsList().length) { hint.textContent = '网站登录至少填一个站点'; hint.style.color = 'var(--sb-red)'; return }
               save.disabled = true;
-              hint.textContent = '保存中…'; hint.style.color = '#6b7890';
+              hint.textContent = '保存中…'; hint.style.color = 'var(--sb-label-2)';
               try {
                 const body = { name: nameInput.value.trim(), username: userInput.value, value: valueInput.value, url: urlInput.value.trim(), notes: noteInput.value, kind: add.kind };
                 if (add.kind === 'web') body.origins = originsList();
@@ -715,11 +715,11 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
                 for (const input of [nameInput, userInput, valueInput, urlInput, noteInput, originsInput]) input.value = '';
                 for (const key of ['name', 'username', 'value', 'url', 'notes', 'origins']) add[key] = '';
                 hint.textContent = payload.updated ? '已更新 ' + payload.name : '已保存 ' + payload.name;
-                hint.style.color = '#0b7d6d';
+                hint.style.color = 'var(--sb-green)';
                 save.disabled = false;
               } catch (error) {
                 hint.textContent = String(error.message || error);
-                hint.style.color = '#c0392b';
+                hint.style.color = 'var(--sb-red)';
                 save.disabled = false;
               }
             };
@@ -727,10 +727,10 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
             // A key stored by mistake is removed by clicking it, not by typing its
             // name back in — the operator may not remember the spelling.
             const stored = Array.isArray(itemsResponse && itemsResponse.items) ? itemsResponse.items : [];
-            const list = mk('div', '', 'max-height:170px;overflow:auto;margin-top:10px;border-top:1px solid #eef1f6;padding-top:6px');
-            list.appendChild(mk('div', '已存 ' + stored.length + ' 个，点名称右边的 × 删除', 'font-size:11px;color:#9aa6b8;margin-bottom:4px'));
+            const list = mk('div', '', 'max-height:170px;overflow:auto;margin-top:10px;border-top:1px solid var(--sb-sep);padding-top:6px');
+            list.appendChild(mk('div', '已存 ' + stored.length + ' 个，点名称右边的 × 删除', 'font-size:var(--sb-fs-mini);color:var(--sb-label-3);margin-bottom:4px'));
             for (const item of stored) {
-              const row = mk('div', '', 'display:flex;align-items:center;gap:6px;padding:3px 0;font-size:12px');
+              const row = mk('div', '', 'display:flex;align-items:center;gap:6px;padding:3px 0;font-size:var(--sb-fs-cap)');
               const label = mk('span', (item.name || '') + (item.group ? ' · ' + item.group : ''), 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
               // Clicking the name fills the form, so an update needs no retyping.
               label.style.cursor = 'pointer';
@@ -746,8 +746,8 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
                   if (!response.ok || payload.ok === false) throw new Error(payload.error || 'delete failed');
                   row.remove();
                   hint.textContent = '已删除 ' + (item.name || '');
-                  hint.style.color = '#0b7d6d';
-                } catch (error) { kill.disabled = false; hint.textContent = String(error.message || error); hint.style.color = '#c0392b' }
+                  hint.style.color = 'var(--sb-green)';
+                } catch (error) { kill.disabled = false; hint.textContent = String(error.message || error); hint.style.color = 'var(--sb-red)' }
               };
               row.append(label, kill);
               list.appendChild(row);
