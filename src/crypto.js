@@ -149,6 +149,28 @@ async function decryptDeep(value, itemEnc, itemMac, userEnc, userMac) {
 }
 
 /**
+ * Can this vault read the ciphertext, or is it a stranger's?
+ *
+ * `decryptFieldWithFallback` answers an empty string when the key is wrong, so a
+ * row copied from a vault with a different master password shows up as an item
+ * with no name instead of as an error. Sync has to tell "empty on purpose" from
+ * "not ours", so this asks the strict question: does the name decrypt at all?
+ */
+export async function rowReadable(row, session) {
+  if (!row || !row.name) return false
+  const { userEnc, userMac, itemEnc, itemMac } = await cipherKeys(row, session)
+  const keys = [[itemEnc, itemMac]]
+  if (itemEnc !== userEnc || itemMac !== userMac) keys.push([userEnc, userMac])
+  for (const [enc, mac] of keys) {
+    try {
+      await decryptStr(row.name, enc, mac)
+      return true
+    } catch {}
+  }
+  return false
+}
+
+/**
  * Decrypt one D1 cipher row. NodeWarden stores `data` as a JSON object whose
  * string fields (login.username/password, uris, fields, ...) are EncStrings;
  * older/imported rows may instead carry a single encrypted string.

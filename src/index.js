@@ -5,7 +5,7 @@ import { parseCommand, TELEGRAM_HELP, formatPendingList, formatGrants, formatSta
 import { LOGO_PNG_B64, FAVICON_ICO_B64 } from './logo.js'
 import {
   b64ToBytes, cipherKeys, constantTimeEqual, decryptCipherRow, decryptStr, encryptStr, extractSecret, extractUsername, extractTotp,
-  hmacSha256, hmacToken, pbkdf2, sha256Base64, unwrapWithKek, wrapWithKek, bytesToB64,
+  hmacSha256, hmacToken, pbkdf2, rowReadable, sha256Base64, unwrapWithKek, wrapWithKek, bytesToB64,
 } from './crypto.js'
 import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, ALLOWED_ALGS } from './oidc.js'
 import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
@@ -5948,9 +5948,13 @@ export default {
         return fail('远端没有给出结果：' + error.message, 502)
       }
       const summary = diffSummary(diffVaults(mine, theirs.items))
+      // Same key check as apply, so the number on screen before pressing the
+      // button already says whether the two vaults share a master key.
+      let unreadable = 0
+      if (session) for (const row of theirs.items ?? []) if (row?.name && !(await rowReadable(row, session))) unreadable += 1
       await mutateState(env, [{ op: 'set', path: ['settings', 'remoteBroker', 'lastCount'], value: theirs.count ?? theirs.items.length }, { op: 'set', path: ['settings', 'remoteBroker', 'lastCompareAt'], value: nowIso() }])
       await addAudit(env, { event: 'sync.compare', url: remote.url, counts: summary.counts })
-      return json({ ok: true, local: { count: mine.length }, remote: { count: (theirs.items ?? []).length, account: theirs.account ?? '' }, ...summary })
+      return json({ ok: true, local: { count: mine.length }, remote: { count: (theirs.items ?? []).length, account: theirs.account ?? '' }, unreadable, ...summary })
     }
     // Comparing told you what differs; this writes the half that comes this way.
     // It only ever adds or overwrites rows the peer has a newer version of: a
@@ -5979,14 +5983,27 @@ export default {
         return fail('远端没有给出结果：' + error.message, 502)
       }
       const localById = new Map(mine.map((row) => [row.id, row]))
-      const wanted = (theirs.items ?? []).filter((row) => {
-        if (!row?.id || !row.name || !row.data) return false
+      // Ciphertext travels, the key does not. A row from a vault with a different
+      // master password decrypts to an empty name here, which used to land in the
+      // list as "(未命名)" and read as corruption. Ask before writing: if the name
+      // does not decrypt with this vault's key, the row is not ours to hold.
+      if (!session) return fail('先解锁 vault 再同步：要验证对面的密文能不能用这台 broker 的钥匙解开', 423)
+      const wanted = []
+      let unreadable = 0
+      for (const row of theirs.items ?? []) {
+        if (!row?.id || !row.name || !row.data) continue
         const here = localById.get(row.id)
-        if (!here) return true
-        if (row.deletedAt) return false
-        if (here.deletedAt) return true
-        return String(row.updatedAt ?? '') > String(here.updatedAt ?? '')
-      })
+        if (here) {
+          if (row.deletedAt) continue
+          if (!here.deletedAt && !(String(row.updatedAt ?? '') > String(here.updatedAt ?? ''))) continue
+        }
+        if (!(await rowReadable(row, session))) { unreadable += 1; continue }
+        wanted.push(row)
+      }
+      if (!wanted.length && unreadable) {
+        await addAudit(env, { event: 'sync.apply-deny', url: remote.url, reason: 'unreadable-ciphertext', count: unreadable })
+        return fail('远端的 ' + unreadable + ' 条密文用这台 broker 的主密码解不开——两边的 vault 不是同一把钥匙（同一个账户、同一个主密码才有同一把钥匙）。没有写入任何条目。', 409)
+      }
       const insert = env.NODEWARDEN_DB.prepare(
         'INSERT OR REPLACE INTO ciphers (id, user_id, type, folder_id, name, notes, data, key, favorite, reprompt, created_at, updated_at, deleted_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)',
       )
@@ -6005,8 +6022,28 @@ export default {
         { op: 'set', path: ['settings', 'remoteBroker', 'lastCount'], value: theirs.count ?? theirs.items.length },
         { op: 'set', path: ['settings', 'remoteBroker', 'lastCompareAt'], value: nowIso() },
       ])
-      await addAudit(env, { event: 'sync.apply', url: remote.url, applied, failed: failed.length, counts: summary.counts })
-      return json({ ok: true, applied, failed, pulled: wanted.length, total: (theirs.items ?? []).length, counts: summary.counts })
+      await addAudit(env, { event: 'sync.apply', url: remote.url, applied, failed: failed.length, unreadable, counts: summary.counts })
+      return json({ ok: true, applied, failed, unreadable, pulled: wanted.length, total: (theirs.items ?? []).length, counts: summary.counts })
+    }
+
+    // Rows that cannot be decrypted with this vault's key are dead weight: they
+    // show up as "(未命名)" and can never be read, so offer to sweep them out.
+    if (url.pathname === '/api/sync/prune-unreadable' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const session = await getSession(env)
+      if (!session) return fail('先解锁 vault 再清理', 423)
+      const user = await env.NODEWARDEN_DB.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').bind(session.email).first().catch(() => null)
+      if (!user) return fail('vault 数据库里没有这个用户（是不是还没初始化？）', 409)
+      const rows = await env.NODEWARDEN_DB.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ?').bind(user.id).all()
+      const doomed = []
+      for (const row of rows.results ?? []) if (!(await rowReadable(row, session))) doomed.push(row.id)
+      const remove = env.NODEWARDEN_DB.prepare('DELETE FROM ciphers WHERE id = ? AND user_id = ?')
+      let removed = 0
+      for (const id of doomed) {
+        try { await remove.bind(id, user.id).run(); removed += 1 } catch {}
+      }
+      await addAudit(env, { event: 'sync.prune-unreadable', removed })
+      return json({ ok: true, removed })
     }
 
     // ── Sync devices ───────────────────────────────────────────────────────

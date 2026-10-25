@@ -6,8 +6,10 @@
  * master key. That is the whole reason sync is possible at all: the ciphertext
  * is portable, the key is not.
  *
- * Stage 1 only reads. Nothing is written to either broker, and there is no
- * apply step until the merge rules are agreed.
+ * Comparing is read-only by construction: the diff decides what a merge would
+ * do and writes nothing. The panel's "同步到本地" is a separate step
+ * (/api/sync/apply) that only ever inserts rows this vault can decrypt — a row
+ * whose name does not decrypt here belongs to another vault, and is refused.
  *
  * No Node built-ins here: the worker imports this file too, so the panel can
  * show the same comparison the CLI prints.

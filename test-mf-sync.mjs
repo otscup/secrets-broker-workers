@@ -193,13 +193,16 @@ const login = async (mf) => {
 // the local copy.
 {
   const http = await import('node:http')
+  const E = Buffer.alloc(32, 1), M = Buffer.alloc(32, 2)
+  // A row this vault can actually read: same keys the session unlocks with.
+  // A stranger's ciphertext is covered by S15 below.
   const remoteRow = {
     id: 'item-remote-1',
     type: 1,
     folderId: null,
-    name: '2.remoteiv|remotect|remotemac',
+    name: await encryptStr('remote-item', E, M),
     notes: null,
-    data: '{"login":{}}',
+    data: JSON.stringify({ login: { username: await encryptStr('bob', E, M), password: await encryptStr('REMOTE_VALUE_77c1', E, M), totp: '', uris: [] }, fields: [] }),
     key: null,
     createdAt: '2024-02-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -220,6 +223,7 @@ const login = async (mf) => {
   anon.status === 401 ? pass('S12 applying needs the administrator') : fail('S12', 'status ' + anon.status)
 
   const cookie = await login(mf)
+  await mf.dispatchFetch('https://broker.test/api/unlock', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ symEncKey: Buffer.alloc(32, 1).toString('base64'), symMacKey: Buffer.alloc(32, 2).toString('base64') }) })
   const saved = await mf.dispatchFetch('https://broker.test/api/sync/remote', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ url: base, token: 'z'.repeat(24) }) })
   const saveText = await saved.text()
   const first = await mf.dispatchFetch('https://broker.test/api/sync/apply', { method: 'POST', headers: { cookie } })
@@ -239,6 +243,64 @@ const login = async (mf) => {
 
   await mf.dispose()
   peer.close()
+}
+
+// S15 - a peer whose vault was encrypted with a different master password cannot
+// be merged: the ciphertext would arrive and decrypt to an empty name.
+{
+  const http = await import('node:http')
+  const foreignRow = {
+    id: 'item-foreign-1',
+    type: 1,
+    folderId: null,
+    name: '2.AAAAAAAAAAAAAAAAAAAAAA==|AAAAAAAAAAAAAAAAAAAAAA==|AAAAAAAAAAAAAAAAAAAAAA==',
+    notes: null,
+    data: JSON.stringify({ login: { uris: [] }, fields: [] }),
+    key: null,
+    createdAt: '2024-02-01T00:00:00.000Z',
+    updatedAt: '2026-05-01T00:00:00.000Z',
+    deletedAt: null,
+    archivedAt: null,
+  }
+  const peer = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ ok: true, account: ACCT, count: 1, items: [foreignRow] }))
+  })
+  await new Promise((r) => peer.listen(0, '127.0.0.1', r))
+  const base = 'http://127.0.0.1:' + peer.address().port
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const db = await mf.getD1Database('NODEWARDEN_DB')
+  const cookie = await login(mf)
+  await mf.dispatchFetch('https://broker.test/api/unlock', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ symEncKey: Buffer.alloc(32, 1).toString('base64'), symMacKey: Buffer.alloc(32, 2).toString('base64') }) })
+  await mf.dispatchFetch('https://broker.test/api/sync/remote', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ url: base, token: 'z'.repeat(24) }) })
+  const apply = await mf.dispatchFetch('https://broker.test/api/sync/apply', { method: 'POST', headers: { cookie } })
+  const body = await apply.json().catch(() => ({}))
+  const landed = (await db.prepare('SELECT COUNT(*) AS n FROM ciphers WHERE id = ?').bind('item-foreign-1').first())?.n ?? 0
+  apply.status === 409 && landed === 0 && /解不开/.test(String(body.error ?? ''))
+    ? pass('S15 a vault with another key is refused, not merged')
+    : fail('S15', JSON.stringify({ status: apply.status, landed, body }))
+  await mf.dispose()
+  peer.close()
+}
+
+// S16 - the rows that already got in stay invisible forever, so offer to sweep
+// them out; the readable ones must survive.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const db = await mf.getD1Database('NODEWARDEN_DB')
+  const cookie = await login(mf)
+  await mf.dispatchFetch('https://broker.test/api/unlock', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ symEncKey: Buffer.alloc(32, 1).toString('base64'), symMacKey: Buffer.alloc(32, 2).toString('base64') }) })
+  await db.prepare('INSERT OR REPLACE INTO ciphers (id,user_id,type,folder_id,name,notes,data,key,favorite,reprompt,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind('item-junk-1', 'u1', 1, null, '2.AAAAAAAAAAAAAAAAAAAAAA==|AAAAAAAAAAAAAAAAAAAAAA==|AAAAAAAAAAAAAAAAAAAAAA==', null, JSON.stringify({ login: { uris: [] }, fields: [] }), null, 0, 0, '2024-02-01T00:00:00.000Z', '2024-02-01T00:00:00.000Z', null)
+    .run()
+  const prune = await mf.dispatchFetch('https://broker.test/api/sync/prune-unreadable', { method: 'POST', headers: { cookie } })
+  const pruned = await prune.json().catch(() => ({}))
+  const junk = (await db.prepare('SELECT COUNT(*) AS n FROM ciphers WHERE id = ?').bind('item-junk-1').first())?.n ?? 0
+  const good = (await db.prepare('SELECT COUNT(*) AS n FROM ciphers WHERE id = ?').bind(ITEM_ID).first())?.n ?? 0
+  pruned.removed === 1 && junk === 0 && good === 1
+    ? pass('S16 pruning removes only the rows this key cannot open')
+    : fail('S16', JSON.stringify({ pruned, junk, good }))
+  await mf.dispose()
 }
 
 const passed = results.filter((r) => r.ok).length
