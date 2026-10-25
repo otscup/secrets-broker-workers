@@ -749,7 +749,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
   <section id="view-grants" class="view hidden">
     <div class="card" id="transfers-card"><h2>待复制到其他账户</h2><div class="hint">主账户分享后先进入队列；切回目标账户并解锁后自动复制到指定文件夹并生成授权。</div><div id="transfers-box" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     <div class="card"><h2>待批准请求</h2><div class="hint">点按钮即授权；同 Docker 版的 once/1h/24h/7d/永久。</div><div id="pending-box" class="scroll-list" style="margin-top:10px"></div></div>
-    <div class="card"><h2>有效授权</h2><div class="hint">过期的授权会显示「已过期」，点该行的时长即可延期；「选择」可以批量删除或按时长批量恢复。</div><div class="row" style="margin-top:8px"><button id="grants-select">选择</button></div><div id="grants-bulk" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px;flex-wrap:wrap"><span id="grants-bulk-count" class="hint" style="flex:0 0 auto"></span><select id="grants-bulk-seconds" title="恢复后的时长（从现在起算）" style="flex:0 0 auto"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800" selected>7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><button id="grants-bulk-restore" class="primary">批量恢复</button><button class="danger" id="grants-bulk-delete">批量删除</button><button id="grants-bulk-clear">清除选择</button></div><div id="grants-box" class="scroll-list" style="margin-top:10px"></div></div>
+    <div class="card"><h2>有效授权</h2><div class="hint">过期的授权会显示「已过期」，点该行的时长即可延期；「选择」可以批量删除或按时长批量恢复。</div><div class="row" style="margin-top:8px"><button id="grants-select">选择</button></div><div id="grants-bulk" class="row hidden" style="margin-top:8px;background:var(--fill);padding:8px;border-radius:10px;flex-wrap:wrap"><span id="grants-bulk-count" class="hint" style="flex:0 0 auto"></span><select id="grants-bulk-seconds" title="恢复后的时长（从现在起算）" style="flex:0 0 auto"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800" selected>7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><button id="grants-bulk-restore" class="primary">批量恢复</button><button class="danger" id="grants-bulk-delete">批量删除</button><button id="grants-bulk-clear">清除选择</button></div><div id="grants-box" class="scroll-list" style="margin-top:10px"></div></div>
   </section>
 
   <section id="view-logs" class="view hidden"><div class="card"><h2>审计日志</h2><div class="hint">最近 500 条，数据在 Durable Object 中。</div>
@@ -1279,7 +1279,21 @@ document.addEventListener('click', async (event) => {
   try { await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.decision }) }); show('modal', false); await loadAll(); toast('已处理') } catch (error) { toast(error.message, true) }
 })
 $('pending-box').addEventListener('click', async (event) => { const button = event.target.closest('[data-decide]'); if (!button) return; try { await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.decide }) }); await Promise.all([loadState(), loadStats(), loadItems()]); toast('已处理') } catch (error) { toast(error.message, true) } })
-$('grants-box').addEventListener('click', (event) => { const menu = event.target.closest('[data-grant-menu]'); if (menu) openGrantMenu(menu.dataset.agent, menu.dataset.name) })
+$('grants-box').addEventListener('click', (event) => {
+  // While selecting, a tap on a row is a tick. It used to fall through to the
+  // grant sheet, which also wiped the selection the user had just made.
+  if (grantsSelecting) {
+    if (event.target.closest('.grant-select')) return
+    const row = event.target.closest('.ios-row')
+    const box = row?.querySelector('.grant-select')
+    if (!box) return
+    box.checked = !box.checked
+    box.dispatchEvent(new Event('change', { bubbles: true }))
+    return
+  }
+  const menu = event.target.closest('[data-grant-menu]')
+  if (menu) openGrantMenu(menu.dataset.agent, menu.dataset.name)
+})
 // Bulk actions. 恢复 really restores: the server rebuilds the grant row and its
 // read capability, which is what the single-row button always did.
 $('grants-select').onclick = () => { grantsSelecting = !grantsSelecting; if (!grantsSelecting) selectedGrants.clear(); renderGrants() }
@@ -3351,7 +3365,7 @@ function mcpToolFields(agent) {
   const boxes = MCP_TOOLS.map(([name, label]) =>
     '<label class="chk pick-row" style="display:flex;width:100%;margin:2px 0"><input type="checkbox" class="ma-tool" data-mcp-tool value="' + name + '"' + (chosen.has(name) ? ' checked' : '') + '> ' + esc(label) + ' <code class="hint" style="margin-left:6px">' + name + '</code></label>'
   ).join('')
-  return '<label class="field">MCP 工具权限（一个都不勾 = 允许全部，与之前一样）</label><div class="pick-box" style="max-height:170px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px 8px;margin:4px 0 8px">' + boxes + '</div>'
+  return '<label class="field">MCP 工具权限（一个都不勾 = 允许全部，与之前一样）</label><div class="pick-box" style="max-height:170px;overflow:auto;border:1px solid var(--separator);border-radius:10px;padding:6px 8px;margin:4px 0 8px">' + boxes + '</div>'
 }
 function agentPermFields(agent) {
   return '<div class="hint" style="margin:2px 0 6px">这里的「可读条目」是<b>范围</b>：决定这个 Agent 有资格申请哪些条目（list_secrets 也按它过滤）。它不等于已经拿到授权——分享/审批产生的是一次具体的<b>授权</b>，在「授权」页能看到。两者都满足才能读到值。</div>'

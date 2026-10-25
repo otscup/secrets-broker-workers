@@ -347,6 +347,34 @@ try {
     ? pass('A20 批量删除 posts both grants and reloads the page')
     : fail('A20', JSON.stringify({ batch: batch.length, sent, stateLoads, before }).slice(0, 240))
 
+  // A21 - while selecting, tapping a row ticks it instead of opening the grant
+  // sheet. The row used to keep its own click target, so choosing a second
+  // grant opened a dialog and lost the first tick.
+  const rowClick = await evaluate(`(async () => {
+    document.getElementById('modal').classList.add('hidden')
+    const main = document.querySelector('#grants-box .ios-main')
+    const box = main.closest('.ios-row').querySelector('.grant-select')
+    box.checked = false
+    box.dispatchEvent(new Event('change', { bubbles: true }))
+    main.click()
+    await new Promise((r) => setTimeout(r, 200))
+    return { checked: box.checked, count: document.getElementById('grants-bulk-count').textContent, modal: !document.getElementById('modal').classList.contains('hidden') }
+  })()`)
+  rowClick.checked && !rowClick.modal && /1/.test(rowClick.count)
+    ? pass('A21 tapping a row carries the tick, not the grant sheet')
+    : fail('A21', JSON.stringify(rowClick))
+
+  // A22 - the bulk bar is painted with the same neutral as every other panel.
+  // It used the legacy --btn alias, which the dark theme overrides with navy.
+  await evaluate("document.documentElement.dataset.theme = 'dark'")
+  await wait(200)
+  const bulkBg = await evaluate("getComputedStyle(document.getElementById('grants-bulk')).backgroundColor")
+  const cardBg = await evaluate("getComputedStyle(document.querySelector('#grants-box .ios-card')).backgroundColor")
+  await evaluate("document.documentElement.dataset.theme = 'light'")
+  bulkBg !== 'rgb(27, 41, 64)' && bulkBg !== cardBg
+    ? pass('A22 the bulk bar does not take the legacy navy in dark mode (' + bulkBg + ')')
+    : fail('A22', JSON.stringify({ bulkBg, cardBg }))
+
   // A11 - nothing threw while all of that happened.
   problems.length === 0 ? pass('A11 no runtime errors') : fail('A11', problems.slice(0, 3).join(' | '))
 } finally {
