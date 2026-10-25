@@ -1,3 +1,4 @@
+.codegraph/
 node_modules/
 .wrangler/
 .dev.vars
@@ -102,3 +103,5 @@ extension.crx
 !test-mf-login-and-ai-fixes.mjs
 
 !test-mf-sync.mjs
+.dev-keys.json
+.wrangler-dev/

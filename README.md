@@ -361,6 +361,35 @@ capabilities, fill tasks, materialize, audit — is local to the broker's own st
 
 ### Run the panel locally
 
+Two scripts cover it. Both keep their state on this machine only.
+
+```bash
+node scripts/dev.mjs                 # http://127.0.0.1:8787, panel password printed on start
+node scripts/seed.mjs --password local-master --demo   # once: the users row, a profile key, three items
+```
+
+`scripts/dev.mjs` generates `SESSION_KEK` and `ADMIN_PASSWORD` once into
+`.dev-keys.json` (gitignored) and reuses them, so restarting does not log you out
+or orphan the tokens the broker has wrapped with that key. The vault itself lives
+in `.wrangler-dev/` (also gitignored): a local SQLite file under `v3/d1/`.
+`--port` and `--persist` pick another instance, and each pair of values is its
+own vault — that is how two brokers were compared before sync existed.
+
+`scripts/seed.mjs` is needed because a fresh D1 has no tables: it creates the
+three NodeWarden tables, writes the user row, derives the profile key from the
+master password you pass (PBKDF2 600k, HKDF, encrypted the same way a Bitwarden
+client does), and with `--demo` unlocks the vault and creates three credentials.
+Stop `dev.mjs` before running it if SQLite is locked; the script says so.
+
+If the port answers but hangs, an older `wrangler dev` is still holding it:
+
+```powershell
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*wrangler*dev*' -or $_.Name -eq 'workerd.exe' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+### Run the panel locally (by hand)
+
 `npx wrangler dev` serves the same Worker on `http://127.0.0.1:8787`, which is
 enough to work on the panel without touching the deployed vault:
 
