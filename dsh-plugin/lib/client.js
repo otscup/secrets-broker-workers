@@ -1,4 +1,4 @@
-window.__ModuleLoader__.load({
+﻿window.__ModuleLoader__.load({
   id: "dsh-secrets-broker",
   factory: (require) => {
     var module = { exports: {} };
@@ -43,18 +43,16 @@ window.__ModuleLoader__.load({
       denied: "已拒绝"
     };
 
+    // Layout only. Every colour, size, radius and gap comes from the tokens in
+    // SB_CSS, so the settings page and the sheet cannot drift apart.
     const s = {
-      wrap: { width: "100%", maxWidth: "760px", display: "flex", flexDirection: "column", gap: "14px" },
-      intro: { margin: 0, color: "var(--dsw-alias-label-tertiary)", fontSize: "13px", lineHeight: "20px" },
-      row: { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" },
-      link: { color: "var(--dsw-alias-state-success-primary, #0f9d8a)", fontSize: "13px", textDecoration: "none" },
-      card: { border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-3)", borderRadius: "10px", padding: "12px", display: "flex", flexDirection: "column", gap: "8px" },
-      title: { margin: 0, fontSize: "13.5px", fontWeight: 600 },
-      meta: { margin: 0, color: "var(--dsw-alias-label-tertiary)", fontSize: "11.5px" },
-      buttons: { display: "flex", gap: "6px", flexWrap: "wrap" },
-      button: { border: "1px solid var(--dsw-alias-border-l2)", background: "var(--dsw-alias-bg-layer-1)", color: "var(--dsw-alias-label-primary)", font: "inherit", borderRadius: "7px", padding: "5px 10px", cursor: "pointer", fontSize: "12px" },
-      primary: { border: "0", background: "#0f9d8a", color: "#fff", font: "inherit", borderRadius: "7px", padding: "6px 11px", cursor: "pointer", fontSize: "12px" },
-      danger: { border: "1px solid var(--dsw-alias-border-l2)", background: "transparent", color: "var(--dsw-alias-state-error-primary, #c0392b)", font: "inherit", borderRadius: "7px", padding: "5px 10px", cursor: "pointer", fontSize: "12px" }
+      wrap: { display: "flex", flexDirection: "column", gap: "var(--sb-sp-4)", maxWidth: "760px" },
+      intro: { margin: 0, color: "var(--sb-label-2)", fontSize: "var(--sb-fs-cap)" },
+      row: { display: "flex", alignItems: "center", gap: "var(--sb-sp-2)", flexWrap: "wrap" },
+      card: { background: "var(--sb-card)", borderRadius: "var(--sb-r-card)", padding: "var(--sb-sp-3) var(--sb-sp-4)", display: "flex", flexDirection: "column", gap: "var(--sb-sp-2)", boxShadow: "var(--sb-shadow-card)" },
+      title: { margin: 0, fontSize: "var(--sb-fs-sub)", fontWeight: 600, color: "var(--sb-label)" },
+      meta: { margin: 0, color: "var(--sb-label-2)", fontSize: "var(--sb-fs-cap)" },
+      buttons: { display: "flex", gap: "var(--sb-sp-2)", flexWrap: "wrap", marginTop: "var(--sb-sp-1)" },
     };
 
     // ================= THEME TOKENS - the only place a colour, size, radius,
@@ -161,6 +159,11 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
 .sb-log + .sb-log { border-top: 1px solid var(--sb-sep); }
 .sb-log-time { color: var(--sb-label-3); font-family: var(--sb-font-mono); font-size: var(--sb-fs-mini); flex: 0 0 auto; }
 .sb-log-what { color: var(--sb-label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-launcher svg { width: 22px; height: 22px; display: block; }
+/* The settings section shares the sheet's tokens, so the panel and the page
+   never drift apart. No colour here: the buttons and tables below set their
+   own, and a colour on this wrapper would outrank them. */
+.sb-view { display: flex; flex-direction: column; gap: var(--sb-sp-4); width: 100%; max-width: 760px; font-size: var(--sb-fs-sub); line-height: var(--sb-lh-sub); }
 @keyframes sb-fade { from { opacity: 0 } to { opacity: 1 } }
 @keyframes sb-sheet-in { from { opacity: 0; transform: translateY(18px) scale(.94); border-radius: 28px } to { opacity: 1; transform: none; border-radius: var(--sb-r-sheet) } }
 @keyframes sb-roll { from { transform: translateY(60%); opacity: .2 } to { transform: translateY(0); opacity: 1 } }
@@ -173,6 +176,23 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
       style.id = 'sb-theme';
       style.textContent = SB_CSS;
       document.head.appendChild(style);
+    }
+
+    // The lock the launcher shows: same stroke weight and corner treatment as
+    // every other icon in the sheet, coloured by the current text colour.
+    function lockGlyph() {
+      const NS = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(NS, 'svg');
+      svg.setAttribute('viewBox', '0 0 24 24');
+      svg.setAttribute('aria-hidden', 'true');
+      for (const [name, value] of Object.entries({ fill: 'none', stroke: 'currentColor', 'stroke-width': '1.7', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' })) svg.setAttribute(name, value);
+      const shackle = document.createElementNS(NS, 'path');
+      shackle.setAttribute('d', 'M8.25 10.5V7.4a3.75 3.75 0 0 1 7.5 0v3.1');
+      const body = document.createElementNS(NS, 'rect');
+      for (const [name, value] of Object.entries({ x: '4.75', y: '10.5', width: '14.5', height: '9.25', rx: '2.75' })) body.setAttribute(name, value);
+      svg.appendChild(shackle);
+      svg.appendChild(body);
+      return svg;
     }
 
     function View({ t }) {
@@ -192,6 +212,7 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
         }).catch((error) => setState({ status: "error", error: String(error.message || error), pending: [], requests: [] }));
       };
       react.useEffect(() => {
+        ensureCss();
         load();
         const timer = setInterval(load, 15000);
         return () => clearInterval(timer);
@@ -205,8 +226,8 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
       const children = [
         react.createElement("p", { style: s.intro }, t("intro")),
         react.createElement("div", { style: s.row },
-          react.createElement("a", { href: "https://sb.otscup.com", target: "_blank", rel: "noreferrer", style: s.link }, t("open")),
-          react.createElement("button", { type: "button", style: s.button, onClick: load }, t("retry"))
+          react.createElement("a", { className: "sb-btn sb-btn--primary", href: "https://sb.otscup.com", target: "_blank", rel: "noreferrer" }, t("open")),
+          react.createElement("button", { type: "button", className: "sb-btn", onClick: load }, t("retry"))
         )
       ];
       if (state.status === "loading") children.push(react.createElement("p", { style: s.intro }, t("loading")));
@@ -223,10 +244,10 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
           targetLine ? react.createElement("p", { style: s.meta }, targetLine) : null,
           react.createElement("p", { style: s.meta }, t("created") + ": " + (entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "")),
           react.createElement("div", { style: s.buttons },
-            react.createElement("button", { type: "button", style: s.primary, onClick: () => decide(entry.id, "once") }, t("approveOnce")),
-            react.createElement("button", { type: "button", style: s.button, onClick: () => decide(entry.id, "24h") }, t("approve24")),
-            react.createElement("button", { type: "button", style: s.button, onClick: () => decide(entry.id, "always") }, t("approveAlways")),
-            react.createElement("button", { type: "button", style: s.danger, onClick: () => decide(entry.id, "deny") }, t("deny"))
+            react.createElement("button", { type: "button", className: "sb-btn sb-btn--primary", onClick: () => decide(entry.id, "once") }, t("approveOnce")),
+            react.createElement("button", { type: "button", className: "sb-btn", onClick: () => decide(entry.id, "24h") }, t("approve24")),
+            react.createElement("button", { type: "button", className: "sb-btn", onClick: () => decide(entry.id, "always") }, t("approveAlways")),
+            react.createElement("button", { type: "button", className: "sb-btn sb-btn--danger", onClick: () => decide(entry.id, "deny") }, t("deny"))
           )
         ));
       }
@@ -235,7 +256,7 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
           react.createElement("p", { style: s.title }, "需要补充密钥：" + (entry.name || "")),
           react.createElement("p", { style: s.meta }, (entry.agent || "Agent") + (entry.description ? " · " + entry.description : "")),
           react.createElement("div", { style: s.buttons },
-            react.createElement("a", { style: s.primary, href: "https://sb.otscup.com/connect?id=" + encodeURIComponent(entry.id), target: "_blank", rel: "noreferrer" }, "打开连接器填写")
+            react.createElement("a", { className: "sb-btn sb-btn--primary", href: "https://sb.otscup.com/connect?id=" + encodeURIComponent(entry.id), target: "_blank", rel: "noreferrer" }, "打开连接器填写")
           )
         ));
       }
@@ -243,6 +264,8 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
       if (usage && usage.ok !== false) {
         const agents = Array.isArray(usage.agents) ? usage.agents : [];
         const caps = Array.isArray(usage.capabilities) ? usage.capabilities : [];
+        const cell = (value, key) => react.createElement("td", { key }, value);
+        const head = (...labels) => react.createElement("thead", null, react.createElement("tr", null, labels.map((label) => react.createElement("th", { key: label }, label))));
         children.push(react.createElement("p", { style: s.title }, "谁在用我的密钥（最近 " + (usage.windowHours || 24) + " 小时）"));
         if (usage.requireClassification === true) {
           children.push(react.createElement("p", { style: s.meta }, "未分类的凭据已禁止 Agent 读取明文。"));
@@ -250,19 +273,36 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
         if (agents.length === 0) {
           children.push(react.createElement("p", { style: s.intro }, "这段时间没有读取记录。"));
         } else {
-          const rows = agents.map((agent) => react.createElement("div", { key: agent.agent, style: s.card },
-            react.createElement("p", { style: s.title }, agent.agent + " · " + agent.reads + " 次读取" + (agent.denied ? " · " + agent.denied + " 次被拒" : "")),
-            react.createElement("p", { style: s.meta }, Object.entries(agent.items || {}).map(([name, count]) => name + " ×" + count).join("，") + (agent.lastAt ? " · 最近 " + new Date(agent.lastAt).toLocaleString() : ""))
+          children.push(react.createElement("div", { style: s.card },
+            react.createElement("table", { className: "sb-table" },
+              head("Agent", "读取", "被拒", "读过的条目", "最近"),
+              react.createElement("tbody", null, agents.map((agent) => react.createElement("tr", { key: agent.agent },
+                cell(agent.agent, "agent"),
+                cell(String(agent.reads ?? 0), "reads"),
+                cell(String(agent.denied ?? 0), "denied"),
+                cell(Object.entries(agent.items || {}).map(([name, count]) => name + " ×" + count).join("，") || "—", "items"),
+                cell(agent.lastAt ? new Date(agent.lastAt).toLocaleString() : "—", "last")
+              )))
+            )
           ));
-          children.push(...rows);
         }
         if (caps.length) {
-          const list = caps.map((cap) => react.createElement("p", { key: cap.agent + cap.name + cap.action, style: s.meta },
-            cap.agent + " → " + cap.name + " · " + cap.action + (cap.usesLeft == null ? " · 不限次数" : " · 剩余 " + cap.usesLeft + "/" + cap.maxUses) + (cap.expiresAt ? " · 到期 " + new Date(cap.expiresAt).toLocaleString() : " · 永久")));
-          children.push(react.createElement("p", { style: s.title }, "当前有效授权"), ...list);
+          children.push(react.createElement("p", { style: s.title }, "当前有效授权"));
+          children.push(react.createElement("div", { style: s.card },
+            react.createElement("table", { className: "sb-table" },
+              head("Agent", "条目", "动作", "剩余次数", "到期"),
+              react.createElement("tbody", null, caps.map((cap) => react.createElement("tr", { key: cap.agent + cap.name + cap.action },
+                cell(cap.agent, "agent"),
+                cell(cap.name, "name"),
+                cell(cap.action, "action"),
+                cell(cap.usesLeft == null ? "不限" : cap.usesLeft + "/" + cap.maxUses, "uses"),
+                cell(cap.expiresAt ? new Date(cap.expiresAt).toLocaleString() : "永久", "expires")
+              )))
+            )
+          ));
         }
       }
-      return react.createElement("div", { style: s.wrap }, ...children);
+      return react.createElement("div", { className: "sb-scope sb-view", style: s.wrap }, ...children);
     }
 
     function startPopup(ctx) {
@@ -332,7 +372,10 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
         launcher.type = 'button';
         launcher.title = 'Secrets Broker';
         launcher.className = 'sb-launcher sb-scope';
-        launcher.textContent = '🔐';
+        // A stroked lock at the sheet's icon weight, instead of an emoji whose
+        // shape depends on the platform font.
+        if (typeof document.createElementNS === 'function') launcher.appendChild(lockGlyph());
+        else launcher.textContent = '🔐';
         launcher.onclick = () => {
           if (overlay) { close(); return }
           // A dismissal only silences the panel; opening it deliberately shows
