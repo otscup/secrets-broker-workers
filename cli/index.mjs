@@ -30,6 +30,7 @@ import { login } from './oauth.mjs'
 import { runMaterialize } from './materialize.mjs'
 import { runSync } from './sync.mjs'
 import { pair, pairRequest, pairWait, unlock, count, loadDevice, pull, push } from './vault.mjs'
+import { createLocalServer } from './vaulttools.mjs'
 import { detect, adapters, plan, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
@@ -64,6 +65,7 @@ Usage
   secrets-broker pair --url URL [--cookie C]
                                  pair this machine with a v2 vault, keep the key locally
                                  (no cookie: prints a device code to approve in a browser)
+  secrets-broker serve --vault   answer MCP from the vault this machine holds
   secrets-broker unlock          check the stored key against the vault fingerprint
   secrets-broker pull [--since N] [--to FILE]
                                  decrypt the vault into a file (mode 0600)
@@ -408,7 +410,42 @@ async function main() {
   return serve()
 }
 
+// Answer from the vault this machine already holds: one pull at startup, no
+// server round-trip per call. The pull is where the key is used, so a broker
+// that is down or locked cannot stop it.
+async function serveLocalVault() {
+  let pulled
+  try {
+    pulled = await pull({ since: 0 })
+  } catch (error) {
+    log('cannot use the local vault:', String(error?.message ?? error))
+    return 1
+  }
+  const server = createLocalServer({ vault: pulled.items, revision: pulled.revision })
+  log('local vault:', server.items.length, 'items, revision =', pulled.revision)
+
+  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity })
+  let chain = Promise.resolve()
+  rl.on('line', (line) => {
+    if (!line.trim()) return
+    chain = chain.then(() => {
+      let message
+      try {
+        message = JSON.parse(line)
+      } catch {
+        log('client sent invalid JSON')
+        return
+      }
+      const response = server.handle(message)
+      if (response.body) process.stdout.write(response.body + '\n')
+    }).catch((error) => log('line error:', String(error?.message ?? error)))
+  })
+  rl.on('close', () => chain.finally(() => process.exit(0)))
+  return new Promise(() => {})
+}
+
 function serve() {
+  if (process.argv.includes('--vault')) return serveLocalVault()
   const url = brokerUrl()
   const bridge = createBridge({ brokerUrl: url, staticToken: process.env.BROKER_TOKEN || '' })
   log('bridge ready; broker =', url, '; token store =', describe().store)

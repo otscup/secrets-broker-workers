@@ -27,6 +27,7 @@
     "test:v2-pushpull": "node test-mf-v2-pushpull.mjs",
     "test:v2-paircode": "node test-mf-v2-paircode.mjs",
     "test:v2-cli": "node test-cli-vault.mjs",
+    "test:local-tools": "node test-local-tools.mjs",
     "test:sync": "node test-mf-sync.mjs",
     "test:materialize": "node test-mf-materialize.mjs",
     "test:explain": "node test-mf-explain.mjs",

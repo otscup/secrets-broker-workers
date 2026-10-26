@@ -173,6 +173,8 @@ jobs:
         run: npm run test:v2-api
       - name: v2 CLI pairing (ECDH wrap both sides)
         run: npm run test:v2-cli
+      - name: local vault tools (MCP from the rows this machine holds)
+        run: npm run test:local-tools
       - name: v2 rekey (rotation, tombstone scrub, device re-signing)
         run: npm run test:v2-rekey
       - name: v2 device code pairing (short code, poll token, one-time redeem)

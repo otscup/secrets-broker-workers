@@ -7065,7 +7065,17 @@ export default {
       const keyCheck = userRow?.key ? await sha256Base64(String(userRow.key)) : ''
       const live = items.filter((row) => !row?.deletedAt)
       await addAudit(env, { event: 'sync.pull', agent: device ? 'device:' + device.name : 'admin', device: device?.id, count: live.length, account })
-      return json({ ok: true, account, count: live.length, trashed: items.length - live.length, keyCheck, items })
+      // Superseded by the v2 revision cursor, which carries tombstones and needs
+      // no NodeWarden key on this side. Kept one release so an old broker can
+      // still pull while both ends move over.
+      return new Response(JSON.stringify({ ok: true, account, count: live.length, trashed: items.length - live.length, keyCheck, items, deprecated: true, replacement: '/api/v2/items?since=<revision>' }), {
+        headers: {
+          'content-type': 'application/json',
+          deprecation: 'true',
+          link: '</api/v2/items>; rel="successor-version"',
+          warning: '299 - "deprecated: use /api/v2/items?since=<revision>"',
+        },
+      })
     }
 // MCP clients show annotations and titles in their approval prompts; without
 // them a destructive call looks the same as a read.

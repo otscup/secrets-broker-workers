@@ -401,6 +401,17 @@ const login = async (mf) => {
   peer.close()
 }
 
+// S21 - the old pull path says it is old, so a client can move before it dies.
+{
+  const mf = await scenario({ SYNC_ENABLED: '1' })
+  const r = await mf.dispatchFetch('https://broker.test/sync/pull', { headers: { authorization: 'Bearer ' + DEVICE_TOKEN } })
+  const body = await r.json().catch(() => ({}))
+  r.status === 200 && body.deprecated === true && r.headers.get('deprecation') === 'true' && /successor-version/.test(String(r.headers.get('link')))
+    ? pass('S21 the old pull is marked deprecated and points at /api/v2/items')
+    : fail('S21', JSON.stringify({ status: r.status, deprecated: body.deprecated, header: r.headers.get('deprecation'), link: r.headers.get('link') }))
+  await mf.dispose()
+}
+
 const passed = results.filter((r) => r.ok).length
 console.log(String.fromCharCode(10) + '==== sync pull ' + passed + '/' + results.length + ' passed ====')
 if (passed !== results.length) process.exit(1)
