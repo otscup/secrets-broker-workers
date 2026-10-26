@@ -77,7 +77,8 @@ Usage
                                  keep the vault decrypted in memory and answer
                                  MCP on 127.0.0.1, so each agent start is instant
   secrets-broker unlock          check the stored key against the vault fingerprint
-  secrets-broker pull [--since N] [--to FILE]
+  secrets-broker pull [--since N] [--to FILE] [--offline]
+                                 open the vault here; --offline answers from the local copy
                                  decrypt the vault into a file (mode 0600)
   secrets-broker push --from FILE
                                  seal that file again and upload it
@@ -115,11 +116,22 @@ Example client config (Claude Desktop, Codex, any stdio MCP client)
   (or just run: node cli/index.mjs agents connect --apply)
 `
 
+function age(iso) {
+  if (!iso) return 'never'
+  const seconds = Math.round((Date.now() - Date.parse(iso)) / 1000)
+  if (!Number.isFinite(seconds)) return 'unknown'
+  if (seconds < 90) return `${seconds}s ago`
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`
+  if (seconds < 172800) return `${Math.round(seconds / 3600)}h ago`
+  return `${Math.round(seconds / 86400)}d ago`
+}
+
 async function status() {
   const url = brokerUrl()
   const store = describe()
   const record = loadRecord()
   const token = loadToken()
+  const cached = cacheStatus()
   const lines = [
     `broker: ${url}`,
     `token store: ${store.store}${store.store === 'keychain' ? ` (${store.detail})` : ''}`,
@@ -127,6 +139,9 @@ async function status() {
     process.env.BROKER_TOKEN ? 'token source: BROKER_TOKEN (static)' : null,
     record?.expiresAt ? `expires: ${new Date(record.expiresAt).toISOString()}${token ? '' : ' (expired)'}` : 'expires: unknown',
     token ? 'status: logged in' : 'status: not logged in',
+    cached.rows
+      ? `local copy: ${cached.rows} items at revision ${cached.revision}, saved ${age(cached.savedAt)}`
+      : 'local copy: none (run `secrets-broker pull` while online)',
   ].filter(Boolean)
   process.stdout.write(lines.join('\n') + '\n')
   return token ? 0 : 1
@@ -452,12 +467,13 @@ async function main() {
       return index >= 0 ? argv[index + 1] : ''
     }
     try {
-      const pulled = await pull({ since: Number(flag('--since') || 0) })
+      const pulled = await pull({ since: Number(flag('--since') || 0), offline: argv.includes('--offline') })
       const live = pulled.items.filter((item) => !item.deleted)
       const broken = live.filter((item) => !item.payload)
       const to = flag('--to') || ''
       if (to) writeFileSync(to, JSON.stringify({ url: pulled.url, revision: pulled.revision, items: pulled.items }, null, 2), { mode: 0o600 })
       process.stdout.write(`${live.length} items at revision ${pulled.revision}${to ? ', written to ' + to : ''}\n`)
+      if (pulled.stale) process.stdout.write(`from the local copy, saved ${age(pulled.stale.savedAt)} (${pulled.stale.reason})\n`)
       if (broken.length) process.stdout.write(`${broken.length} rows did not open with this key (they belong to another vault key)\n`)
       return 0
     } catch (error) {

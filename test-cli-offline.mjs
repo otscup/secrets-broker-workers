@@ -13,9 +13,9 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-offline-'))
 process.env.BROKER_HOME = home
 const results = []
 
-function check(name, fn) {
+async function check(name, fn) {
   try {
-    fn()
+    await fn()
     results.push({ name, ok: true })
     console.log('PASS ' + name)
   } catch (error) {
@@ -58,20 +58,20 @@ try {
   globalThis.fetch = realFetch
 }
 
-check('O1 an offline pull serves the local copy and says it is old', () => {
+await check('O1 an offline pull serves the local copy and says it is old', () => {
   assert.equal(offline.items.length, 1)
   assert.equal(offline.items[0].payload.secret, 'sk-offline-123456')
   assert.ok(offline.stale, 'the reply must be marked stale')
   assert.match(offline.stale.reason, /ENOTFOUND/)
 })
 
-check('O2 the cached row still opens with the key on this machine', () => {
+await check('O2 the cached row still opens with the key on this machine', () => {
   const loaded = loadPull({ since: 0 })
   assert.equal(loaded.rows.length, 1)
   assert.ok(!JSON.stringify(loaded.rows).includes('sk-offline-123456'), 'the copy holds ciphertext only')
 })
 
-check('O3 a revoked device hears the error instead of an old copy', async () => {
+await check('O3 a revoked device hears the error instead of an old copy', async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })
   try {
     await pull({ since: 0 })
@@ -80,6 +80,30 @@ check('O3 a revoked device hears the error instead of an old copy', async () => 
     assert.match(String(error.message), /401/)
   } finally {
     globalThis.fetch = realFetch
+  }
+})
+
+let attempts = 0
+await check('O4 --offline answers from the copy without trying the network', async () => {
+  globalThis.fetch = async () => { attempts += 1; throw new Error('the network must not be touched') }
+  try {
+    const local = await pull({ offline: true })
+    assert.equal(attempts, 0, 'offline pull touched the network')
+    assert.equal(local.items[0].payload.secret, 'sk-offline-123456')
+    assert.equal(local.stale.reason, 'offline')
+  } finally {
+    globalThis.fetch = realFetch
+  }
+})
+
+await check('O5 --offline with no copy yet says so instead of pretending', async () => {
+  const { clearCache } = await import('./cli/cache.mjs')
+  clearCache()
+  try {
+    await pull({ offline: true })
+    throw new Error('an empty copy should not answer')
+  } catch (error) {
+    assert.match(String(error.message), /no local copy yet/)
   }
 })
 

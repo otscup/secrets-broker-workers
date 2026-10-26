@@ -114,26 +114,34 @@ export async function unlock() {
 
 // Pull ciphertext and open it with the key this machine already holds. What
 // comes back is plaintext on disk, so the caller decides where it goes.
-export async function pull({ since = 0 } = {}) {
+export async function pull({ since = 0, offline = false } = {}) {
   const { dek, record } = await openLocal()
-  let body
-  try {
-    const response = await fetch(record.url + '/api/v2/items?since=' + Number(since || 0), { headers: { authorization: 'Bearer ' + record.token } })
-    const text = await response.text()
-    if (!response.ok) {
-      const failure = new Error('pull failed (' + response.status + '): ' + text.slice(0, 300))
-      failure.status = response.status
-      throw failure
-    }
-    body = JSON.parse(text)
-    // Keep a copy of the ciphertext, so a restart with no network still answers.
-    try { savePull({ url: record.url, revision: body.revision, rows: body.items ?? [] }) } catch {}
-  } catch (error) {
-    // A revoked device must hear about it, not quietly read an old copy.
-    if (error?.status === 401 || error?.status === 403) throw error
+  const fromCopy = (reason) => {
     const cached = loadPull({ since })
-    if (!cached.rows.length) throw error
-    body = { revision: cached.revision, items: cached.rows, stale: { savedAt: cached.savedAt, reason: String(error?.message ?? error).slice(0, 200) } }
+    if (!cached.rows.length) return null
+    return { revision: cached.revision, items: cached.rows, stale: { savedAt: cached.savedAt, reason } }
+  }
+  // Air-gapped: answer from the last copy, never touching the network.
+  let body = offline ? fromCopy('offline') : null
+  if (offline && !body) throw new Error('no local copy yet; run `secrets-broker pull` once while online')
+  if (!body) {
+    try {
+      const response = await fetch(record.url + '/api/v2/items?since=' + Number(since || 0), { headers: { authorization: 'Bearer ' + record.token } })
+      const text = await response.text()
+      if (!response.ok) {
+        const failure = new Error('pull failed (' + response.status + '): ' + text.slice(0, 300))
+        failure.status = response.status
+        throw failure
+      }
+      body = JSON.parse(text)
+      // Keep a copy of the ciphertext, so a restart with no network still answers.
+      try { savePull({ url: record.url, revision: body.revision, rows: body.items ?? [] }) } catch {}
+    } catch (error) {
+      // A revoked device must hear about it, not quietly read an old copy.
+      if (error?.status === 401 || error?.status === 403) throw error
+      body = fromCopy(String(error?.message ?? error).slice(0, 200))
+      if (!body) throw error
+    }
   }
   const items = []
   for (const row of body.items ?? []) {
