@@ -528,6 +528,24 @@ secrets-broker exec --env GH_USER=GitHub@username --env GH_TOKEN=GitHub@password
 - The value exists only while that child runs. Nothing is written to disk, and
   the broker's own log never sees it. The child inherits your normal environment.
 
+### Stop a commit that carries a vault value
+
+An agent that reads a key and then writes a test file is one `git add` away from
+publishing it. The guard compares what you are about to commit against the values
+this vault holds, so it can only fire on a real secret:
+
+```bash
+secrets-broker guard --install      # writes .git/hooks/pre-commit in this repo
+secrets-broker guard                # what the hook runs; exits 1 on a hit
+```
+
+It matches the vault's own `value`/`password` strings (8 characters or longer),
+never a "looks like a key" pattern, so a normal commit passes. With no local copy
+of the vault it says so and lets the commit through rather than pretending it
+checked; run `pull` once online to give it something to compare against. Bypass a
+false alarm with `git commit --no-verify`, and replace a hook you already have
+with `--force`.
+
 ## Classifying a credential
 
 Every credential is labelled **api**, **web** or unclassified, shown next to its

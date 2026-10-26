@@ -34,6 +34,7 @@ import { createLocalServer } from './vaulttools.mjs'
 import { buildEnv, runExec } from './exec.mjs'
 import { scan, defaultTargets, formatFindings, mask, suggestName } from './scan.mjs'
 import { cacheStatus, clearCache } from './cache.mjs'
+import { installHook, findCommittedSecrets, valuesFrom, formatGuard } from './guard.mjs'
 import { makeDaemon } from './daemon.mjs'
 import { detect, adapters, plan, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
@@ -87,6 +88,7 @@ Usage
   secrets-broker cache [--clear]
                                  show (or drop) the local ciphertext copy the daemon falls back to
   secrets-broker scan [--path FILE] [--json]
+secrets-broker guard [--install] [--repo DIR]   block a commit that carries a vault value
                                  list the credentials still sitting in plain files
   secrets-broker put <name> [--stdin]
                                  store one in the vault (still needs approval)
@@ -192,6 +194,38 @@ async function main() {
     }
     process.stdout.write(formatFindings(findings))
     return 0
+  }
+
+  if (command === 'guard') {
+    const flag = (name) => {
+      const index = argv.indexOf(name)
+      return index >= 0 ? String(argv[index + 1] ?? '') : ''
+    }
+    const repo = flag('--repo') || process.cwd()
+    try {
+      if (argv.includes('--install')) {
+        const installed = installHook({ cwd: repo, cliPath: path.resolve(process.argv[1] || 'cli/index.mjs'), force: argv.includes('--force') })
+        process.stdout.write(`pre-commit installed: ${installed.file}\n`)
+        return 0
+      }
+      let values = []
+      try {
+        const pulled = await pull({ offline: true })
+        values = valuesFrom(pulled.items)
+      } catch (error) {
+        // No local copy means nothing to compare against; say so instead of
+        // pretending the commit was checked.
+        process.stdout.write('no local vault copy yet, so no value could be compared (' + String(error?.message ?? error).slice(0, 140) + ')\n')
+        return 0
+      }
+      const findings = findCommittedSecrets({ cwd: repo, values })
+      if (!findings.length) return 0
+      process.stderr.write(formatGuard(findings))
+      return 1
+    } catch (error) {
+      process.stderr.write(String(error.message ?? error) + '\n')
+      return 1
+    }
   }
 
   if (command === 'put') {
