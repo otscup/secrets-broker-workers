@@ -812,7 +812,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
       <div class="row" style="margin-top:12px"><button class="primary" id="ai-save">保存 AI 设置</button><button id="ai-test">测试</button></div>
       <div class="status" id="ai-status"></div>
       </div></div>
-    <div class="card collapsible collapsed" id="card-notify-channels"><h2 class="card-toggle" data-collapse="card-notify-channels">通知渠道 <span class="card-caret">▸</span></h2><div class="hint">待批准请求会推送到这里。留空的 token 表示保留原值。关掉「启用此渠道」只停止自动推送，「发送测试通知」仍会发到所有已配置渠道。</div>
+    <div class="card collapsible collapsed" id="card-notify-channels"><h2 class="card-toggle" data-collapse="card-notify-channels">通知渠道 <span class="card-caret">▸</span></h2><div class="hint">待批准请求会推送到这里。留空的 token 表示保留原值。关掉「启用此渠道」后，自动推送和「发送测试通知」都不会发到这个渠道。</div>
       <div class="card-body">
       <div class="grid2" style="margin-top:10px">
         <div><h2 style="font-size:13px">Telegram</h2><label class="chk"><input type="checkbox" id="tg-enabled"> 启用此渠道</label><label class="field">Bot Token</label><input id="tg-token" type="password" placeholder="留空保留原值"><label class="field">Chat ID</label><input id="tg-chat" placeholder="例如 123456789"><div class="hint" id="tg-status"></div></div>
@@ -1268,8 +1268,8 @@ async function openAgentCreate() {
     '<label class="field">名称</label><input id="ac-name" placeholder="如 dsh">' +
     '<label class="field">显示名（可选）</label><input id="ac-alias" placeholder="便于识别的名字">' +
     '<label class="field">备注（可选）</label><input id="ac-note" placeholder="用途说明">' +
-    '<label class="field">可读条目（勾选，不勾=无权限）</label>' + pickListHtml('ac-allow', knownItemNames(), [], '密钥库里还没有条目，先去「密钥」页新建。') +
-    '<label class="field">可读分组（勾选，不勾=不限）</label>' + pickListHtml('ac-groups', knownGroups(), [], '还没有任何分组。分组在新增条目时填写，或在条目菜单里改。') +
+    '<label class="field">可申请条目（勾选，不勾=无权限）</label>' + pickListHtml('ac-allow', knownItemNames(), [], '密钥库里还没有条目，先去「密钥」页新建。') +
+    '<label class="field">可申请分组（勾选，不勾=不限）</label>' + pickListHtml('ac-groups', knownGroups(), [], '还没有任何分组。分组在新增条目时填写，或在条目菜单里改。') +
     '<label class="chk" style="margin-top:8px"><input type="checkbox" id="ac-allowall"> 允许全部条目</label>' +
     '<label class="chk" style="margin-top:8px"><input type="checkbox" id="ac-write"> 允许写入（可调 /agent/items/save）</label>' +
     '<div class="row" style="margin-top:14px"><button class="primary" id="ac-create">创建</button></div>' +
@@ -1305,7 +1305,7 @@ function openAgentDetail(name) {
     '<div class="agent-detail-grid" style="margin-top:14px">' +
     '<div><span>账户</span><b>' + esc(agent.account || '-') + '</b></div>' +
     '<div><span>连接方式</span><b>' + (agent.oauth ? 'OAuth' : 'Token') + '</b></div>' +
-    '<div><span>可读范围</span><b>' + esc(scope) + '</b></div>' +
+    '<div><span>可申请范围</span><b>' + esc(scope) + '</b></div>' +
     '<div><span>写入权限</span><b>' + (agent.write ? '允许' : '不允许') + '</b></div>' +
     '<div><span>授权到期</span><b>' + esc(expiry) + '</b></div>' +
     '<div><span>最近读取记录</span><b>' + esc(relativeTime(last)) + '</b></div>' +
@@ -3287,7 +3287,7 @@ function openBulkShare() {
     const checked = single ? (app.data.grants || []).some((grant) => !grant.revokedAt && grant.agent === agent.name && grant.name === names[0]) : names.every((name) => (app.data.grants || []).some((grant) => !grant.revokedAt && grant.agent === agent.name && grant.name === name))
     return '<label class="chk" style="display:flex;width:100%"><input type="checkbox" class="bulk-agent" value="' + esc(agent.name) + '" ' + (checked ? 'checked' : '') + '> ' + esc(agent.alias || agent.name) + (agent.oauth ? ' <span class="pill">OAuth</span>' : '') + '</label>'
   }).join('')
-  openModal('批量分享 / 同步（' + names.length + ' 个条目）', '<div class="hint">勾选的 Agent 会获得这些条目；勾选“取消未勾选分享”后，未勾选 Agent 的现有分享会被撤销。</div><div style="max-height:220px;overflow:auto;margin-top:8px">' + (boxes || '<div class="hint">没有 Agent</div>') + '</div><label class="field">跨账户目标文件夹（跨账户时必填）</label><input id="bulk-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="bulk-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="bulk-reads" type="number" min="1"><label class="chk"><input type="checkbox" id="bulk-scope" checked> 同时把这些条目加入 Agent 的可读范围</label><div class="hint" style="margin:2px 0 0 22px">分享本身只产生一次「授权」。Agent 还要在范围内才看得到这个条目，所以默认一起勾上；取消勾选就只授权、不改范围。</div><label class="chk"><input type="checkbox" id="bulk-revoke" ' + (single ? 'checked' : '') + '> 取消未勾选 Agent 的分享</label><div class="row" style="margin-top:12px"><button class="primary" id="bulk-confirm">确定</button></div>')
+  openModal('批量分享 / 同步（' + names.length + ' 个条目）', '<div class="hint">勾选的 Agent 会获得这些条目；勾选“取消未勾选分享”后，未勾选 Agent 的现有分享会被撤销。</div><div style="max-height:220px;overflow:auto;margin-top:8px">' + (boxes || '<div class="hint">没有 Agent</div>') + '</div><label class="field">跨账户目标文件夹（跨账户时必填）</label><input id="bulk-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="bulk-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="bulk-reads" type="number" min="1"><label class="chk"><input type="checkbox" id="bulk-scope" checked> 同时把这些条目加入 Agent 的可申请范围</label><div class="hint" style="margin:2px 0 0 22px">分享本身只产生一次「授权」。Agent 还要在范围内才看得到这个条目，所以默认一起勾上；取消勾选就只授权、不改范围。</div><label class="chk"><input type="checkbox" id="bulk-revoke" ' + (single ? 'checked' : '') + '> 取消未勾选 Agent 的分享</label><div class="row" style="margin-top:12px"><button class="primary" id="bulk-confirm">确定</button></div>')
   $('bulk-confirm').onclick = async () => {
     const agentsSelected = [...document.querySelectorAll('.bulk-agent:checked')].map((box) => box.value)
     try {
@@ -3516,9 +3516,9 @@ function mcpToolFields(agent) {
   return '<label class="field">MCP 工具权限（一个都不勾 = 允许全部，与之前一样）</label><div class="pick-box" style="max-height:170px;overflow:auto;border:1px solid var(--separator);border-radius:10px;padding:6px 8px;margin:4px 0 8px">' + boxes + '</div>'
 }
 function agentPermFields(agent) {
-  return '<div class="hint" style="margin:2px 0 6px">这里的「可读条目」是<b>范围</b>：决定这个 Agent 有资格申请哪些条目（list_secrets 也按它过滤）。它不等于已经拿到授权——分享/审批产生的是一次具体的<b>授权</b>，在「授权」页能看到。两者都满足才能读到值。</div>'
-    + '<label class="field">可读条目（范围内的条目，不勾=看不到也申请不了）</label>' + pickListHtml('ma-allow', knownItemNames(), agentPermAllow(agent), '密钥库里还没有条目。')
-    + '<label class="field">可读分组（范围内按分组放行）</label>' + pickListHtml('ma-groups', knownGroups(), agent.groups || [], '还没有任何分组。')
+  return '<div class="hint" style="margin:2px 0 6px">这里的「可申请条目」是<b>范围</b>：决定这个 Agent 有资格申请哪些条目（list_secrets 也按它过滤）。它不等于已经拿到授权——分享/审批产生的是一次具体的<b>授权</b>，在「授权」页能看到。两者都满足才能读到值。</div>'
+    + '<label class="field">可申请条目（范围内的条目，不勾=看不到也申请不了）</label>' + pickListHtml('ma-allow', knownItemNames(), agentPermAllow(agent), '密钥库里还没有条目。')
+    + '<label class="field">可申请分组（范围内按分组放行）</label>' + pickListHtml('ma-groups', knownGroups(), agent.groups || [], '还没有任何分组。')
     + mcpToolFields(agent)
     + agentActionFields(agent)
 }

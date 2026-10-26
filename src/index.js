@@ -3808,8 +3808,8 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     const autoRuleLive = autoRuleActive(state, agentName)
     if (!decision.grantEligible && !decision.legacy && !noApprovalInScope && !autoRuleLive) {
       const why = !itemId ? '当前账户里没有名为「' + name + '」的条目（名字必须与面板完全一致，空格也算）'
-        : !agentInScope(agent, state.itemGroups, name) ? '该条目不在 Agent 的可读范围内'
-        : '在可读范围内，但缺少这条授权'
+        : !agentInScope(agent, state.itemGroups, name) ? '该条目不在 Agent 的可申请范围内'
+        : '在可申请范围内，但缺少这条授权'
       // Notify at most once per (agent, item, action) every 30 minutes. An Agent
       // that retries in a loop must not turn into a stream of push messages; the
       // console list still records every attempt with its count.
@@ -4111,8 +4111,8 @@ function oauthConsentPage(origin, params, client, catalog = { items: [], groups:
     '<form method="post" action="/oauth/authorize">' + field('client_id') + field('redirect_uri') + field('state') + field('code_challenge') + field('code_challenge_method') +
     firstVisit + field('scope') +
     '<p class="hint">Scope: ' + escape(params.get('scope') ?? 'secrets.read') + ' · 勾选只给它申请和读取的资格，值本身还要看同类里的明文开关。不勾则暂时不给任何条目。</p>' +
-    '<div class="group-head">可读条目</div>' + boxes('grant_items', catalog.items) +
-    '<div class="group-head">可读分组</div>' + boxes('grant_groups', catalog.groups) +
+    '<div class="group-head">可申请条目</div>' + boxes('grant_items', catalog.items) +
+    '<div class="group-head">可申请分组</div>' + boxes('grant_groups', catalog.groups) +
     '<div class="group">' +
     // Checked by default: an operator who clicks 允许 without touching anything
     // used to hand the client a token with an empty scope, and every read then
@@ -6447,7 +6447,10 @@ export default {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const body = await request.json().catch(() => ({}))
       const state = await loadState(env)
-      const notifications = state.settings?.notifications ?? {}
+      const allChannels = state.settings?.notifications ?? {}
+      // A test must follow the same switches as a real push; otherwise a muted
+      // channel still pings and the operator cannot trust the checkbox.
+      const notifications = liveChannels(allChannels)
       if (body.simulateApproval === true) {
         const id = crypto.randomUUID()
         const entry = { id, agent: 'test-agent', name: '通知测试条目', account: await vaultEmail(env, env.NODEWARDEN_DB, state), createdAt: nowIso() }
@@ -6460,16 +6463,16 @@ export default {
       const results = {}
       if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
         try { const response = await fetch(`https://api.telegram.org/bot${notifications.telegram.botToken}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: notifications.telegram.chatId, text }) }); results.telegram = response.status } catch (error) { results.telegram = String(error.message ?? error) }
-      } else results.telegram = 'not configured'
+      } else results.telegram = allChannels.telegram?.enabled === false ? 'disabled' : 'not configured'
       if (notifications.ntfy?.url && notifications.ntfy?.topic) {
         try { const response = await fetch(`${String(notifications.ntfy.url).replace(/\/$/, '')}/${encodeURIComponent(notifications.ntfy.topic)}`, { method: 'POST', headers: { title: 'Secrets Broker test' }, body: text }); results.ntfy = response.status } catch (error) { results.ntfy = String(error.message ?? error) }
-      } else results.ntfy = 'not configured'
+      } else results.ntfy = allChannels.ntfy?.enabled === false ? 'disabled' : 'not configured'
       if (notifications.gotify?.url && notifications.gotify?.token) {
         try { const response = await fetch(`${String(notifications.gotify.url).replace(/\/$/, '')}/message?token=${encodeURIComponent(notifications.gotify.token)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Secrets Broker test', message: text, priority: 5 }) }); results.gotify = response.status } catch (error) { results.gotify = String(error.message ?? error) }
-      } else results.gotify = 'not configured'
+      } else results.gotify = allChannels.gotify?.enabled === false ? 'disabled' : 'not configured'
       if (notifications.wxpush?.url && notifications.wxpush?.token) {
         try { let response; if (notifications.wxpush.format === 'json') response = await fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${notifications.wxpush.token}` }, body: JSON.stringify({ title: 'Secrets Broker test', text, content: text }) }); else { const body = new URLSearchParams({ title: 'Secrets Broker test', content: text, token: notifications.wxpush.token }); response = await fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }) } results.wxpush = response.status } catch (error) { results.wxpush = String(error.message ?? error) }
-      } else results.wxpush = 'not configured'
+      } else results.wxpush = allChannels.wxpush?.enabled === false ? 'disabled' : 'not configured'
       return json({ ok: true, results })
     }
     // The model pickers. Workers AI comes from a bundled catalogue (a binding can

@@ -2,7 +2,7 @@
 // still reach it. The first half is the bug: enabling/disabling was only a
 // checkbox in the console, the sender never read it.
 import { Miniflare } from 'miniflare'
-import { wrapWithKek, encryptStr } from './src/crypto.js'
+import { wrapWithKek, encryptStr, hmacToken } from './src/crypto.js'
 
 const results = []
 const pass = (n) => { results.push({ n, ok: true }); console.log('PASS  ' + n) }
@@ -108,6 +108,33 @@ const telegram = {
   await requestAccess()
   const hits = outbound.filter((url) => url.includes('api.telegram.org'))
   hits.length === 1 ? pass('N3 a config without the flag still sends') : fail('N3', JSON.stringify(hits))
+}
+
+// N4 - the test button must also honour the switches: a muted Telegram stays
+// silent while the enabled ntfy still gets the test.
+{
+  outbound.length = 0
+  const sessionId = 'notify-test-session'
+  const expires = Date.now() + 3600000
+  const cookieKey = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('cookie:' + SESSION_KEK)))
+  const signature = await hmacToken(cookieKey, `v2.${sessionId}.${expires}`)
+  const cookie = `broker_admin=v2.${sessionId}.${expires}.${signature}`
+  await seedState({
+    telegram: { enabled: false, botToken: 'BOT', chatId: '1' },
+    ntfy: { enabled: true, url: 'https://ntfy.test', topic: 'topic' },
+    gotify: {}, wxpush: {},
+  }, { adminSessions: { [sessionId]: { id: sessionId, expiresAt: expires, lastSeen: new Date().toISOString() } } })
+  const response = await mf.dispatchFetch('https://broker.test/api/notify/test', {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  const body = await response.json()
+  const telegramHits = outbound.filter((url) => url.includes('api.telegram.org'))
+  const ntfyHits = outbound.filter((url) => url.includes('ntfy.test'))
+  telegramHits.length === 0 && ntfyHits.length === 1 && body.results?.telegram === 'disabled'
+    ? pass('N4 the test button skips a muted channel')
+    : fail('N4', JSON.stringify({ telegramHits, ntfyHits, results: body.results }))
 }
 
 await mf.dispose()
