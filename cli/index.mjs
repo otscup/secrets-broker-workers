@@ -64,6 +64,8 @@ Usage
   secrets-broker pair --url URL --cookie C
                                  pair this machine with a v2 vault, keep the key locally
   secrets-broker unlock          check the stored key against the vault fingerprint
+  secrets-broker rekey --password P --cookie C
+                                 re-encrypt the vault under a new key (revokes what an old key could read)
   secrets-broker agents detect   list the MCP clients on this machine
   secrets-broker agents connect [--id codex] [--apply]
                                  add this broker to their config (dry run by default)
@@ -206,6 +208,52 @@ async function main() {
         name: flag('--name') || 'this computer',
       })
       process.stdout.write(`paired ${paired.name} (${paired.id})\nvault key: ${paired.fingerprint}\nstored in ${paired.file}\n`)
+      return 0
+    } catch (error) {
+      process.stderr.write(String(error.message ?? error) + '\n')
+      return 1
+    }
+  }
+
+  if (command === 'rekey') {
+    const flag = (flagName) => {
+      const index = argv.indexOf(flagName)
+      return index >= 0 ? argv[index + 1] : ''
+    }
+    const cookie = flag('--cookie') || process.env.BROKER_ADMIN_COOKIE || ''
+    const password = flag('--password') || process.env.BROKER_VAULT_PASSWORD || ''
+    if (!cookie) {
+      process.stderr.write('rekey needs an admin session: pass --cookie or BROKER_ADMIN_COOKIE\n')
+      return 2
+    }
+    if (!password) {
+      process.stderr.write('rekey needs the vault master password: pass --password or BROKER_VAULT_PASSWORD\n')
+      return 2
+    }
+    try {
+      const endpoint = String(flag('--url') || brokerUrl()).replace(/\/+$/, '') + '/api/v2/rekey'
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie },
+        body: JSON.stringify({ password }),
+      })
+      const text = await response.text()
+      if (!response.ok) {
+        process.stderr.write('rekey failed (' + response.status + '): ' + text.slice(0, 300) + '\n')
+        return 1
+      }
+      const body = JSON.parse(text)
+      process.stdout.write(`rekeyed: ${body.converted} item(s) re-encrypted, ${body.wiped} tombstone(s) scrubbed, ${body.devices} device(s) re-signed\nnew vault key: ${body.fingerprint}\n`)
+      // This machine is a device as well: fetch its re-signed envelope so the next
+      // pull does not fail against rows sealed with the new key.
+      if (loadDevice()) {
+        try {
+          await unlock()
+          process.stdout.write('this machine picked up the new key\n')
+        } catch (error) {
+          process.stderr.write('this machine could not pick up the new key: ' + String(error.message ?? error) + '\n')
+        }
+      }
       return 0
     } catch (error) {
       process.stderr.write(String(error.message ?? error) + '\n')

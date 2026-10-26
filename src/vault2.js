@@ -20,12 +20,17 @@ export async function vault2HasPasswordKeyring(env) {
 export async function vault2Init(env, password) {
   if (await vault2HasPasswordKeyring(env)) throw new Error('vault already initialised')
   const dek = await newDek()
+  const fingerprint = await dekFingerprint(dek)
   const envelope = await wrapDekPassword(dek, password)
   const at = new Date().toISOString()
-  await env.VAULT_DB.prepare('INSERT INTO keyrings (id, kind, envelope, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-    .bind(PASSWORD_KEYRING, PASSWORD_KEYRING, envelope, at, at)
-    .run()
-  return { dek, fingerprint: await dekFingerprint(dek) }
+  await env.VAULT_DB.batch([
+    env.VAULT_DB.prepare('INSERT INTO keyrings (id, kind, envelope, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .bind(PASSWORD_KEYRING, PASSWORD_KEYRING, envelope, at, at),
+    // The key generation is public: a device compares it with the one it cached to
+    // notice a rekey without asking anyone to decrypt anything.
+    env.VAULT_DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('keygen', ?)").bind(fingerprint),
+  ])
+  return { dek, fingerprint }
 }
 
 export async function vault2Unlock(env, password) {
@@ -62,7 +67,8 @@ export async function vault2List(env, since = 0) {
     deletedAt: row.deleted_at ?? null,
   }))
   const meta = await env.VAULT_DB.prepare("SELECT value FROM meta WHERE key = 'revision'").first()
-  return { items: results, revision: Number(meta?.value ?? 0) }
+  const keygen = await env.VAULT_DB.prepare("SELECT value FROM meta WHERE key = 'keygen'").first()
+  return { items: results, revision: Number(meta?.value ?? 0), keygen: keygen?.value ?? null }
 }
 
 export async function vault2Create(env, dek, item) {
@@ -115,6 +121,15 @@ export async function vault2Read(env, dek, id) {
     updatedAt: row.updated_at,
     payload: await openItem(dek, row.id, row.ciphertext),
   }
+}
+
+// A device asking for its own keyring: after a rekey this is how it picks up the
+// new envelope without anyone handing it a fresh token.
+export async function vault2DeviceSelf(env, deviceId) {
+  const row = await env.VAULT_DB.prepare('SELECT envelope FROM keyrings WHERE device_id = ? AND revoked_at IS NULL').bind(deviceId).first()
+  if (!row) return null
+  const keygen = await env.VAULT_DB.prepare("SELECT value FROM meta WHERE key = 'keygen'").first()
+  return { envelope: row.envelope, keygen: keygen?.value ?? null }
 }
 
 // A paired device holds the same data key, wrapped to its own public key. The
@@ -173,6 +188,100 @@ export async function vault2DeviceByToken(env, token) {
 }
 
 
+// Rotating the data key. A revoked device keeps whatever key it was given, so the
+// only way to take it back is to re-encrypt everything under a new one — and to
+// scrub the tombstones while we are at it, or the old key still opens every
+// deleted secret.
+//
+// The swap is staged: the new key is parked in a staging keyring (wrapped with the
+// same master password) while rows are converted chunk by chunk, and the password
+// and device keyrings only move to the new key in the closing batch. A crash
+// anywhere leaves the vault unlockable with the old key and the marker set, so a
+// retry resumes instead of leaving half the rows unreadable.
+export async function vault2Rekey(env, dekOld, password) {
+  const ring = await env.VAULT_DB.prepare('SELECT envelope FROM keyrings WHERE id = ? AND revoked_at IS NULL').bind(PASSWORD_KEYRING).first()
+  if (!ring) throw new Error('vault has no password keyring')
+  // Prove the password opens the current ring: rekeying under a password we cannot
+  // verify would mint a key its owner could not unlock.
+  let proven = null
+  try {
+    proven = await unwrapDekPassword(ring.envelope, password)
+  } catch {
+    throw new Error('wrong password: this does not open the vault')
+  }
+  if (await dekFingerprint(proven) !== await dekFingerprint(dekOld)) throw new Error('this password does not open the key that is currently in use')
+
+  const now = () => new Date().toISOString()
+  const marker = await env.VAULT_DB.prepare("SELECT value FROM meta WHERE key = 'rekey'").first()
+  let plan = marker?.value ? JSON.parse(marker.value) : null
+  let dekNew
+  if (!plan) {
+    dekNew = await newDek()
+    const meta = await env.VAULT_DB.prepare("SELECT value FROM meta WHERE key = 'revision'").first()
+    plan = { from: await dekFingerprint(dekOld), to: await dekFingerprint(dekNew), startRevision: Number(meta?.value ?? 0), startedAt: now() }
+    // Two statements only matter together: park the new key, then declare the job.
+    await env.VAULT_DB.batch([
+      env.VAULT_DB.prepare("INSERT OR REPLACE INTO keyrings (id, kind, envelope, created_at, updated_at) VALUES ('rekey-staging', 'password', ?, ?, ?)").bind(await wrapDekPassword(dekNew, password), now(), now()),
+      env.VAULT_DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('rekey', ?)").bind(JSON.stringify(plan)),
+    ])
+  } else {
+    const staging = await env.VAULT_DB.prepare("SELECT envelope FROM keyrings WHERE id = 'rekey-staging'").first()
+    if (!staging) throw new Error('the rekey was interrupted and its staging key is gone; the old key still opens the vault')
+    dekNew = await unwrapDekPassword(staging.envelope, password)
+    if (await dekFingerprint(dekNew) !== plan.to) throw new Error('the staging key does not match the interrupted rekey')
+  }
+
+  let converted = 0
+  let wiped = 0
+  let lastId = ''
+  for (let round = 0; round < 500; round += 1) {
+    const rows = await env.VAULT_DB.prepare('SELECT id, ciphertext, deleted_at FROM vault_items WHERE id > ? ORDER BY id ASC LIMIT 40')
+      .bind(lastId)
+      .all()
+    const batch = rows.results ?? []
+    if (!batch.length) break
+    lastId = batch[batch.length - 1].id
+    const statements = []
+    for (const row of batch) {
+      // Deciding by key, not by revision: a row already under the new key opens
+      // with it, so a concurrent write that slipped past the marker for a moment
+      // is still caught instead of being left behind unreadable.
+      if (await openItem(dekNew, row.id, row.ciphertext).then(() => true, () => false)) continue
+      const revision = await nextRevision(env)
+      const deleted = Boolean(row.deleted_at)
+      // A tombstone must not keep a copy of the secret the old key can still read.
+      const payload = deleted ? {} : await openItem(dekOld, row.id, row.ciphertext)
+      if (deleted) wiped += 1
+      else converted += 1
+      statements.push(env.VAULT_DB.prepare('UPDATE vault_items SET ciphertext = ?, revision = ?, updated_at = ? WHERE id = ?')
+        .bind(await sealItem(dekNew, row.id, payload), revision, now(), row.id))
+    }
+    if (statements.length) await env.VAULT_DB.batch(statements)
+  }
+
+  const devices = await env.VAULT_DB.prepare('SELECT id, public_jwk FROM devices WHERE revoked_at IS NULL AND public_jwk IS NOT NULL').all()
+  const closing = []
+  let rewrapped = 0
+  for (const device of devices.results ?? []) {
+    let jwk = null
+    try { jwk = JSON.parse(device.public_jwk) } catch { jwk = null }
+    if (!jwk) continue
+    closing.push(env.VAULT_DB.prepare('UPDATE keyrings SET envelope = ?, updated_at = ? WHERE device_id = ? AND revoked_at IS NULL')
+      .bind(await wrapDekDevice(dekNew, jwk), now(), device.id))
+    rewrapped += 1
+  }
+  closing.push(env.VAULT_DB.prepare('UPDATE keyrings SET envelope = ?, updated_at = ? WHERE id = ?').bind(await wrapDekPassword(dekNew, password), now(), PASSWORD_KEYRING))
+  closing.push(env.VAULT_DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('keygen', ?)").bind(plan.to))
+  closing.push(env.VAULT_DB.prepare("DELETE FROM keyrings WHERE id = 'rekey-staging'"))
+  closing.push(env.VAULT_DB.prepare("DELETE FROM meta WHERE key = 'rekey'"))
+  await env.VAULT_DB.batch(closing)
+  return { dek: dekNew, fingerprint: plan.to, converted, wiped, devices: rewrapped, startedAt: plan.startedAt }
+}
+
+export async function vault2RekeyPending(env) {
+  const row = await env.VAULT_DB.prepare("SELECT value FROM meta WHERE key = 'rekey'").first()
+  return row?.value ? JSON.parse(row.value) : null
+}
 function base64Url(bytes) {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }

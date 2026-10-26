@@ -23,6 +23,7 @@
     "test:envelope": "node test-envelope.mjs",
     "test:v2-schema": "node test-v2-schema.mjs",
     "test:v2-api": "node test-mf-v2-api.mjs",
+    "test:v2-rekey": "node test-mf-v2-rekey.mjs",
     "test:v2-cli": "node test-cli-vault.mjs",
     "test:sync": "node test-mf-sync.mjs",
     "test:materialize": "node test-mf-materialize.mjs",

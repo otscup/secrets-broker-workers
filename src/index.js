@@ -9,7 +9,7 @@ import {
 } from './crypto.js'
 import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, ALLOWED_ALGS } from './oidc.js'
 import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
-import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2DeviceByToken } from './vault2.js'
+import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf } from './vault2.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -7569,15 +7569,26 @@ const TOOL_META = {
     if (url.pathname.startsWith('/api/v2/')) {
       const isAdmin = await adminAuthorized(request, env)
       const route = url.pathname.slice('/api/v2/'.length)
+      // While a rekey is in flight the rows sit under two keys at once. Let nobody
+      // read or write until it finishes, or a peer caches a row it cannot open.
+      const rekey = await vault2RekeyPending(env).catch(() => null)
+      if (rekey && (route === 'items' || route.startsWith('items/'))) {
+        return new Response(JSON.stringify({ error: 'rekey in progress', rekey }), { status: 503, headers: { 'content-type': 'application/json', 'retry-after': '30' } })
+      }
       // A paired device may pull ciphertext while the vault is locked: it holds
       // the data key locally, so the server never has to decrypt for it. This is
       // the only surface a device token reaches; everything else needs the admin
       // session.
-      if (!isAdmin && route === 'items' && request.method === 'GET') {
+      if (!isAdmin && (route === 'items' || route === 'device/self') && request.method === 'GET') {
         const bearer = request.headers.get('authorization') ?? ''
         const presented = (bearer.match(/^Bearer\s+(.+)$/i) ?? [])[1] ?? ''
         const device = await vault2DeviceByToken(env, presented).catch(() => null)
         if (!device) return fail('unauthorized', 401)
+        if (route === 'device/self') {
+          const self = await vault2DeviceSelf(env, device.id)
+          if (!self) return fail('this device has no keyring any more', 404)
+          return json({ name: device.name, ...self })
+        }
         return json({ ...(await vault2List(env, Number(url.searchParams.get('since') ?? 0))), device: device.name })
       }
       if (!isAdmin) return fail('unauthorized', 401)
@@ -7623,6 +7634,23 @@ const TOOL_META = {
         if (route === 'lock' && request.method === 'POST') {
           await keyCall('DELETE')
           return json({ ok: true })
+        }
+        // Rekey: the only way to take a key back from a device we already handed it
+        // to. Needs the master password, because the new key is wrapped under it and
+        // an interrupted run has to be resumable with it.
+        if (route === 'rekey' && request.method === 'POST') {
+          const dek = await unlockedKey()
+          if (!dek) return fail('vault is locked', 423)
+          const body = await request.json().catch(() => ({}))
+          const password = String(body.password ?? '')
+          if (password.length < 12) return fail('the master password is required to rekey', 400)
+          let result = null
+          try {
+            result = await vault2Rekey(env, dek, password)
+          } catch (error) { return fail(String(error.message ?? error), 400) }
+          await keyCall('PUT', { dek: [...result.dek] })
+          await addAudit(env, { event: 'vault.rekey', agent: 'admin', name: result.fingerprint, reason: `items=${result.converted} tombstones=${result.wiped} devices=${result.devices}` })
+          return json({ ok: true, fingerprint: result.fingerprint, converted: result.converted, wiped: result.wiped, devices: result.devices })
         }
         // Pairing hands this device the same data key, wrapped to its own public
         // key. The token comes back once and is stored only as a hash.
