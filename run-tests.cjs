@@ -30,6 +30,7 @@ function mirror() {
   copy('public')
   copy('docs')
   copy('test-support')
+  copy('migrations')
   copy('cli')
   copy('package.json')
   copy('package-lock.json')

@@ -21,6 +21,7 @@
     "test:agents": "node test-agents.mjs",
     "test:envelope": "node test-envelope.mjs",
     "test:v2-schema": "node test-v2-schema.mjs",
+    "test:v2-api": "node test-mf-v2-api.mjs",
     "test:sync": "node test-mf-sync.mjs",
     "test:materialize": "node test-mf-materialize.mjs",
     "test:explain": "node test-mf-explain.mjs",

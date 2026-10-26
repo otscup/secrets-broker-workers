@@ -9,6 +9,7 @@ import {
 } from './crypto.js'
 import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, ALLOWED_ALGS } from './oidc.js'
 import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
+import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2Create, vault2Update, vault2Delete, vault2Read } from './vault2.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -41,6 +42,9 @@ async function putStateVersioned(txn, store) {
 }
 
 export class BrokerState extends DurableObject {
+  // The v2 data key for the current unlock, in memory only.
+  v2Key = null
+
   async fetch(request) {
     const url = new URL(request.url)
     if (url.pathname === '/state') {
@@ -69,6 +73,31 @@ export class BrokerState extends DurableObject {
         return { ok: true, version: Number(current) + 1 }
       })
       return json(result)
+    }
+    // The v2 data key, cached in memory only. Unlocking again after the object is
+    // evicted costs one PBKDF2 run; a key that never reaches storage cannot leak
+    // out of it. Transported as 32 plain numbers so no encoder can disagree.
+    if (url.pathname === '/v2-key') {
+      if (request.method === 'GET') {
+        const entry = this.v2Key
+        if (!entry || entry.expiresAt <= Date.now()) {
+          this.v2Key = null
+          return json({ ok: false, reason: 'locked' }, 401)
+        }
+        return json({ ok: true, dek: [...entry.dek], expiresAt: entry.expiresAt })
+      }
+      if (request.method === 'PUT') {
+        const body = await request.json().catch(() => ({}))
+        const dek = Uint8Array.from(Array.isArray(body.dek) ? body.dek : [])
+        if (dek.length !== 32) return json({ ok: false, reason: 'bad-key' }, 400)
+        const ttl = Math.min(12 * 3600 * 1000, Math.max(60 * 1000, Number(body.ttlMs) || 3600 * 1000))
+        this.v2Key = { dek, expiresAt: Date.now() + ttl }
+        return json({ ok: true, expiresAt: this.v2Key.expiresAt })
+      }
+      if (request.method === 'DELETE') {
+        this.v2Key = null
+        return json({ ok: true })
+      }
     }
     if (url.pathname === '/grant/consume' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
@@ -7534,6 +7563,92 @@ const TOOL_META = {
         }
         return json({ value: access.value })
       } catch (error) { return fail(String(error.message ?? error), 500) }
+    }
+    // The v2 vault. Admin session required: device tokens arrive with /pair in
+    // the next step, and until then the browser is the only caller.
+    if (url.pathname.startsWith('/api/v2/')) {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const route = url.pathname.slice('/api/v2/'.length)
+      const keyCall = async (method, body) => {
+        const response = await stateStub(env).fetch('https://state/v2-key', {
+          method,
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        })
+        return response.json().catch(() => ({}))
+      }
+      const unlockedKey = async () => {
+        const cached = await keyCall('GET')
+        return cached.ok ? Uint8Array.from(cached.dek) : null
+      }
+      try {
+        if (route === 'status' && request.method === 'GET') {
+          const status = await vault2Status(env)
+          const cached = await keyCall('GET')
+          return json({ ...status, unlocked: Boolean(cached.ok), keyExpiresAt: cached.expiresAt ?? null })
+        }
+        if (route === 'init' && request.method === 'POST') {
+          const body = await request.json().catch(() => ({}))
+          const password = String(body.password ?? '')
+          if (password.length < 12) return fail('password must be at least 12 characters', 400)
+          const { dek, fingerprint } = await vault2Init(env, password)
+          await keyCall('PUT', { dek: [...dek] })
+          await addAudit(env, { event: 'vault.init', agent: 'admin', name: fingerprint })
+          return json({ ok: true, fingerprint })
+        }
+        if (route === 'unlock' && request.method === 'POST') {
+          const body = await request.json().catch(() => ({}))
+          let opened = null
+          try {
+            opened = await vault2Unlock(env, String(body.password ?? ''))
+          } catch {
+            await addAudit(env, { event: 'vault.unlock-deny', agent: 'admin', reason: 'wrong-password' })
+            return fail('wrong password', 401)
+          }
+          await keyCall('PUT', { dek: [...opened.dek], ttlMs: body.ttlMs })
+          await addAudit(env, { event: 'vault.unlock', agent: 'admin', name: opened.fingerprint })
+          return json({ ok: true, fingerprint: opened.fingerprint })
+        }
+        if (route === 'lock' && request.method === 'POST') {
+          await keyCall('DELETE')
+          return json({ ok: true })
+        }
+        if (route === 'items' && request.method === 'GET') {
+          return json(await vault2List(env, Number(url.searchParams.get('since') ?? 0)))
+        }
+        if (route === 'items' && request.method === 'POST') {
+          const dek = await unlockedKey()
+          if (!dek) return fail('vault is locked', 423)
+          const body = await request.json().catch(() => ({}))
+          const created = await vault2Create(env, dek, body)
+          await addAudit(env, { event: 'vault.item.create', agent: 'admin', name: String(body.payload?.name ?? created.id) })
+          return json(created, 201)
+        }
+        if (route.startsWith('items/')) {
+          const id = route.slice('items/'.length)
+          if (request.method === 'GET') {
+            const dek = await unlockedKey()
+            if (!dek) return fail('vault is locked', 423)
+            const item = await vault2Read(env, dek, id)
+            if (!item) return fail('item not found', 404)
+            return json(item)
+          }
+          if (request.method === 'PUT') {
+            const dek = await unlockedKey()
+            if (!dek) return fail('vault is locked', 423)
+            const updated = await vault2Update(env, dek, id, await request.json().catch(() => ({})))
+            if (!updated) return fail('item not found', 404)
+            await addAudit(env, { event: 'vault.item.update', agent: 'admin', name: id })
+            return json(updated)
+          }
+          if (request.method === 'DELETE') {
+            const deleted = await vault2Delete(env, id)
+            if (!deleted) return fail('item not found', 404)
+            await addAudit(env, { event: 'vault.item.delete', agent: 'admin', name: id })
+            return json(deleted)
+          }
+        }
+        return fail('not found', 404)
+      } catch (error) { return fail(String(error.message ?? error), 400) }
     }
     return fail('not found', 404)
   },

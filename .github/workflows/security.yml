@@ -169,5 +169,7 @@ jobs:
         run: npm run test:envelope
       - name: v2 schema on D1 (Miniflare)
         run: npm run test:v2-schema
+      - name: v2 API (init, unlock, sealed items, tombstones)
+        run: npm run test:v2-api
       - name: Full security suite (short path)
         run: npm run test:security:short
