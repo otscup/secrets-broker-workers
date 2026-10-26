@@ -73,6 +73,12 @@ const routes = {
   // Vault 2.0 has its own lock, so the card must say "locked" even though this
   // console is unlocked against the cipher vault.
   '/api/v2/status': () => ({ initialized: true, revision: 7, items: 3, unlocked: false, keyrings: [{ id: 'k1', kind: 'device' }] }),
+  '/api/v2/devices': () => ({
+    devices: [
+      { id: 'd1', name: 'laptop', createdAt: '2026-10-26T00:00:00Z', lastSeenAt: new Date().toISOString(), revokedAt: null, canWrite: true },
+      { id: 'd2', name: 'old-pc', createdAt: '2026-10-01T00:00:00Z', lastSeenAt: '2026-10-01T00:00:00Z', revokedAt: null, canWrite: false },
+    ],
+  }),
 }
 
 // Saving from the detail page used to close #modal, which is hidden while the
@@ -386,9 +392,24 @@ try {
     action: document.getElementById('v2-unlock').textContent.trim(),
     itemsHidden: document.getElementById('v2-box').classList.contains('hidden')
   }))()`)
-  vault2.badge === '已锁定' && vault2.action === '解锁' && /条目 3 条/.test(vault2.line) && /revision 7/.test(vault2.line) && /已配对设备 1 台/.test(vault2.line) && vault2.itemsHidden
+  vault2.badge === '已锁定' && vault2.action === '解锁' && /条目 3 条/.test(vault2.line) && /revision 7/.test(vault2.line) && /已配对设备 2 台/.test(vault2.line) && vault2.itemsHidden
     ? pass('A23 the Vault 2.0 card shows that vault is locked while the console is open')
     : fail('A23', JSON.stringify(vault2).slice(0, 240))
+
+  // A24 - the device list says which machine is actually here now, not only how
+  // many were ever paired: a row seen a minute ago is online, a stale one is not,
+  // and the write permission is on the row you would revoke.
+  const v2devices = await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('#v2-devices .ios-row')]
+    return rows.map((row) => ({
+      name: row.querySelector('b')?.textContent.trim(),
+      tags: [...row.querySelectorAll('.kind-tag')].map((tag) => tag.textContent.trim()),
+      revoke: !!row.querySelector('[data-v2-revoke]')
+    }))
+  })()`)
+  v2devices.length === 2 && v2devices[0].name === 'laptop' && v2devices[0].tags.includes('在线') && v2devices[0].tags.includes('可写') && v2devices[0].revoke && v2devices[1].name === 'old-pc' && v2devices[1].tags.includes('离线') && v2devices[1].revoke
+    ? pass('A24 the Vault 2.0 device list shows online state, write access and a revoke button')
+    : fail('A24', JSON.stringify(v2devices).slice(0, 300))
 
   // A11 - nothing threw while all of that happened.
   problems.length === 0 ? pass('A11 no runtime errors') : fail('A11', problems.slice(0, 3).join(' | '))

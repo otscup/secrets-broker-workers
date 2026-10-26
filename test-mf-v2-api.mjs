@@ -229,6 +229,19 @@ let deviceId = ''
   else fail('P5', JSON.stringify({ write: write.status, devices: devices.status }))
 }
 
+// D1: the console draws a device row from three things it must actually get: the
+// name, a boolean write flag, and the last time the device was seen. Seen only
+// counts if a real token pull stamps it.
+{
+  await deviceCall('/api/v2/items?since=0', deviceToken)
+  const list = await call('/api/v2/devices')
+  const row = (list.body.devices || []).find((device) => device.id === deviceId)
+  const seen = Date.parse(row?.lastSeenAt || '')
+  const ok = row?.name === 'laptop' && typeof row.canWrite === 'boolean' && !Number.isNaN(seen) && Date.now() - seen < 60 * 1000
+  if (ok) pass('D1 a device row carries its name, write flag and last-seen time')
+  else fail('D1', JSON.stringify({ row }).slice(0, 220))
+}
+
 // P6: revoking a device stops its pulls immediately.
 {
   await call('/api/v2/unlock', { method: 'POST', body: { password: MASTER } })

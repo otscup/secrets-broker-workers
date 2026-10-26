@@ -171,13 +171,14 @@ export async function vault2Pair(env, dek, { name, publicKey, publicJwk }) {
 }
 
 export async function vault2Devices(env) {
-  const rows = await env.VAULT_DB.prepare('SELECT id, name, created_at, last_seen_at, revoked_at FROM devices ORDER BY created_at DESC').all()
+  const rows = await env.VAULT_DB.prepare('SELECT id, name, created_at, last_seen_at, revoked_at, can_write FROM devices ORDER BY created_at DESC').all()
   return (rows.results ?? []).map((row) => ({
     id: row.id,
     name: row.name,
     createdAt: row.created_at,
     lastSeenAt: row.last_seen_at ?? null,
     revokedAt: row.revoked_at ?? null,
+    canWrite: Number(row.can_write) === 1,
   }))
 }
 
