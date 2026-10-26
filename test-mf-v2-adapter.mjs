@@ -157,9 +157,10 @@ let v2WebId = ''
   const plain = await call('/api/v2/items?plain=1')
   const row = (plain.body.items || []).find((item) => item.id === v2Id)
   const oldRow = await oldDb.prepare('SELECT name, deleted_at FROM ciphers WHERE id = ?').bind(OLD_ID).first()
-  const ok = updated.status === 200 && row?.payload?.name === 'v2-renamed' && row.payload.password === 'sk-v2-updated' && row.payload.username === 'new-user' && row.payload.totp === 'JBSWY3DP' && oldRow?.name === oldNameEnc && !oldRow?.deleted_at
-  if (ok) pass('A6 update writes v2, keeps a blank TOTP, and does not touch the old row')
-  else fail('A6', JSON.stringify({ updated, payload: row?.payload, old: { same: oldRow?.name === oldNameEnc, deleted: oldRow?.deleted_at } }))
+  const state = await getState()
+  const ok = updated.status === 200 && row?.payload?.name === 'v2-renamed' && row.payload.password === 'sk-v2-updated' && row.payload.username === 'new-user' && row.payload.totp === 'JBSWY3DP' && oldRow?.name === oldNameEnc && !oldRow?.deleted_at && state.itemIds?.['v2-renamed'] === v2Id && !state.itemIds?.[V2_NAME]
+  if (ok) pass('A6 update writes v2, keeps a blank TOTP, moves the name->id map, and does not touch the old row')
+  else fail('A6', JSON.stringify({ updated, payload: row?.payload, itemIds: { new: state.itemIds?.['v2-renamed'], old: state.itemIds?.[V2_NAME] }, old: { same: oldRow?.name === oldNameEnc, deleted: oldRow?.deleted_at } }))
 }
 
 // A7: a delete is a v2 tombstone, and the old row is still not deleted.

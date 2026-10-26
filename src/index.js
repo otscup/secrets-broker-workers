@@ -1766,6 +1766,8 @@ async function updateVault2Item(env, dek, currentName, changes) {
       if (state.itemGroups[currentName] !== undefined) state.itemGroups[nextName] = state.itemGroups[currentName]
       delete state.itemGroups[currentName]
       if (state.policies?.[currentName]) { state.policies[nextName] = state.policies[currentName]; delete state.policies[currentName] }
+      if (state.itemIds?.[currentName]) { state.itemIds[nextName] = state.itemIds[currentName]; delete state.itemIds[currentName] }
+      if (state.secretExpiry?.[currentName]) { state.secretExpiry[nextName] = state.secretExpiry[currentName]; delete state.secretExpiry[currentName] }
     }
     if (typeof changes.group === 'string') {
       if (changes.group.trim()) state.itemGroups[nextName] = changes.group.trim()
