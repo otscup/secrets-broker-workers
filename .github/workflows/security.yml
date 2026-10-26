@@ -155,6 +155,8 @@ jobs:
         run: npm run test:cli
       - name: Run a command with the key in its environment (cli)
         run: npm run test:exec
+      - name: Local vault daemon (cli)
+        run: npm run test:daemon
       - name: Local client discovery (cli)
         run: npm run test:agents
       - name: DSH plugin refuses cross-site approvals

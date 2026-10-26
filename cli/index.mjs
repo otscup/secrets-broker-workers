@@ -32,6 +32,7 @@ import { runSync } from './sync.mjs'
 import { pair, pairRequest, pairWait, unlock, count, loadDevice, pull, push } from './vault.mjs'
 import { createLocalServer } from './vaulttools.mjs'
 import { buildEnv, runExec } from './exec.mjs'
+import { makeDaemon } from './daemon.mjs'
 import { detect, adapters, plan, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
@@ -70,6 +71,9 @@ Usage
   secrets-broker exec --env KEY=item -- <command>
                                  run a command with the value in its environment,
                                  so no .env file has to hold it
+  secrets-broker up [--port 4319] [--every 15]
+                                 keep the vault decrypted in memory and answer
+                                 MCP on 127.0.0.1, so each agent start is instant
   secrets-broker unlock          check the stored key against the vault fingerprint
   secrets-broker pull [--since N] [--to FILE]
                                  decrypt the vault into a file (mode 0600)
@@ -175,6 +179,40 @@ async function main() {
       process.stderr.write(String(error?.message ?? error) + '\n')
       return 1
     }
+  }
+
+  if (command === 'up') {
+    const flag = (name, fallback) => {
+      const at = argv.indexOf('--' + name)
+      return at >= 0 ? String(argv[at + 1] ?? '') : fallback
+    }
+    const port = Number(flag('port', '4319'))
+    const every = Number(flag('every', '15'))
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      log('--port must be a port number')
+      return 2
+    }
+    if (!Number.isFinite(every) || every < 0) {
+      log('--every must be minutes, or 0 to never refresh')
+      return 2
+    }
+    const daemon = makeDaemon({ pull, everyMs: every * 60 * 1000, log })
+    const first = await daemon.refresh()
+    if (first.stale) {
+      process.stderr.write('cannot read the vault: ' + first.error + '\n')
+      return 1
+    }
+    if (!first.vault.length) log('warning: the vault came back empty')
+    const { origin } = await daemon.listen({ port })
+    log('vault daemon on ' + origin)
+    log('  ' + first.vault.length + ' item(s), refreshing every ' + (every ? every + ' min' : 'never'))
+    log('  MCP: ' + origin + '/mcp     health: ' + origin + '/healthz')
+    await new Promise((resolve) => {
+      const stop = () => { daemon.close().then(resolve, resolve) }
+      process.once('SIGINT', stop)
+      process.once('SIGTERM', stop)
+    })
+    return 0
   }
 
   if (command === 'agents') {

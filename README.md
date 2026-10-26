@@ -471,6 +471,32 @@ Agents are created in the **Agents** tab; the token is shown only once.
 The item's **no-approval** toggle in the **Items** tab makes reads immediate while still
 recording audit events.
 
+### Keep the vault open on this machine
+
+Every agent that starts `secrets-broker serve` decrypts the vault again. Running
+one daemon instead keeps it in memory and answers MCP over HTTP:
+
+```bash
+secrets-broker up --port 4319 --every 15
+# vault daemon on http://127.0.0.1:4319
+#   493 item(s), refreshing every 15 min
+```
+
+| Route | What it gives |
+|---|---|
+| `POST /mcp` | The same tools as the stdio server, without a per-agent start cost |
+| `GET /healthz` | Item count, when it was last pulled, and whether the last refresh failed |
+
+Two guards, because a loopback port is still reachable by your browser:
+
+- any request carrying an `Origin` header is refused, as is `OPTIONS` — a web
+  page cannot use your browser to read the daemon;
+- a `Host` header that is not `127.0.0.1`, `localhost` or `::1` is refused, which
+  blocks a DNS-rebinding page.
+
+If a refresh fails the daemon keeps answering with what it already holds and
+`/healthz` reports `stale: true` with the error.
+
 ### Run a command with the key in its environment
 
 A `.env` file is a plaintext copy of your vault that any process on the machine
