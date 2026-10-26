@@ -714,7 +714,8 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
   </section>
 
   <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读）。点条目打开详情，可改类型、明文读取、免审批和分享；勾选多条可批量操作。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><select id="item-sort" title="排序方式" style="flex:0 0 auto"><option value="name">按名称</option><option value="activity">按最近活动</option><option value="access">按授权数</option><option value="expiry">按到期时间</option></select><button id="items-refresh">刷新</button><button id="items-select">选择</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
-    <div class="card hidden" id="card-fill-policies" aria-hidden="true"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。未分类的凭据默认为拒绝读取。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
+    <div class="card" id="card-vault2"><div class="row" style="justify-content:space-between;align-items:center"><div><h2 style="margin:0">Vault 2.0</h2><div class="hint" style="margin-top:4px">零知识库放在独立数据库里，和上面这一列密文库互不影响。解锁后这里能读出条目名称，锁上就只剩状态。</div></div><span id="v2-badge" class="kind-tag kind-none" style="flex:0 0 auto">读取中…</span></div><div id="v2-status" class="hint" style="margin-top:10px"></div><div class="row" id="v2-unlock-row" style="margin-top:10px"><input id="v2-password" type="password" placeholder="Vault 2.0 主密码（至少 12 位）"><button id="v2-unlock" class="primary">解锁</button><button id="v2-lock">锁定</button><button id="v2-refresh">刷新</button></div><div id="v2-box" class="table-wrap scroll-list hidden" style="margin-top:10px"></div><div id="v2-msg" class="status"></div></div>
+<div class="card hidden" id="card-fill-policies" aria-hidden="true"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。未分类的凭据默认为拒绝读取。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     <div class="card" id="card-denied"><h2>被拦下的请求</h2><div class="hint">Agent 试图读取但没通过权限检查的条目。这里只是记录，没有放行任何东西；点「授权」才会真正放开。</div><div id="denied-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     
   </section>
@@ -1100,6 +1101,21 @@ $('trend-prev').onclick = () => { trendFace = (trendFace + trendFaces.length - 1
 $('trend-next').onclick = () => { trendFace = (trendFace + 1) % trendFaces.length; renderTrendFace() }
 $('items-refresh').onclick = loadItems; $('items-select').onclick = () => { itemsSelecting = !itemsSelecting; if (!itemsSelecting) selectedItems.clear(); $('items-select').textContent = itemsSelecting ? '完成' : '选择'; renderItems() }; $('item-filter').oninput = renderItems; $('item-sort').onchange = () => { localStorage.setItem('sb-item-sort', $('item-sort').value); renderItems() }; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('ai-save').onclick = saveAiSettings; $('ai-model-fetch').onclick = fetchCustomModels; $('ai-help').onclick = () => openAiHelp();; $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + ('自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 $('mcp-url').textContent = location.origin + '/mcp'
+$('v2-refresh').onclick = loadVault2
+$('v2-unlock').onclick = async () => {
+  const password = $('v2-password').value
+  const initialising = $('v2-unlock').textContent === '初始化'
+  if (!password) { $('v2-msg').textContent = '先输入主密码'; return }
+  try {
+    await api(initialising ? '/api/v2/init' : '/api/v2/unlock', { method: 'POST', body: JSON.stringify({ password }) })
+    $('v2-password').value = ''
+    await loadVault2()
+    $('v2-msg').textContent = initialising ? '已初始化并解锁' : '已解锁'
+  } catch (error) { $('v2-msg').textContent = error.message }
+}
+$('v2-lock').onclick = async () => {
+  try { await api('/api/v2/lock', { method: 'POST' }); await loadVault2() } catch (error) { $('v2-msg').textContent = error.message }
+}
 // Collapsible settings cards. One delegated handler covers every card, so a
 // new collapsible card needs no extra wiring.
 document.addEventListener('click', (event) => {
@@ -1399,7 +1415,7 @@ async function loadStats() { try { app.stats = await api('/api/stats?range=' + a
 // One operator action changes the logs, the counts and the item rows at once.
 // Reloading them together is cheaper than making the operator press 刷新 to
 // believe the action worked.
-async function refreshAll() { await Promise.all([loadState(), loadItems(), loadStats()]) }
+async function refreshAll() { await Promise.all([loadState(), loadItems(), loadStats(), loadVault2()]) }
 // The OIDC providers. Each one is edited on its own; the client secret is
 // never sent back, so the field starts empty and an empty value keeps the
 // stored one.
@@ -1984,6 +2000,36 @@ function readRightsByItem() {
   }
   return map
 }
+// Vault 2.0 keeps its own database and its own lock: the console can be open
+// against the cipher vault while this one is still closed, so it gets its own
+// status line and its own password field.
+async function loadVault2() {
+  const badge = $('v2-badge'); const line = $('v2-status'); const box = $('v2-box'); const msg = $('v2-msg')
+  if (!badge) return
+  msg.textContent = ''
+  try {
+    const status = await api('/api/v2/status')
+    const ready = status.initialized === true
+    const devices = (status.keyrings || []).filter((ring) => ring.kind === 'device').length
+    badge.textContent = ready ? (status.unlocked ? '已解锁' : '已锁定') : '未初始化'
+    line.textContent = ready
+      ? ('条目 ' + Number(status.items || 0) + ' 条 · revision ' + Number(status.revision || 0) + ' · 已配对设备 ' + devices + ' 台' + (status.unlocked && status.keyExpiresAt ? ' · 钥匙有效至 ' + new Date(status.keyExpiresAt).toLocaleTimeString() : ''))
+      : '还没有初始化。输入一个至少 12 位的主密码，点「初始化」会新建一把数据钥匙。'
+    $('v2-unlock').textContent = ready ? '解锁' : '初始化'
+    if (!status.unlocked) { box.classList.add('hidden'); box.innerHTML = ''; return }
+    const plain = await api('/api/v2/items?plain=1')
+    const rows = (plain.items || []).filter((row) => !row.deletedAt)
+    box.innerHTML = rows.length
+      ? '<div class="ios-group">' + rows.slice(0, 200).map((row) => {
+        const payload = row.payload || {}
+        const fields = Object.keys(payload).filter((key) => key !== 'name').length
+        return '<div class="ios-row"><div class="ios-main"><div class="ios-title"><b>' + esc(payload.name || row.id) + '</b></div><div class="ios-sub">' + esc(row.kind || 'unclassified') + ' · ' + fields + ' 个字段</div></div></div>'
+      }).join('') + '</div>'
+      : '<div class="hint">还没有条目。</div>'
+    box.classList.remove('hidden')
+  } catch (error) { msg.textContent = '读取失败：' + error.message }
+}
+
 function renderItems() {
   const query = ($('item-filter')?.value || '').trim().toLowerCase(); const items = (app.items || []).filter((item) => !query || item.name.toLowerCase().includes(query) || String(item.url || '').toLowerCase().includes(query) || String(item.group || '').toLowerCase().includes(query))
   // Which items are already classified, by name, and with which kind. The

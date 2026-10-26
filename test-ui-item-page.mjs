@@ -70,6 +70,9 @@ const routes = {
   '/api/stats': () => stats,
   '/api/settings': () => ({ settings: {}, profile: {} }),
   '/api/security': () => ({ totpEnabled: false, sessions: [] }),
+  // Vault 2.0 has its own lock, so the card must say "locked" even though this
+  // console is unlocked against the cipher vault.
+  '/api/v2/status': () => ({ initialized: true, revision: 7, items: 3, unlocked: false, keyrings: [{ id: 'k1', kind: 'device' }] }),
 }
 
 // Saving from the detail page used to close #modal, which is hidden while the
@@ -300,8 +303,9 @@ try {
     ? pass('A13 the denied row shows the display name and keeps the identifier on its buttons')
     : fail('A13', JSON.stringify(denied).slice(0, 200))
 
-  // A14 - the bar is for approvals only, so a reminder alone leaves it hidden,
-  // and the 待审批 / 通知 sheet offers the action that reminder needs (延期).
+  // A14 - a reminder with no approval waiting still has to reach the bar: the
+  // bell was showing two notices while the banner stayed blank, which reads as
+  // "nothing to do". The sheet it opens offers the action that reminder needs.
   const notice = await evaluate(`(async () => {
     const bar = document.querySelector('#notice-bar')
     const hidden = bar.classList.contains('hidden')
@@ -312,8 +316,8 @@ try {
     const open = modal.querySelector('[data-notice-open]')
     return { hidden, extend: Boolean(extend), open: Boolean(open), shown: !modal.classList.contains('hidden') }
   })()`)
-  notice.hidden && notice.shown && notice.extend
-    ? pass('A14 reminders stay out of the bar and carry 延期 in the sheet')
+  !notice.hidden && notice.shown && notice.extend
+    ? pass('A14 a reminder reaches the bar, and its sheet carries 延期')
     : fail('A14', JSON.stringify(notice).slice(0, 200))
 
   // A19 - 选择 turns every grant row into a tick box and shows the bulk bar.
@@ -374,6 +378,17 @@ try {
   bulkBg !== 'rgb(27, 41, 64)' && bulkBg !== cardBg
     ? pass('A22 the bulk bar does not take the legacy navy in dark mode (' + bulkBg + ')')
     : fail('A22', JSON.stringify({ bulkBg, cardBg }))
+
+  // A23 - the Vault 2.0 card reports that vault's own state, not the console's.
+  const vault2 = await evaluate(`(() => ({
+    badge: document.getElementById('v2-badge').textContent.trim(),
+    line: document.getElementById('v2-status').textContent.trim(),
+    action: document.getElementById('v2-unlock').textContent.trim(),
+    itemsHidden: document.getElementById('v2-box').classList.contains('hidden')
+  }))()`)
+  vault2.badge === '已锁定' && vault2.action === '解锁' && /条目 3 条/.test(vault2.line) && /revision 7/.test(vault2.line) && /已配对设备 1 台/.test(vault2.line) && vault2.itemsHidden
+    ? pass('A23 the Vault 2.0 card shows that vault is locked while the console is open')
+    : fail('A23', JSON.stringify(vault2).slice(0, 240))
 
   // A11 - nothing threw while all of that happened.
   problems.length === 0 ? pass('A11 no runtime errors') : fail('A11', problems.slice(0, 3).join(' | '))
