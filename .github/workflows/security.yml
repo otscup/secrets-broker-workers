@@ -22,6 +22,8 @@ jobs:
         run: npm run test:oidc
       - name: R1/R6 atomic + scope predicate
         run: npm run test:r1-r6
+      - name: Plaintext credential scan (no runtime)
+        run: npm run test:scan
       # workerd-backed suites: real Durable Object storage/transaction semantics.
       - name: OIDC state replay (Miniflare)
         run: npm run test:mcp-oidc

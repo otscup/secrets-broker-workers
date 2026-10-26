@@ -32,6 +32,7 @@ import { runSync } from './sync.mjs'
 import { pair, pairRequest, pairWait, unlock, count, loadDevice, pull, push } from './vault.mjs'
 import { createLocalServer } from './vaulttools.mjs'
 import { buildEnv, runExec } from './exec.mjs'
+import { scan, defaultTargets, formatFindings, mask, suggestName } from './scan.mjs'
 import { makeDaemon } from './daemon.mjs'
 import { detect, adapters, plan, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
@@ -81,6 +82,10 @@ Usage
                                  seal that file again and upload it
   secrets-broker rekey --password P --cookie C
                                  re-encrypt the vault under a new key (revokes what an old key could read)
+  secrets-broker scan [--path FILE] [--json]
+                                 list the credentials still sitting in plain files
+  secrets-broker put <name> [--stdin]
+                                 store one in the vault (still needs approval)
   secrets-broker agents detect   list the MCP clients on this machine
   secrets-broker agents connect [--id codex] [--apply]
                                  add this broker to their config (dry run by default)
@@ -136,6 +141,52 @@ async function main() {
   if (argv.includes('--version') || command === 'version') {
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
     process.stdout.write('secrets-broker ' + pkg.version + '\n')
+    return 0
+  }
+
+  if (command === 'scan') {
+    const paths = []
+    for (let index = 0; index < argv.length; index += 1) {
+      if (argv[index] === '--path') { paths.push(String(argv[index + 1] ?? '')); index += 1 }
+    }
+    const targets = paths.length ? paths : defaultTargets()
+    const findings = scan({ targets })
+    if (argv.includes('--json')) {
+      process.stdout.write(JSON.stringify({ findings: findings.map((hit) => ({ ...hit, value: mask(hit.value), name: suggestName(hit.key) })) }, null, 2) + '\n')
+      return 0
+    }
+    process.stdout.write(formatFindings(findings))
+    return 0
+  }
+
+  if (command === 'put') {
+    const name = positionals(argv.filter((item) => item !== '--stdin'))[0]
+    if (!name) {
+      process.stderr.write('usage: secrets-broker put <name> [--stdin] [--value V]\n')
+      return 2
+    }
+    const at = argv.indexOf('--value')
+    let value = at >= 0 ? String(argv[at + 1] ?? '') : ''
+    if (!value) {
+      // stdin by default: a value on the command line lands in shell history.
+      const chunks = []
+      for await (const chunk of process.stdin) chunks.push(chunk)
+      value = Buffer.concat(chunks).toString('utf8').trim()
+    }
+    if (!value) {
+      process.stderr.write('no value given (pipe one in, or pass --value)\n')
+      return 2
+    }
+    const bridge = createBridge({ brokerUrl: brokerUrl() })
+    const raw = await bridge.request({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'put_secret', arguments: { name, value } },
+    })
+    let answer = raw
+    try { answer = (JSON.parse(raw).result?.content ?? []).map((part) => part.text ?? '').join('\n') || raw } catch {}
+    process.stdout.write(answer + '\n')
     return 0
   }
 
