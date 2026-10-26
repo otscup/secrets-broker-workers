@@ -27,7 +27,10 @@ export function makeDaemon({ pull, everyMs = 15 * 60 * 1000, now = () => Date.no
   async function refresh() {
     try {
       const pulled = await pull({ since: state.revision })
-      state = { vault: pulled?.items ?? [], revision: pulled?.revision ?? state.revision, pulledAt: now(), stale: false, error: '' }
+      // A pull that came out of the local copy is not fresh, even though it did
+      // not throw: say so, or /healthz would claim the vault is current.
+      const stale = Boolean(pulled?.stale)
+      state = { vault: pulled?.items ?? [], revision: pulled?.revision ?? state.revision, pulledAt: now(), stale, error: stale ? 'local copy from ' + (pulled.stale.savedAt ?? 'unknown') + ': ' + (pulled.stale.reason ?? '') : '' }
     } catch (error) {
       // Keep answering with what we already decrypted; say that it may be old.
       state = { ...state, stale: true, error: String(error?.message ?? error) }

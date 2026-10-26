@@ -33,6 +33,7 @@ import { pair, pairRequest, pairWait, unlock, count, loadDevice, pull, push } fr
 import { createLocalServer } from './vaulttools.mjs'
 import { buildEnv, runExec } from './exec.mjs'
 import { scan, defaultTargets, formatFindings, mask, suggestName } from './scan.mjs'
+import { cacheStatus, clearCache } from './cache.mjs'
 import { makeDaemon } from './daemon.mjs'
 import { detect, adapters, plan, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
@@ -82,6 +83,8 @@ Usage
                                  seal that file again and upload it
   secrets-broker rekey --password P --cookie C
                                  re-encrypt the vault under a new key (revokes what an old key could read)
+  secrets-broker cache [--clear]
+                                 show (or drop) the local ciphertext copy the daemon falls back to
   secrets-broker scan [--path FILE] [--json]
                                  list the credentials still sitting in plain files
   secrets-broker put <name> [--stdin]
@@ -141,6 +144,23 @@ async function main() {
   if (argv.includes('--version') || command === 'version') {
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
     process.stdout.write('secrets-broker ' + pkg.version + '\n')
+    return 0
+  }
+
+  if (command === 'cache') {
+    if (argv.includes('--clear')) {
+      clearCache()
+      process.stdout.write('local copy cleared\n')
+      return 0
+    }
+    const status = cacheStatus()
+    process.stdout.write([
+      'file: ' + status.file,
+      'rows: ' + status.rows,
+      'revision: ' + status.revision,
+      'saved: ' + (status.savedAt ?? 'never'),
+      'from: ' + (status.url || 'unknown'),
+    ].join('\n') + '\n')
     return 0
   }
 

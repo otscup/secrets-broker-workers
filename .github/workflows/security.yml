@@ -24,6 +24,10 @@ jobs:
         run: npm run test:r1-r6
       - name: Plaintext credential scan (no runtime)
         run: npm run test:scan
+      - name: Local ciphertext cache (no runtime)
+        run: npm run test:cache
+      - name: Offline pull from the cache (no runtime)
+        run: npm run test:offline
       # workerd-backed suites: real Durable Object storage/transaction semantics.
       - name: OIDC state replay (Miniflare)
         run: npm run test:mcp-oidc

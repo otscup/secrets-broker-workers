@@ -5,8 +5,10 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { newDeviceKeypair, unwrapDekDevice, dekFingerprint, openItem, sealItem } from '../src/envelope.js'
+import { loadPull, savePull } from './cache.mjs'
 
-const DIR = join(homedir(), '.secrets-broker')
+// BROKER_HOME keeps a second broker (or a test) from touching the real pairing.
+const DIR = process.env.BROKER_HOME || join(homedir(), '.secrets-broker')
 const FILE = join(DIR, 'device.json')
 
 export function deviceFile() {
@@ -114,17 +116,32 @@ export async function unlock() {
 // comes back is plaintext on disk, so the caller decides where it goes.
 export async function pull({ since = 0 } = {}) {
   const { dek, record } = await openLocal()
-  const response = await fetch(record.url + '/api/v2/items?since=' + Number(since || 0), { headers: { authorization: 'Bearer ' + record.token } })
-  const text = await response.text()
-  if (!response.ok) throw new Error('pull failed (' + response.status + '): ' + text.slice(0, 300))
-  const body = JSON.parse(text)
+  let body
+  try {
+    const response = await fetch(record.url + '/api/v2/items?since=' + Number(since || 0), { headers: { authorization: 'Bearer ' + record.token } })
+    const text = await response.text()
+    if (!response.ok) {
+      const failure = new Error('pull failed (' + response.status + '): ' + text.slice(0, 300))
+      failure.status = response.status
+      throw failure
+    }
+    body = JSON.parse(text)
+    // Keep a copy of the ciphertext, so a restart with no network still answers.
+    try { savePull({ url: record.url, revision: body.revision, rows: body.items ?? [] }) } catch {}
+  } catch (error) {
+    // A revoked device must hear about it, not quietly read an old copy.
+    if (error?.status === 401 || error?.status === 403) throw error
+    const cached = loadPull({ since })
+    if (!cached.rows.length) throw error
+    body = { revision: cached.revision, items: cached.rows, stale: { savedAt: cached.savedAt, reason: String(error?.message ?? error).slice(0, 200) } }
+  }
   const items = []
   for (const row of body.items ?? []) {
     if (row.deletedAt) { items.push({ id: row.id, revision: row.revision, deleted: true }); continue }
     const payload = await openItem(dek, row.id, row.ciphertext).catch(() => null)
     items.push({ id: row.id, kind: row.kind, revision: row.revision, updatedAt: row.updatedAt, payload })
   }
-  return { revision: body.revision, items, url: record.url }
+  return { revision: body.revision, items, url: record.url, ...(body.stale ? { stale: body.stale } : {}) }
 }
 
 // Seal here, not there: the server is handed ciphertext and keeps its promise

@@ -203,6 +203,26 @@ try {
     : fail('A11', 'not shipped: ' + missing.join(', '))
 }
 
+// A13: .gitignore ignores test-*.mjs by default, so a new suite can be added to
+// package.json and silently never committed until CI fails on a missing file.
+// Every suite the scripts name must actually be versioned.
+{
+  const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+  const named = new Set()
+  for (const command of Object.values(pkg.scripts ?? {})) {
+    for (const hit of String(command).matchAll(/((?:[\w.-]+\/)*test-[\w-]+\.mjs)/g)) named.add(hit[1])
+  }
+  const probe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' })
+  if (probe.status !== 0) {
+    pass('A13 skipped: not a git checkout')
+  } else {
+    const untracked = [...named].filter((file) => spawnSync('git', ['ls-files', '--error-unmatch', file], { encoding: 'utf8' }).status !== 0)
+    untracked.length === 0
+      ? pass('A13 every test suite package.json names is versioned')
+      : fail('A13', 'named but not in git: ' + untracked.join(', '))
+  }
+}
+
 const failed = results.filter((row) => !row.ok)
 console.log('==== agents detect ' + (results.length - failed.length) + '/' + results.length + ' passed ====')
 if (failed.length) process.exitCode = 1
