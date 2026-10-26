@@ -165,5 +165,9 @@ jobs:
         run: npm run test:notify-channels
       - name: AI assistant snapshot and switches (Miniflare)
         run: npm run test:ai-assistant
+      - name: Envelope encryption (v2 key wrapping)
+        run: npm run test:envelope
+      - name: v2 schema on D1 (Miniflare)
+        run: npm run test:v2-schema
       - name: Full security suite (short path)
         run: npm run test:security:short

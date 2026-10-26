@@ -19,6 +19,8 @@
     "test:oidc": "node test-oidc.mjs",
     "test:cli": "node test-cli.mjs",
     "test:agents": "node test-agents.mjs",
+    "test:envelope": "node test-envelope.mjs",
+    "test:v2-schema": "node test-v2-schema.mjs",
     "test:sync": "node test-mf-sync.mjs",
     "test:materialize": "node test-mf-materialize.mjs",
     "test:explain": "node test-mf-explain.mjs",
