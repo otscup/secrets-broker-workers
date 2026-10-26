@@ -29,6 +29,7 @@ import { createBridge } from './bridge.mjs'
 import { login } from './oauth.mjs'
 import { runMaterialize } from './materialize.mjs'
 import { runSync } from './sync.mjs'
+import { pair, unlock, count, loadDevice } from './vault.mjs'
 import { detect, adapters, plan, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
@@ -60,6 +61,9 @@ Usage
                                  ask, then write an approved credential into a file
   secrets-broker sync --remote URL
                                  compare this broker with another one, read-only
+  secrets-broker pair --url URL --cookie C
+                                 pair this machine with a v2 vault, keep the key locally
+  secrets-broker unlock          check the stored key against the vault fingerprint
   secrets-broker agents detect   list the MCP clients on this machine
   secrets-broker agents connect [--id codex] [--apply]
                                  add this broker to their config (dry run by default)
@@ -188,6 +192,40 @@ async function main() {
     const result = await login(brokerUrl())
     log(`logged in; token kept in ${result.store}`)
     return 0
+  }
+
+  if (command === 'pair') {
+    const flag = (flagName) => {
+      const index = argv.indexOf(flagName)
+      return index >= 0 ? argv[index + 1] : ''
+    }
+    try {
+      const paired = await pair({
+        url: flag('--url') || brokerUrl(),
+        cookie: flag('--cookie') || process.env.BROKER_ADMIN_COOKIE || '',
+        name: flag('--name') || 'this computer',
+      })
+      process.stdout.write(`paired ${paired.name} (${paired.id})\nvault key: ${paired.fingerprint}\nstored in ${paired.file}\n`)
+      return 0
+    } catch (error) {
+      process.stderr.write(String(error.message ?? error) + '\n')
+      return 1
+    }
+  }
+
+  if (command === 'unlock') {
+    try {
+      const opened = await unlock()
+      const device = loadDevice()
+      const pulled = await count(device)
+      process.stdout.write(`vault key: ${opened.fingerprint} (matches the paired vault)\n`)
+      if (pulled.error) process.stdout.write(`ciphertext pull: ${pulled.error}\n`)
+      else process.stdout.write(`ciphertext pull: ${pulled.items} rows at revision ${pulled.revision}\n`)
+      return 0
+    } catch (error) {
+      process.stderr.write(String(error.message ?? error) + '\n')
+      return 1
+    }
   }
 
   if (command === 'sync') {

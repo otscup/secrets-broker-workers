@@ -9,7 +9,7 @@ import {
 } from './crypto.js'
 import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, ALLOWED_ALGS } from './oidc.js'
 import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
-import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2Create, vault2Update, vault2Delete, vault2Read } from './vault2.js'
+import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2DeviceByToken } from './vault2.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -7567,8 +7567,20 @@ const TOOL_META = {
     // The v2 vault. Admin session required: device tokens arrive with /pair in
     // the next step, and until then the browser is the only caller.
     if (url.pathname.startsWith('/api/v2/')) {
-      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const isAdmin = await adminAuthorized(request, env)
       const route = url.pathname.slice('/api/v2/'.length)
+      // A paired device may pull ciphertext while the vault is locked: it holds
+      // the data key locally, so the server never has to decrypt for it. This is
+      // the only surface a device token reaches; everything else needs the admin
+      // session.
+      if (!isAdmin && route === 'items' && request.method === 'GET') {
+        const bearer = request.headers.get('authorization') ?? ''
+        const presented = (bearer.match(/^Bearer\s+(.+)$/i) ?? [])[1] ?? ''
+        const device = await vault2DeviceByToken(env, presented).catch(() => null)
+        if (!device) return fail('unauthorized', 401)
+        return json({ ...(await vault2List(env, Number(url.searchParams.get('since') ?? 0))), device: device.name })
+      }
+      if (!isAdmin) return fail('unauthorized', 401)
       const keyCall = async (method, body) => {
         const response = await stateStub(env).fetch('https://state/v2-key', {
           method,
@@ -7611,6 +7623,29 @@ const TOOL_META = {
         if (route === 'lock' && request.method === 'POST') {
           await keyCall('DELETE')
           return json({ ok: true })
+        }
+        // Pairing hands this device the same data key, wrapped to its own public
+        // key. The token comes back once and is stored only as a hash.
+        if (route === 'pair' && request.method === 'POST') {
+          const dek = await unlockedKey()
+          if (!dek) return fail('vault is locked', 423)
+          const body = await request.json().catch(() => ({}))
+          let paired = null
+          try {
+            paired = await vault2Pair(env, dek, body)
+          } catch (error) { return fail(String(error.message ?? error), 400) }
+          await addAudit(env, { event: 'vault.pair', agent: 'admin', name: paired.name })
+          return json(paired, 201)
+        }
+        if (route === 'devices' && request.method === 'GET') {
+          return json({ devices: await vault2Devices(env) })
+        }
+        if (route.startsWith('devices/') && request.method === 'DELETE') {
+          const id = route.slice('devices/'.length)
+          const revoked = await vault2RevokeDevice(env, id)
+          if (!revoked) return fail('device not found', 404)
+          await addAudit(env, { event: 'vault.device-revoke', agent: 'admin', name: id })
+          return json(revoked)
         }
         if (route === 'items' && request.method === 'GET') {
           return json(await vault2List(env, Number(url.searchParams.get('since') ?? 0)))

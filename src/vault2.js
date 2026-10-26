@@ -3,7 +3,7 @@
 //
 // The data key lives only in the caller's memory for the length of a session.
 // This module never logs it, never writes it to D1, and never returns it.
-import { sealItem, openItem, wrapDekPassword, unwrapDekPassword, newDek, dekFingerprint } from './envelope.js'
+import { sealItem, openItem, wrapDekPassword, unwrapDekPassword, wrapDekDevice, newDek, dekFingerprint } from './envelope.js'
 
 const PASSWORD_KEYRING = 'password'
 
@@ -116,3 +116,78 @@ export async function vault2Read(env, dek, id) {
     payload: await openItem(dek, row.id, row.ciphertext),
   }
 }
+
+// A paired device holds the same data key, wrapped to its own public key. The
+// token is returned once and stored only as a hash, so the row alone cannot be
+// used to pull ciphertext.
+export async function vault2Pair(env, dek, { name, publicKey, publicJwk }) {
+  const label = String(name ?? '').trim().slice(0, 60)
+  if (!label) throw new Error('a device needs a name')
+  const offered = publicKey ?? publicJwk
+  const jwk = typeof offered === 'string' ? JSON.parse(offered) : offered
+  if (!jwk || jwk.kty !== 'EC' || jwk.crv !== 'P-256' || !jwk.x || !jwk.y) throw new Error('public key must be a P-256 JWK')
+  const id = crypto.randomUUID()
+  const at = new Date().toISOString()
+  const token = base64Url(crypto.getRandomValues(new Uint8Array(32)))
+  const envelope = await wrapDekDevice(dek, jwk)
+  await env.VAULT_DB.prepare('INSERT INTO devices (id, name, public_jwk, token_hash, created_at) VALUES (?, ?, ?, ?, ?)')
+    .bind(id, label, JSON.stringify(jwk), await sha256Base64(token), at)
+    .run()
+  await env.VAULT_DB.prepare('INSERT INTO keyrings (id, kind, envelope, device_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind('device:' + id, 'device', envelope, id, at, at)
+    .run()
+  return { id, name: label, token, envelope, createdAt: at, fingerprint: await dekFingerprint(dek) }
+}
+
+export async function vault2Devices(env) {
+  const rows = await env.VAULT_DB.prepare('SELECT id, name, created_at, last_seen_at, revoked_at FROM devices ORDER BY created_at DESC').all()
+  return (rows.results ?? []).map((row) => ({
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at ?? null,
+    revokedAt: row.revoked_at ?? null,
+  }))
+}
+
+// Revoking stops future pulls. It cannot un-learn a key the device already has:
+// only a rekey (re-encrypt every row under a new DEK) does that.
+export async function vault2RevokeDevice(env, id) {
+  const row = await env.VAULT_DB.prepare('SELECT id FROM devices WHERE id = ?').bind(id).first()
+  if (!row) return null
+  const at = new Date().toISOString()
+  await env.VAULT_DB.prepare('UPDATE devices SET revoked_at = ?, token_hash = NULL WHERE id = ?').bind(at, id).run()
+  await env.VAULT_DB.prepare('UPDATE keyrings SET revoked_at = ? WHERE device_id = ?').bind(at, id).run()
+  return { id, revokedAt: at }
+}
+
+export async function vault2DeviceByToken(env, token) {
+  const value = String(token ?? '')
+  if (value.length < 20) return null
+  const hash = await sha256Base64(value)
+  const row = await env.VAULT_DB.prepare('SELECT id, name, token_hash FROM devices WHERE token_hash IS NOT NULL AND revoked_at IS NULL').all()
+  const hit = (row.results ?? []).find((candidate) => constantTimeEqual(candidate.token_hash, hash))
+  if (!hit) return null
+  await env.VAULT_DB.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?').bind(new Date().toISOString(), hit.id).run()
+  return { id: hit.id, name: hit.name }
+}
+
+
+function base64Url(bytes) {
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+async function sha256Base64(text) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+}
+
+function constantTimeEqual(a, b) {
+  const left = String(a ?? '')
+  const right = String(b ?? '')
+  if (left.length !== right.length) return false
+  let diff = 0
+  for (let i = 0; i < left.length; i += 1) diff |= left.charCodeAt(i) ^ right.charCodeAt(i)
+  return diff === 0
+}
+

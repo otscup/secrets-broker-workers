@@ -29,6 +29,7 @@ test-*.mjs
 !test-agents.mjs
 !test-envelope.mjs
 !test-v2-schema.mjs
+!test-cli-vault.mjs
 !test-ui-item-page.mjs
 !test-plugin-endpoints.mjs
 !dsh-plugin/test-popup.mjs

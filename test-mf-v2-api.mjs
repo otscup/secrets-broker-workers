@@ -3,6 +3,7 @@
 // crypto both have to be right.
 import { Miniflare } from 'miniflare'
 import { readFileSync } from 'node:fs'
+import { newDeviceKeypair, unwrapDekDevice, dekFingerprint } from './src/envelope.js'
 
 const results = []
 const pass = (n) => { results.push({ n, ok: true }); console.log('PASS  ' + n) }
@@ -153,6 +154,89 @@ let itemId = ''
   const ok = list.body.revision >= 3 && rows.every((row) => row.revision > 2)
   if (ok) pass('V12 asking since a revision returns only newer rows')
   else fail('V12', JSON.stringify(list.body).slice(0, 200))
+}
+
+// --- pairing: a second device gets the same key, wrapped to its own key -----
+const enumBearer = (token, options = {}) => ({
+  method: options.method || 'GET',
+  headers: { ...(token ? { authorization: 'Bearer ' + token } : {}), 'content-type': 'application/json' },
+  ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+})
+const deviceCall = async (path, token, options = {}) => {
+  const response = await mf.dispatchFetch(BASE + path, enumBearer(token, options))
+  const text = await response.text()
+  let body = null
+  try { body = JSON.parse(text) } catch { body = text }
+  return { status: response.status, body }
+}
+
+const keypair = await newDeviceKeypair()
+let deviceToken = ''
+let deviceId = ''
+
+// P1: pairing needs the key in memory, so a locked vault cannot mint a device.
+{
+  await call('/api/v2/lock', { method: 'POST' })
+  const { status } = await call('/api/v2/pair', { method: 'POST', body: { name: 'laptop', publicKey: keypair.publicJwk } })
+  if (status === 423) pass('P1 pairing is refused while the vault is locked')
+  else fail('P1', 'status ' + status)
+}
+
+// P2: a key that is not a P-256 JWK is refused instead of being stored.
+{
+  await call('/api/v2/unlock', { method: 'POST', body: { password: MASTER } })
+  const { status } = await call('/api/v2/pair', { method: 'POST', body: { name: 'bad', publicKey: { kty: 'RSA', n: 'x' } } })
+  if (status === 400) pass('P2 pairing refuses a key that is not P-256')
+  else fail('P2', 'status ' + status)
+}
+
+// P3: the wrapped key is the real one — unwrapping locally must give the same
+// fingerprint the vault reports.
+{
+  const created = await call('/api/v2/pair', { method: 'POST', body: { name: 'laptop', publicKey: keypair.publicJwk } })
+  deviceToken = created.body.token || ''
+  deviceId = created.body.id || ''
+  const status = await call('/api/v2/status')
+  let unwrapped = null
+  try { unwrapped = await unwrapDekDevice(created.body.envelope, keypair.privateJwk) } catch { unwrapped = null }
+  const fingerprint = created.body.fingerprint
+  const matches = Boolean(unwrapped) && await dekFingerprint(unwrapped) === fingerprint
+  if (created.status === 201 && deviceToken.length >= 40 && unwrapped?.length === 32 && matches) {
+    pass('P3 the paired device unwraps the same data key the vault holds')
+  } else {
+    fail('P3', JSON.stringify({ status: created.status, error: created.body, vault: status.body.unlocked, tokenLength: deviceToken.length, unwrapped: unwrapped?.length ?? null, fingerprint, matches }))
+  }
+}
+
+// P4: the decisive one — a paired device pulls ciphertext with the vault LOCKED.
+{
+  await call('/api/v2/lock', { method: 'POST' })
+  const { status, body } = await deviceCall('/api/v2/items?since=0', deviceToken)
+  const row = (body.items || [])[0] || {}
+  const ok = status === 200 && row.ciphertext && !String(row.ciphertext).includes('sk-test-123')
+  if (ok) pass('P4 a paired device pulls ciphertext while the vault is locked')
+  else fail('P4', JSON.stringify({ status, body }).slice(0, 200))
+}
+
+// P5: a device token is not an admin session — it cannot write or read devices.
+{
+  const write = await deviceCall('/api/v2/items', deviceToken, { method: 'POST', body: { kind: 'api', payload: { name: 'x' } } })
+  const devices = await deviceCall('/api/v2/devices', deviceToken)
+  const ok = write.status === 401 && devices.status === 401
+  if (ok) pass('P5 a device token cannot write or list devices')
+  else fail('P5', JSON.stringify({ write: write.status, devices: devices.status }))
+}
+
+// P6: revoking a device stops its pulls immediately.
+{
+  await call('/api/v2/unlock', { method: 'POST', body: { password: MASTER } })
+  const list = await call('/api/v2/devices')
+  const revoked = await call('/api/v2/devices/' + deviceId, { method: 'DELETE' })
+  const after = await deviceCall('/api/v2/items?since=0', deviceToken)
+  const row = (list.body.devices || []).find((device) => device.id === deviceId)
+  const ok = row?.name === 'laptop' && revoked.status === 200 && after.status === 401
+  if (ok) pass('P6 a revoked device stops pulling ciphertext')
+  else fail('P6', JSON.stringify({ row, revoked: revoked.status, after: after.status }))
 }
 
 await mf.dispose()
