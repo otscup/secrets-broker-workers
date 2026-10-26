@@ -9,7 +9,7 @@ import {
 } from './crypto.js'
 import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, ALLOWED_ALGS } from './oidc.js'
 import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
-import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf } from './vault2.js'
+import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf, vault2Push } from './vault2.js'
 import { publicKeyFingerprint } from './envelope.js'
 
 const encoder = new TextEncoder()
@@ -7642,6 +7642,19 @@ const TOOL_META = {
     }
     // The v2 vault. Admin session required: device tokens arrive with /pair in
     // the next step, and until then the browser is the only caller.
+    // Device-side push: the rows arrive already sealed, so this is write access
+    // without read access. Only a device a human approved in a browser may do it.
+    if (url.pathname === '/api/v2/push' && request.method === 'POST') {
+      const bearer = String(request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '')
+      const device = bearer ? await vault2DeviceByToken(env, bearer) : null
+      if (!device) return fail('a device token is required', 401)
+      if (!device.canWrite) return fail('this device may read but not write', 403)
+      if (await vault2RekeyPending(env)) return fail('vault is being re-encrypted, retry shortly', 503)
+      const body = await request.json().catch(() => ({}))
+      const result = await vault2Push(env, body.items)
+      await addAudit(env, { event: 'vault.push', agent: device.name, name: String(result.written) })
+      return json(result)
+    }
     // Device-code pairing, request half: a machine that cannot open a browser
     // asks for a short code. Nothing is granted here — the poll token only lets
     // that machine collect what an admin approves in the browser.

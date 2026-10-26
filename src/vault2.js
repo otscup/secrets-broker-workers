@@ -145,7 +145,7 @@ export async function vault2Pair(env, dek, { name, publicKey, publicJwk }) {
   const at = new Date().toISOString()
   const token = base64Url(crypto.getRandomValues(new Uint8Array(32)))
   const envelope = await wrapDekDevice(dek, jwk)
-  await env.VAULT_DB.prepare('INSERT INTO devices (id, name, public_jwk, token_hash, created_at) VALUES (?, ?, ?, ?, ?)')
+  await env.VAULT_DB.prepare('INSERT INTO devices (id, name, public_jwk, token_hash, created_at, can_write) VALUES (?, ?, ?, ?, ?, 1)')
     .bind(id, label, JSON.stringify(jwk), await sha256Base64(token), at)
     .run()
   await env.VAULT_DB.prepare('INSERT INTO keyrings (id, kind, envelope, device_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
@@ -180,11 +180,42 @@ export async function vault2DeviceByToken(env, token) {
   const value = String(token ?? '')
   if (value.length < 20) return null
   const hash = await sha256Base64(value)
-  const row = await env.VAULT_DB.prepare('SELECT id, name, token_hash FROM devices WHERE token_hash IS NOT NULL AND revoked_at IS NULL').all()
+  const row = await env.VAULT_DB.prepare('SELECT id, name, token_hash, can_write FROM devices WHERE token_hash IS NOT NULL AND revoked_at IS NULL').all()
   const hit = (row.results ?? []).find((candidate) => constantTimeEqual(candidate.token_hash, hash))
   if (!hit) return null
   await env.VAULT_DB.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?').bind(new Date().toISOString(), hit.id).run()
-  return { id: hit.id, name: hit.name }
+  return { id: hit.id, name: hit.name, canWrite: Number(hit.can_write ?? 0) === 1 }
+}
+
+// Rows arrive already sealed by the caller: this side never sees plaintext, and
+// a row that does not decrypt on the other end is that device's mistake, not
+// something this database could detect.
+export async function vault2Push(env, rows) {
+  const list = Array.isArray(rows) ? rows.slice(0, 500) : []
+  if (!list.length) return { written: 0, revision: await currentRevision(env) }
+  let written = 0
+  for (const row of list) {
+    const id = String(row?.id ?? '')
+    const ciphertext = String(row?.ciphertext ?? '')
+    const deletedAt = row?.deletedAt ? String(row.deletedAt) : null
+    // A tombstone is a row with no body: it must still be written, or a delete
+    // made on the device would never reach the other machines.
+    if (!id || (!ciphertext && !deletedAt)) continue
+    const kind = row.kind === 'web' ? 'web' : 'api'
+    const revision = await nextRevision(env)
+    const at = new Date().toISOString()
+    await env.VAULT_DB.prepare(
+      'INSERT INTO vault_items (id, kind, ciphertext, revision, created_at, updated_at, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?) ' +
+      'ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, ciphertext = excluded.ciphertext, revision = excluded.revision, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at',
+    ).bind(id, kind, ciphertext, revision, at, at, deletedAt).run()
+    written += 1
+  }
+  return { written, revision: await currentRevision(env) }
+}
+
+async function currentRevision(env) {
+  const row = await env.VAULT_DB.prepare("SELECT value FROM meta WHERE key = 'revision'").first()
+  return Number(row?.value ?? 0)
 }
 
 

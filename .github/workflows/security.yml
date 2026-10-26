@@ -177,5 +177,7 @@ jobs:
         run: npm run test:v2-rekey
       - name: v2 device code pairing (short code, poll token, one-time redeem)
         run: npm run test:v2-paircode
+      - name: v2 pull and push (sealed rows, write permission, revocation)
+        run: npm run test:v2-pushpull
       - name: Full security suite (short path)
         run: npm run test:security:short

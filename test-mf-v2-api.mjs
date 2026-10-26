@@ -2,7 +2,7 @@
 // revision cursor. Runs the real worker against a real D1, so the SQL and the
 // crypto both have to be right.
 import { Miniflare } from 'miniflare'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { newDeviceKeypair, unwrapDekDevice, dekFingerprint } from './src/envelope.js'
 
 const results = []
@@ -28,8 +28,10 @@ const mf = new Miniflare({
 
 // Apply the migration the way the deploy does: comments out, statements in.
 const db = await mf.getD1Database('VAULT_DB')
-const schema = readFileSync('migrations/0001_v2_start.sql', 'utf8').split('\n').filter((line) => !line.trim().startsWith('--')).join('\n')
-for (const statement of schema.split(';').map((part) => part.trim()).filter(Boolean)) await db.prepare(statement).run()
+for (const file of readdirSync('migrations').filter((name) => name.endsWith('.sql')).sort()) {
+  const schema = readFileSync('migrations/' + file, 'utf8').split('\n').filter((line) => !line.trim().startsWith('--')).join('\n')
+  for (const statement of schema.split(';').map((part) => part.trim()).filter(Boolean)) await db.prepare(statement).run().catch((error) => { if (!/duplicate column/i.test(String(error.message))) throw error })
+}
 
 const ns = await mf.getDurableObjectNamespace('BROKER_STATE')
 const stub = ns.get(ns.idFromName('global'))

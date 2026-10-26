@@ -4,7 +4,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { newDeviceKeypair, unwrapDekDevice, dekFingerprint } from '../src/envelope.js'
+import { newDeviceKeypair, unwrapDekDevice, dekFingerprint, openItem, sealItem } from '../src/envelope.js'
 
 const DIR = join(homedir(), '.secrets-broker')
 const FILE = join(DIR, 'device.json')
@@ -105,7 +105,52 @@ export async function pairWait({ base, pollToken, keypair, name, timeoutMs = 5 *
   throw new Error('nobody approved the pairing within five minutes')
 }
 
-export async function unlock() {  const record = loadDevice()
+export async function unlock() {
+  const { record, fingerprint } = await openLocal()
+  return { fingerprint, name: record.name, url: record.url, pairedAt: record.pairedAt }
+}
+
+// Pull ciphertext and open it with the key this machine already holds. What
+// comes back is plaintext on disk, so the caller decides where it goes.
+export async function pull({ since = 0 } = {}) {
+  const { dek, record } = await openLocal()
+  const response = await fetch(record.url + '/api/v2/items?since=' + Number(since || 0), { headers: { authorization: 'Bearer ' + record.token } })
+  const text = await response.text()
+  if (!response.ok) throw new Error('pull failed (' + response.status + '): ' + text.slice(0, 300))
+  const body = JSON.parse(text)
+  const items = []
+  for (const row of body.items ?? []) {
+    if (row.deletedAt) { items.push({ id: row.id, revision: row.revision, deleted: true }); continue }
+    const payload = await openItem(dek, row.id, row.ciphertext).catch(() => null)
+    items.push({ id: row.id, kind: row.kind, revision: row.revision, updatedAt: row.updatedAt, payload })
+  }
+  return { revision: body.revision, items, url: record.url }
+}
+
+// Seal here, not there: the server is handed ciphertext and keeps its promise
+// that it never sees a secret.
+export async function push({ items } = {}) {
+  const { dek, record } = await openLocal()
+  const rows = []
+  for (const item of items ?? []) {
+    if (!item?.id) continue
+    if (item.deleted) { rows.push({ id: item.id, kind: item.kind ?? 'api', ciphertext: '', deletedAt: new Date().toISOString() }); continue }
+    if (!item.payload) continue
+    rows.push({ id: item.id, kind: item.kind === 'web' ? 'web' : 'api', ciphertext: await sealItem(dek, item.id, item.payload) })
+  }
+  if (!rows.length) return { written: 0, revision: 0 }
+  const response = await fetch(record.url + '/api/v2/push', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + record.token },
+    body: JSON.stringify({ items: rows }),
+  })
+  const text = await response.text()
+  if (!response.ok) throw new Error('push failed (' + response.status + '): ' + text.slice(0, 300))
+  return JSON.parse(text)
+}
+
+async function openLocal() {
+  const record = loadDevice()
   if (!record) throw new Error('no paired device yet: run `secrets-broker pair --url <broker>` first')
   let current = record
   let dek = await unwrapDekDevice(record.envelope, record.privateJwk).catch(() => null)
@@ -123,7 +168,7 @@ export async function unlock() {  const record = loadDevice()
   }
   if (!dek || dek.length !== 32) throw new Error('the stored envelope did not unwrap to a 32-byte key')
   if (current.fingerprint && fingerprint !== current.fingerprint) throw new Error('the unwrapped key does not match the vault this device paired with')
-  return { fingerprint, name: current.name, url: current.url, pairedAt: current.pairedAt }
+  return { dek, fingerprint, record: current }
 }
 
 async function refreshEnvelope(record) {

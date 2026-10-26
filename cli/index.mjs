@@ -23,13 +23,13 @@
 import { createInterface } from 'node:readline'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { log, handleApprovals } from './approval.mjs'
 import { createBridge } from './bridge.mjs'
 import { login } from './oauth.mjs'
 import { runMaterialize } from './materialize.mjs'
 import { runSync } from './sync.mjs'
-import { pair, pairRequest, pairWait, unlock, count, loadDevice } from './vault.mjs'
+import { pair, pairRequest, pairWait, unlock, count, loadDevice, pull, push } from './vault.mjs'
 import { detect, adapters, plan, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
@@ -65,6 +65,10 @@ Usage
                                  pair this machine with a v2 vault, keep the key locally
                                  (no cookie: prints a device code to approve in a browser)
   secrets-broker unlock          check the stored key against the vault fingerprint
+  secrets-broker pull [--since N] [--to FILE]
+                                 decrypt the vault into a file (mode 0600)
+  secrets-broker push --from FILE
+                                 seal that file again and upload it
   secrets-broker rekey --password P --cookie C
                                  re-encrypt the vault under a new key (revokes what an old key could read)
   secrets-broker agents detect   list the MCP clients on this machine
@@ -278,6 +282,44 @@ async function main() {
       process.stdout.write(`vault key: ${opened.fingerprint} (matches the paired vault)\n`)
       if (pulled.error) process.stdout.write(`ciphertext pull: ${pulled.error}\n`)
       else process.stdout.write(`ciphertext pull: ${pulled.items} rows at revision ${pulled.revision}\n`)
+      return 0
+    } catch (error) {
+      process.stderr.write(String(error.message ?? error) + '\n')
+      return 1
+    }
+  }
+
+  if (command === 'pull') {
+    const flag = (flagName) => {
+      const index = argv.indexOf(flagName)
+      return index >= 0 ? argv[index + 1] : ''
+    }
+    try {
+      const pulled = await pull({ since: Number(flag('--since') || 0) })
+      const live = pulled.items.filter((item) => !item.deleted)
+      const broken = live.filter((item) => !item.payload)
+      const to = flag('--to') || ''
+      if (to) writeFileSync(to, JSON.stringify({ url: pulled.url, revision: pulled.revision, items: pulled.items }, null, 2), { mode: 0o600 })
+      process.stdout.write(`${live.length} items at revision ${pulled.revision}${to ? ', written to ' + to : ''}\n`)
+      if (broken.length) process.stdout.write(`${broken.length} rows did not open with this key (they belong to another vault key)\n`)
+      return 0
+    } catch (error) {
+      process.stderr.write(String(error.message ?? error) + '\n')
+      return 1
+    }
+  }
+
+  if (command === 'push') {
+    const flag = (flagName) => {
+      const index = argv.indexOf(flagName)
+      return index >= 0 ? argv[index + 1] : ''
+    }
+    try {
+      const from = flag('--from')
+      if (!from) throw new Error('push needs --from <file written by `secrets-broker pull --to`>')
+      const document = JSON.parse(readFileSync(from, 'utf8'))
+      const result = await push({ items: document.items ?? [] })
+      process.stdout.write(`pushed ${result.written} rows, vault now at revision ${result.revision}\n`)
       return 0
     } catch (error) {
       process.stderr.write(String(error.message ?? error) + '\n')
