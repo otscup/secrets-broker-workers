@@ -1,6 +1,6 @@
 {
   "name": "secrets-broker-workers",
-  "version": "0.0.1",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "bin": {
@@ -102,7 +102,8 @@
     "test:plugin-guard": "node dsh-plugin/test-plugin-guard.mjs",
     "test:target-binding": "node test-mf-target-binding.mjs",
     "test:plugin-operator": "node test-plugin-endpoints.mjs",
-    "test:ai-assistant": "node test-mf-ai-assistant.mjs"
+    "test:ai-assistant": "node test-mf-ai-assistant.mjs",
+    "prepublishOnly": "node scripts/check-pack.mjs && npm run test:cli && npm run test:exec && npm run test:daemon && npm run test:v2-cli"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",

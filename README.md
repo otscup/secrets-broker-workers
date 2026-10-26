@@ -471,6 +471,20 @@ Agents are created in the **Agents** tab; the token is shown only once.
 The item's **no-approval** toggle in the **Items** tab makes reads immediate while still
 recording audit events.
 
+### Publishing the CLI
+
+`npm pack` is what a user installs, so the tarball is what the check looks at:
+
+```bash
+node scripts/check-pack.mjs     # the CLI, everything it imports, nothing secret
+npm publish
+```
+
+`prepublishOnly` runs that check plus the CLI, exec, daemon and v2-CLI suites, so
+a broken file list or a failing line stops the publish instead of shipping it.
+The `files` list must keep `cli/`, `src/envelope.js`, `src/vaultdiff.js` and
+`mcp-stdio/`: an import outside those paths resolves to nothing once installed.
+
 ### Keep the vault open on this machine
 
 Every agent that starts `secrets-broker serve` decrypts the vault again. Running
