@@ -59,13 +59,15 @@ const vault = await import('./cli/vault.mjs?scratch=' + Date.now())
   else fail('C1', message || 'no error raised')
 }
 
-// C2: a real pair request stores a device record with the private key, and the
+// C2: a real pair request stores a device record with the key held safely — in
+// the OS store on Windows, in the file where no such store exists — plus the
 // wrapped key rather than the key itself.
 {
   const paired = await vault.pair({ url: base, cookie: 'sb_admin=test', name: 'laptop' })
   const record = JSON.parse(readFileSync(join(home, '.secrets-broker', 'device.json'), 'utf8'))
+  const keyHeld = record.privateKeyStore === 'dpapi' ? !record.privateJwk : Boolean(record.privateJwk?.d)
   const ok = provesCookie && pairCalls === 1 && paired.fingerprint === FINGERPRINT
-    && record.privateJwk?.d && JSON.parse(record.envelope).kind === 'device'
+    && keyHeld && JSON.parse(record.envelope).kind === 'device'
     && !JSON.stringify(record).includes(String(DEK))
   if (ok) pass('C2 pairing stores a private key and a wrapped key, never the key itself')
   else fail('C2', JSON.stringify({ provesCookie, pairCalls, fingerprint: paired.fingerprint, keys: Object.keys(record) }))

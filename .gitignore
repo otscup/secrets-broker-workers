@@ -41,3 +41,4 @@ test-*.mjs
 !test-cli-offline.mjs
 !test-local-daemon.mjs
 !test-local-tools.mjs
+!test-cli-devkey.mjs

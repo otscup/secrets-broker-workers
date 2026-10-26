@@ -23,6 +23,7 @@
     "test:scan": "node test-cli-scan.mjs",
     "test:cache": "node test-cli-cache.mjs",
     "test:offline": "node test-cli-offline.mjs",
+    "test:devkey": "node test-cli-devkey.mjs",
     "test:daemon": "node test-local-daemon.mjs",
     "test:agents": "node test-agents.mjs",
     "test:envelope": "node test-envelope.mjs",
@@ -106,7 +107,7 @@
     "test:target-binding": "node test-mf-target-binding.mjs",
     "test:plugin-operator": "node test-plugin-endpoints.mjs",
     "test:ai-assistant": "node test-mf-ai-assistant.mjs",
-    "prepublishOnly": "node scripts/check-pack.mjs && npm run test:cli && npm run test:exec && npm run test:cache && npm run test:offline && npm run test:daemon && npm run test:v2-cli"
+    "prepublishOnly": "node scripts/check-pack.mjs && npm run test:cli && npm run test:exec && npm run test:cache && npm run test:offline && npm run test:devkey && npm run test:daemon && npm run test:v2-cli"
   },
   "devDependencies": {
     "esbuild": "^0.28.2",

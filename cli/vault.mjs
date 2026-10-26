@@ -6,10 +6,12 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { newDeviceKeypair, unwrapDekDevice, dekFingerprint, openItem, sealItem } from '../src/envelope.js'
 import { loadPull, savePull } from './cache.mjs'
+import { protectSecret, unprotectSecret } from './store.mjs'
 
 // BROKER_HOME keeps a second broker (or a test) from touching the real pairing.
 const DIR = process.env.BROKER_HOME || join(homedir(), '.secrets-broker')
 const FILE = join(DIR, 'device.json')
+const KEY_FILE = join(DIR, 'device-key.dpapi')
 
 export function deviceFile() {
   return FILE
@@ -22,7 +24,21 @@ export function loadDevice() {
 
 function saveDevice(record) {
   mkdirSync(DIR, { recursive: true, mode: 0o700 })
-  writeFileSync(FILE, JSON.stringify(record, null, 2), { mode: 0o600 })
+  const saved = { ...record }
+  // The private key unwraps the vault key, so it does not belong in a readable
+  // JSON file: hand it to the OS store and keep only a pointer here.
+  const key = saved.privateJwk
+  delete saved.privateJwk
+  if (key && protectSecret(KEY_FILE, JSON.stringify(key))) saved.privateKeyStore = 'dpapi'
+  else if (key) saved.privateJwk = key
+  writeFileSync(FILE, JSON.stringify(saved, null, 2), { mode: 0o600 })
+}
+
+// Older pairings kept the key in the file; both shapes must keep opening.
+function deviceKey(record) {
+  if (record?.privateJwk) return record.privateJwk
+  const stored = record?.privateKeyStore ? unprotectSecret(KEY_FILE) : ''
+  return stored ? JSON.parse(stored) : null
 }
 
 // Pairing needs an admin session, which the server accepts as a cookie. Until
@@ -177,8 +193,10 @@ export async function push({ items } = {}) {
 async function openLocal() {
   const record = loadDevice()
   if (!record) throw new Error('no paired device yet: run `secrets-broker pair --url <broker>` first')
+  const key = deviceKey(record)
+  if (!key) throw new Error('this machine kept no private key for its pairing; run `secrets-broker pair` again')
   let current = record
-  let dek = await unwrapDekDevice(record.envelope, record.privateJwk).catch(() => null)
+  let dek = await unwrapDekDevice(record.envelope, key).catch(() => null)
   let fingerprint = dek ? await dekFingerprint(dek) : null
   // A rekey replaced every envelope: the one on disk no longer opens. Ask the
   // server for the current one and unwrap it with the key this machine already
@@ -187,7 +205,7 @@ async function openLocal() {
     const refreshed = await refreshEnvelope(record).catch(() => null)
     if (refreshed) {
       current = refreshed
-      dek = await unwrapDekDevice(refreshed.envelope, refreshed.privateJwk).catch(() => null)
+      dek = await unwrapDekDevice(refreshed.envelope, key).catch(() => null)
       fingerprint = dek ? await dekFingerprint(dek) : null
     }
   }

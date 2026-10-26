@@ -27,8 +27,33 @@ export function tokenFile() {
   return process.env.BROKER_TOKEN_FILE || path.join(os.homedir(), '.secrets-broker', 'oauth.json')
 }
 
-function dpapiFile() {
-  return path.join(path.dirname(tokenFile()), 'oauth.dpapi')
+function dpapiFile(name = 'oauth') {
+  return path.join(path.dirname(tokenFile()), name + '.dpapi')
+}
+
+/**
+ * Keep one secret in a file of its own, encrypted to this OS user.
+ * Returns false when the platform has no such store, so the caller decides what
+ * to do instead of silently writing plaintext.
+ */
+export function protectSecret(file, value) {
+  if (keychainName() !== 'dpapi') return false
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, dpapi('protect', value), { mode: 0o600 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function unprotectSecret(file) {
+  if (keychainName() !== 'dpapi') return ''
+  try {
+    return dpapi('unprotect', fs.readFileSync(file, 'utf8'))
+  } catch {
+    return ''
+  }
 }
 
 function forced() {
@@ -48,12 +73,29 @@ function has(cmd) {
   }
 }
 
+const DPAPI_PROTECT =
+  'Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue; $s=[IO.File]::ReadAllText($env:SB_DPAPI_IN,[Text.Encoding]::UTF8); $b=[Text.Encoding]::UTF8.GetBytes($s); $p=[System.Security.Cryptography.ProtectedData]::Protect($b,$null,"CurrentUser"); [IO.File]::WriteAllText($env:SB_DPAPI_OUT,[Convert]::ToBase64String($p),[Text.Encoding]::UTF8)'
+const DPAPI_UNPROTECT =
+  'Add-Type -AssemblyName System.Security -ErrorAction SilentlyContinue; $s=[IO.File]::ReadAllText($env:SB_DPAPI_IN,[Text.Encoding]::UTF8); $b=[Convert]::FromBase64String($s); $p=[System.Security.Cryptography.ProtectedData]::Unprotect($b,$null,"CurrentUser"); [IO.File]::WriteAllText($env:SB_DPAPI_OUT,[Text.Encoding]::UTF8.GetString($p),[Text.Encoding]::UTF8)'
+
+// Piped stdin does not reach the script on Windows ([Console]::In.ReadToEnd()
+// returned null and Protect threw), so both directions hand over a file.
 const dpapi = (mode, payload) => {
-  const script =
-    mode === 'protect'
-      ? "$s=[Console]::In.ReadToEnd(); $b=[Text.Encoding]::UTF8.GetBytes($s); $p=[Security.Cryptography.ProtectedData]::Protect($b,$null,'CurrentUser'); [Console]::Out.Write([Convert]::ToBase64String($p))"
-      : "$b=[Convert]::FromBase64String([Console]::In.ReadToEnd()); $p=[Security.Cryptography.ProtectedData]::Unprotect($b,$null,'CurrentUser'); [Console]::Out.Write([Text.Encoding]::UTF8.GetString($p))"
-  return run('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], payload)
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-dpapi-'))
+  const input = path.join(dir, 'in.txt')
+  const output = path.join(dir, 'out.txt')
+  try {
+    fs.writeFileSync(input, payload, 'utf8')
+    execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', mode === 'protect' ? DPAPI_PROTECT : DPAPI_UNPROTECT], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 15000,
+      env: { ...process.env, SB_DPAPI_IN: input, SB_DPAPI_OUT: output },
+    })
+    // Windows PowerShell writes a BOM; JSON.parse and dpapi payloads must not see it.
+    return fs.readFileSync(output, 'utf8').replace(/^\uFEFF/, '')
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
 }
 
 /** Which backend would be used right now, without touching any secret. */
@@ -147,7 +189,12 @@ export function saveRecord(record) {
   if (store === 'env') return { store, persisted: false }
   if (store === 'keychain') {
     try {
-      if (keychainSet(keychainName() || 'keychain', value)) return { store, persisted: true }
+      if (keychainSet(keychainName() || 'keychain', value)) {
+        // The encrypted copy replaces the readable one; leaving it behind would
+        // keep the token in the clear forever.
+        try { fs.rmSync(tokenFile(), { force: true }) } catch {}
+        return { store, persisted: true }
+      }
     } catch {}
   }
 

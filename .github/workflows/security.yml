@@ -28,6 +28,8 @@ jobs:
         run: npm run test:cache
       - name: Offline pull from the cache (no runtime)
         run: npm run test:offline
+      - name: Pairing key never lands in a readable file (no runtime)
+        run: npm run test:devkey
       # workerd-backed suites: real Durable Object storage/transaction semantics.
       - name: OIDC state replay (Miniflare)
         run: npm run test:mcp-oidc
