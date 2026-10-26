@@ -1,6 +1,10 @@
+// One-off ops script.
 import fs from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
-const file = 'E:\\dsh-home\\secrets-broker\\xid-client.json'
+const dsh = process.env.DSH_HOME || join(homedir(), '.dsh')
+const file = join(dsh, 'secrets-broker', 'xid-client.json')
 const client = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))
 const registrationToken = client.registration_access_token
 const uri = client.registration_client_uri

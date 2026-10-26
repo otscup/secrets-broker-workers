@@ -19,14 +19,12 @@ $('save').onclick = async () => {
   const executorSecret = $('executorSecret').value.trim()
   if (!brokerUrl || !executorId || !executorSecret) return setStatus('三项都要填', 'err')
   try { new URL(brokerUrl) } catch { return setStatus('Broker 地址不是合法 URL', 'err') }
-  await chrome.storage.local.set({
-    brokerUrl, executorId, executorSecret,
-    pollSeconds: Math.max(3, Math.min(60, Number($('pollSeconds').value) || 5)),
-    enabled: $('enabled').checked,
-  })
-  // Re-arm the alarm with the new interval; the worker reads settings anyway.
+  const pollSeconds = Math.max(3, Math.min(60, Number($('pollSeconds').value) || 5))
+  const enabled = $('enabled').checked
+  await chrome.storage.local.set({ brokerUrl, executorId, executorSecret, pollSeconds, enabled })
+  // Re-arm the alarm with the interval just saved; the worker only reads settings.
   await chrome.alarms.clear('poll')
-  chrome.alarms.create('poll', { periodInMinutes: 0.1 })
+  if (enabled) chrome.alarms.create('poll', { periodInMinutes: Math.max(0.5, pollSeconds / 60) })
   setStatus('已保存', 'ok')
 }
 

@@ -40,7 +40,10 @@ function b64urlDecode(text) {
 }
 
 export function b64urlEncode(bytes) {
-  return btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const view = new Uint8Array(bytes)
+  let binary = ''
+  for (let offset = 0; offset < view.length; offset += 0x8000) binary += String.fromCharCode.apply(null, view.subarray(offset, offset + 0x8000))
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
 /** Split a JWS into { header, payload, signingInput, signature }. Throws on malformed input. */

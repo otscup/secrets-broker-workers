@@ -24,7 +24,7 @@ import { createInterface } from 'node:readline'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readFileSync } from 'node:fs'
-import { log, handleApprovals, openBrowser } from './approval.mjs'
+import { log, handleApprovals } from './approval.mjs'
 import { createBridge } from './bridge.mjs'
 import { login } from './oauth.mjs'
 import { runMaterialize } from './materialize.mjs'
@@ -36,6 +36,18 @@ import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
 const DEFAULT_URL = 'https://sb.otscup.com'
 
 export const brokerUrl = () => (process.env.BROKER_URL || DEFAULT_URL).replace(/\/+$/, '')
+
+// Options that take a value. Their value must be removed before positional
+// lookup, or `materialize --path .env name` reads `.env` as the secret name.
+const VALUE_OPTIONS = new Set(['--id', '--remote', '--remote-token', '--path', '-p', '--key', '-k'])
+function positionals(argv) {
+  const rest = []
+  for (let i = 0; i < argv.length; i += 1) {
+    if (VALUE_OPTIONS.has(argv[i])) i += 1
+    else if (!argv[i].startsWith('-')) rest.push(argv[i])
+  }
+  return rest
+}
 
 const help = `secrets-broker - local bridge to a Secrets Broker deployment
 
@@ -93,7 +105,8 @@ async function status() {
 
 async function main() {
   const argv = process.argv.slice(2)
-  const command = argv.find((arg) => !arg.startsWith('-')) || 'serve'
+  const args = positionals(argv)
+  const command = args[0] || 'serve'
 
   if (argv.includes('--help') || argv.includes('-h') || command === 'help') {
     process.stdout.write(help)
@@ -106,7 +119,7 @@ async function main() {
   }
 
   if (command === 'agents') {
-    const sub = argv[1] && !argv[1].startsWith('-') ? argv[1] : 'detect'
+    const sub = args[1] || 'detect'
     const flag = (name) => {
       const index = argv.indexOf(name)
       return index >= 0 ? argv[index + 1] : ''
@@ -223,7 +236,7 @@ async function main() {
   }
 
   if (command === 'materialize') {
-    const name = argv[1] && !argv[1].startsWith('-') ? argv[1] : (argv[2] && !argv[2].startsWith('-') ? argv[2] : '')
+    const name = args[1] || ''
     const flag = (flagName) => {
       const index = argv.indexOf(flagName)
       return index >= 0 ? argv[index + 1] : ''
@@ -334,4 +347,4 @@ if (invokedDirectly) {
     })
 }
 
-export { main, serve, handleApprovals, status }
+export { main, serve, handleApprovals, status, positionals }

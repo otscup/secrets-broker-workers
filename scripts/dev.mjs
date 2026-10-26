@@ -10,10 +10,14 @@
 //
 //   node scripts/seed.mjs --password local-master --demo
 import { spawn } from 'node:child_process'
-import { createHash, randomBytes } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// Run wrangler as a Node script rather than through a shell, so the port and the
+// generated passwords are passed as arguments and never re-parsed.
+const WRANGLER = fileURLToPath(new URL('../node_modules/wrangler/bin/wrangler.js', import.meta.url))
 
 const argv = process.argv.slice(2)
 const flag = (name, fallback) => {
@@ -38,7 +42,7 @@ function keys() {
 
 const { sessionKek, adminPassword } = keys()
 const args = [
-  'wrangler', 'dev',
+  WRANGLER, 'dev',
   '--port', port,
   '--persist-to', persist,
   '--var', 'SESSION_KEK:' + sessionKek,
@@ -52,5 +56,5 @@ console.log('[dev] vault state:   ' + path.resolve(persist))
 console.log('[dev] a fresh vault needs a user row once: node scripts/seed.mjs --password <master> --demo')
 console.log('[dev] the browser half of a credential is decrypted here, so nothing leaves this machine')
 
-const child = spawn('npx', args, { stdio: 'inherit', shell: true, env: process.env })
+const child = spawn(process.execPath, args, { stdio: 'inherit', env: process.env })
 child.on('exit', (code) => process.exit(typeof code === 'number' ? code : 0))

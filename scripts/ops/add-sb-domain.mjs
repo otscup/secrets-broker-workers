@@ -1,9 +1,16 @@
+// One-off ops script. Needs CF_ZONE_ID.
 import fs from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
-const mainToken = fs.readFileSync('E:\\dsh-home\\.cloudflare\\secrets-broker-token.txt', 'utf8').trim()
-const workerToken = fs.readFileSync('E:\\dsh-home\\.cloudflare\\workers-d1-token.txt', 'utf8').trim()
-const account = 'f475b3dcf291c33ae82ab0b595f81958'
-const zone = '9a1893fc52f7a09d766dd9d091376d42'
+const dsh = process.env.DSH_HOME || join(homedir(), '.dsh')
+const zone = process.env.CF_ZONE_ID
+if (!zone) {
+  console.error('CF_ZONE_ID is not set')
+  process.exit(1)
+}
+const mainToken = fs.readFileSync(join(dsh, '.cloudflare', 'secrets-broker-token.txt'), 'utf8').trim()
+const workerToken = fs.readFileSync(join(dsh, '.cloudflare', 'workers-d1-token.txt'), 'utf8').trim()
 const host = 'sb.otscup.com'
 
 async function api(token, method, path, body) {

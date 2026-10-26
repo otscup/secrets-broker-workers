@@ -1,10 +1,14 @@
+// One-off ops script.
 import fs from 'node:fs'
 import https from 'node:https'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
-const admin = fs.readFileSync('E:\\dsh-home\\secrets-broker\\workers-admin-login-password.txt', 'utf8').trim()
-const ntfyTopic = fs.readFileSync('E:\\dsh-home\\secrets-broker\\ntfy-topic.txt', 'utf8').trim()
-const gotifyToken = fs.readFileSync('E:\\dsh-home\\secrets-broker\\gotify-token.txt', 'utf8').trim()
-const wxpushToken = fs.readFileSync('E:\\dsh-home\\secrets-broker\\wxpush-token.txt', 'utf8').trim()
+const dsh = process.env.DSH_HOME || join(homedir(), '.dsh')
+const admin = fs.readFileSync(join(dsh, 'secrets-broker', 'workers-admin-login-password.txt'), 'utf8').trim()
+const ntfyTopic = fs.readFileSync(join(dsh, 'secrets-broker', 'ntfy-topic.txt'), 'utf8').trim()
+const gotifyToken = fs.readFileSync(join(dsh, 'secrets-broker', 'gotify-token.txt'), 'utf8').trim()
+const wxpushToken = fs.readFileSync(join(dsh, 'secrets-broker', 'wxpush-token.txt'), 'utf8').trim()
 let cookies = []
 function request(path, { method = 'GET', body } = {}) {
   return new Promise((resolve, reject) => {

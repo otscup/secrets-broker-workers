@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id)
-const DEFAULTS = { brokerUrl: '', executorId: '', executorSecret: '', enabled: true }
+const DEFAULTS = { brokerUrl: '', executorId: '', executorSecret: '', pollSeconds: 5, enabled: true }
 
 async function render() {
   const values = { ...DEFAULTS, ...(await chrome.storage.local.get(DEFAULTS)) }
@@ -24,7 +24,11 @@ $('check').onclick = async () => {
 
 $('toggle').onclick = async () => {
   const current = { ...DEFAULTS, ...(await chrome.storage.local.get(DEFAULTS)) }
-  await chrome.storage.local.set({ enabled: current.enabled === false })
+  const enabled = current.enabled === false
+  await chrome.storage.local.set({ enabled })
+  // Same re-arm as the options page: the worker no longer creates the alarm.
+  await chrome.alarms.clear('poll')
+  if (enabled) chrome.alarms.create('poll', { periodInMinutes: Math.max(0.5, current.pollSeconds / 60) })
   render()
 }
 

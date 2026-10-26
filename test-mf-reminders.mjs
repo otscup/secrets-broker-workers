@@ -97,6 +97,24 @@ const state = async () => mf.dispatchFetch('https://broker.test/api/state', { he
   else fail('R8', JSON.stringify({ before: Object.keys(before).length, after: Object.keys(after).length }))
 }
 
+// R9: a key that is about to expire is recorded under the same threshold it is
+// looked up with. The two expressions drifted once and every poll re-sent the
+// reminder, so this pins the written key shape.
+{
+  const live = (await stub.fetch('https://do/state').then((r) => r.json())).state
+  await stub.fetch('https://do/state', {
+    method: 'PUT',
+    body: JSON.stringify({ ...live, secretExpiry: { 'kid-key': { expiresAt: Date.now() + 3 * DAY } } }),
+  })
+  await state()
+  await state()
+  const sent = (await stub.fetch('https://do/state').then((r) => r.json())).state.reminderSent || {}
+  const keys = Object.keys(sent).filter((key) => key.indexOf('secret-expiring') !== -1)
+  const correct = keys.filter((key) => key.endsWith('\u00003'))
+  if (keys.length && correct.length === keys.length) pass('R9 key-expiry reminders are recorded under their day threshold')
+  else fail('R9', JSON.stringify({ keys }))
+}
+
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== reminders ' + passed + '/' + results.length + ' passed ====')

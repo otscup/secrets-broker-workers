@@ -1223,7 +1223,13 @@ async function resolveAgent(request, env) {
   const state = await loadState(env)
   const hash = await sha256Base64(token)
   for (const [name, agent] of Object.entries(state.agents)) {
-    if (!constantTimeEqual(encoder.encode(agent.hash), encoder.encode(hash))) continue
+    if (!constantTimeEqual(encoder.encode(agent.hash), encoder.encode(hash))) {
+      // During a rotation's grace window the previous token still authenticates,
+      // so a running MCP client is not cut off by a routine key change.
+      const previous = agent.previous
+      if (!previous || typeof previous.until !== 'number' || previous.until < Date.now()) continue
+      if (!constantTimeEqual(encoder.encode(previous.hash), encoder.encode(hash))) continue
+    }
     // Static agents may carry an authorization window (set via
     // /api/agents/extend). expiresAt null/undefined = permanent.
     if (typeof agent.expiresAt === 'number' && agent.expiresAt < Date.now()) return null
@@ -1240,6 +1246,18 @@ async function resolveAgent(request, env) {
 }
 
 function grantKey(agent, name) { return `${agent}\u0000${name}` }
+
+// Telegram has no vault session, so it can only resolve a name through the
+// itemIds cache that unlocking fills. Accept the id itself too, and say plainly
+// when the cache is cold instead of claiming the secret does not exist.
+function telegramItemId(state, item) {
+  const id = state?.itemIds?.[item]
+  if (id) return id
+  for (const candidate of Object.values(state?.itemIds ?? {})) {
+    if (candidate === item) return candidate
+  }
+  return ''
+}
 
 function activeGrant(state, agent, name) {
   const grant = state.grants[grantKey(agent, name)]
@@ -1406,35 +1424,57 @@ async function listCiphers(env, db, session) {
   return items
 }
 
-async function readSecretFromRows(env, db, session, name) {
+async function readSecretFromRows(env, db, session, name, { itemId } = {}) {
   const user = await vaultUser(env, db, session)
   const state = await loadState(env)
   let folderId = null
   if (state.settings?.vaultFolder) folderId = (await listFolders(env, db, session)).find((entry) => entry.name === state.settings.vaultFolder)?.id ?? null
   if (state.settings?.vaultFolder && !folderId) return null
-  const rows = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
+  // The id is unique, the name is not: Bitwarden lets two folders hold the same
+  // name, so a name-only lookup is a guess. With an id, read one row.
+  const rows = itemId
+    ? await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE id = ? AND user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(itemId, user.id).all()
+    : await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
+  const matches = []
   for (const candidate of rows.results ?? []) {
     if (folderId && candidate.folder_id !== folderId) continue
     const decrypted = await decryptCipherRow(candidate, session)
     if (decrypted.name !== name) continue
-    return { value: extractSecret(decrypted), username: extractUsername(decrypted), totp: extractTotp(decrypted), type: decrypted.type, url: cipherUrl(decrypted.data), id: candidate.id }
+    matches.push({ value: extractSecret(decrypted), username: extractUsername(decrypted), totp: extractTotp(decrypted), type: decrypted.type, url: cipherUrl(decrypted.data), id: candidate.id })
   }
-  return null
+  // Two items with one name: reading "the first" would hand out whichever row
+  // D1 returned first. Refuse and say why.
+  if (matches.length > 1) {
+    await addAudit(env, { event: 'secret.read-ambiguous', name, count: matches.length, reason: 'duplicate item name; rename one of them' })
+    return null
+  }
+  return matches[0] ?? null
 }
 
-async function findCipherRow(env, db, session, name) {
+async function findCipherRow(env, db, session, name, { itemId } = {}) {
   const user = await vaultUser(env, db, session)
   const state = await loadState(env)
   let folderId = null
   if (state.settings?.vaultFolder) folderId = (await listFolders(env, db, session)).find((entry) => entry.name === state.settings.vaultFolder)?.id ?? null
   if (state.settings?.vaultFolder && !folderId) return null
-  const rows = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
+  const rows = itemId
+    ? await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE id = ? AND user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(itemId, user.id).all()
+    : await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
+  const matches = []
   for (const candidate of rows.results ?? []) {
     if (folderId && candidate.folder_id !== folderId) continue
     const decrypted = await decryptCipherRow(candidate, session)
-    if (decrypted.name === name) return { row: candidate, decrypted }
+    if (decrypted.name === name) matches.push({ row: candidate, decrypted })
   }
-  return null
+  // Editing or deleting "the first match" is how the other same-named item gets
+  // silently overwritten. Refuse instead, and name the ids involved.
+  if (matches.length > 1) {
+    const error = new Error('ambiguous item name: ' + name + ' (' + matches.map((entry) => entry.row.id).join(', ') + ')')
+    error.code = 'ambiguous_item_name'
+    error.ids = matches.map((entry) => entry.row.id)
+    throw error
+  }
+  return matches[0] ?? null
 }
 
 async function queueTransfer(env, db, sourceSession, agentName, agent, name, folder, options = {}) {
@@ -1479,7 +1519,7 @@ async function processTransfers(env, session) {
 }
 
 async function updateCipher(env, db, session, currentName, changes) {
-  const found = await findCipherRow(env, db, session, currentName)
+  const found = await findCipherRow(env, db, session, currentName, { itemId: changes.itemId })
   if (!found) return null
   const { row } = found
   const keys = await cipherKeys(row, session)
@@ -1533,8 +1573,8 @@ async function updateCipher(env, db, session, currentName, changes) {
   return nextName
 }
 
-async function deleteCipher(env, db, session, name) {
-  const found = await findCipherRow(env, db, session, name)
+async function deleteCipher(env, db, session, name, { itemId } = {}) {
+  const found = await findCipherRow(env, db, session, name, { itemId })
   if (!found) return false
   await db.prepare('UPDATE ciphers SET deleted_at = ?, updated_at = ? WHERE id = ?').bind(nowIso(), nowIso(), found.row.id).run()
   await updateState(env, (state) => {
@@ -1607,6 +1647,37 @@ async function createCipher(env, db, session, fields, folderNameOverride) {
   })
   await addAudit(env, { event: 'item.create', name })
   return { name, id }
+}
+
+// Answering a credential request has to leave the agent able to read what it
+// just asked for: a legacy grant alone is refused by the capability model, and a
+// non-['*'] allowlist would still hide the new name. One helper so the console
+// and the plugin cannot drift apart.
+async function saveCredentialRequest(env, session, item, body, via) {
+  const name = String(body.name ?? item.name).trim()
+  if (!name || !body.value) return { error: 'name and value required', status: 400 }
+  const created = await createCipher(env, env.NODEWARDEN_DB, session, { name, username: String(body.username ?? ''), value: String(body.value), url: '', notes: item.description ?? '', group: String(body.group ?? '') }, (await loadState(env)).settings?.vaultFolder ?? '')
+  await updateState(env, (next) => {
+    delete next.credentialRequests[String(body.id)]
+    next.grants[grantKey(item.agent, name)] = { agent: item.agent, name, itemId: created.id, mode: 'credential-request', createdAt: nowIso(), expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, account: session.email }
+    const key = capabilityKey(item.agent, created.id, 'secret.read')
+    next.capabilities ??= {}
+    next.capabilities[key] = {
+      id: key, subjectId: item.agent, accountId: String(session.email ?? ''), itemId: created.id, itemName: name,
+      action: 'secret.read', mode: 'preapproved', createdAt: nowIso(), createdBy: 'admin:' + (via || 'connect-page'),
+      expiresAt: null, maxUses: null, usedCount: 0, revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1,
+    }
+    if (next.agents?.[item.agent]) {
+      const agent = next.agents[item.agent]
+      agent.allow = Array.isArray(agent.allow) ? agent.allow : ['*']
+      if (!agent.allow.includes('*') && !agent.allow.includes(name)) agent.allow.push(name)
+    }
+    next.itemGroups ??= {}
+    if (String(body.group ?? '').trim()) next.itemGroups[name] = String(body.group).trim()
+    return next
+  })
+  await addAudit(env, { event: 'credential.connect', agent: item.agent, name, itemId: created.id, via: via || 'connect-page' })
+  return { name, itemId: created.id }
 }
 
 // A sync device is another broker instance, not an agent. The local broker
@@ -2127,40 +2198,45 @@ async function handleTelegramMessage(env, message, telegram) {
   }
 
   if (verb === 'extend') {
-    const [agent, item, span] = args
-    if (!agent || !item || !span) return reply('用法：/extend <agent> <条目> <天数|permanent>')
+    const [agent, item, span, action = 'secret.read'] = args
+    if (!agent || !item || !span) return reply('用法：/extend <agent> <条目> <天数|permanent> [secret.read|secret.use|secret.fill]')
     const days = span === 'permanent' ? 'permanent' : Number(span)
     if (days !== 'permanent' && (!Number.isFinite(days) || days <= 0 || days > 3650)) {
       return reply('天数只能是 1-3650，或 permanent。')
     }
     const state2 = await loadState(env)
-    const itemId = state2.itemIds?.[item]
-    if (!itemId) return reply('找不到条目「' + item + '」。')
-    const key = capabilityKey(agent, itemId, 'secret.read')
+    const itemId = telegramItemId(state2, item)
+    if (!itemId) return reply('找不到条目「' + item + '」。控制台解锁一次密码库后再试，或直接抄 itemId（条目详情里有）。')
+    const key = capabilityKey(agent, itemId, action)
     const cap = state2.capabilities?.[key]
-    if (!cap) return reply('「' + agent + '」没有对「' + item + '」的读取授权；用 /approve 或网页授权。')
+    if (!cap) return reply('「' + agent + '」没有对「' + item + '」的 ' + action + ' 授权；用 /approve 或网页授权。')
     const until = days === 'permanent' ? null : Date.now() + days * 86400e3
     await updateState(env, (next) => {
       const c = next.capabilities[key]
       if (c) { c.expiresAt = until; c.revokedAt = null; c.revokedBy = null }
+      const legacy = next.grants?.[grantKey(agent, item)]
+      if (legacy) { legacy.expiresAt = until ?? 0; legacy.revokedAt = null; legacy.revokedBy = null }
       return next
     })
-    await addAudit(env, { event: 'grant.extend', agent, name: item, days: String(span), source: 'telegram' })
-    return reply('已延长：' + agent + ' → ' + item + ' 到 ' + (until ? new Date(until).toLocaleString('zh-CN', { hour12: false }) : '永久'))
+    await addAudit(env, { event: 'grant.extend', agent, name: item, action, days: String(span), source: 'telegram' })
+    return reply('已延长：' + agent + ' → ' + item + '（' + action + '）到 ' + (until ? new Date(until).toLocaleString('zh-CN', { hour12: false }) : '永久'))
   }
 
   if (verb === 'revoke') {
     const [agent, item, action = 'secret.read'] = args
     if (!agent || !item) return reply('用法：/revoke <agent> <条目> [secret.read|secret.use|secret.fill]')
     const state2 = await loadState(env)
-    const itemId = state2.itemIds?.[item]
-    if (!itemId) return reply('找不到条目「' + item + '」。')
+    const itemId = telegramItemId(state2, item)
+    if (!itemId) return reply('找不到条目「' + item + '」。控制台解锁一次密码库后再试，或直接抄 itemId。')
     const key = capabilityKey(agent, itemId, action)
     const cap = state2.capabilities?.[key]
-    if (!cap) return reply('没有这条授权。')
+    const legacyKey = grantKey(agent, item)
+    if (!cap && !state2.grants?.[legacyKey]) return reply('没有这条授权。')
     await updateState(env, (next) => {
       const c = next.capabilities[key]
       if (c) { c.revokedAt = nowIso(); c.revokedBy = 'telegram' }
+      const legacy = next.grants?.[legacyKey]
+      if (legacy) { legacy.revokedAt = nowIso(); legacy.revokedBy = 'telegram' }
       return next
     })
     await addAudit(env, { event: 'grant.revoke', agent, name: item, action, source: 'telegram' })
@@ -2346,12 +2422,12 @@ function buildReminders(state, now = Date.now()) {
     if (!entry || typeof entry.expiresAt !== 'number') continue
     const msLeft = entry.expiresAt - now
     if (msLeft <= 0) {
-      reminders.push({ kind: 'secret-expired', agent: name, oauth: false, severity: 'critical', daysLeft: 0, expiresAt: entry.expiresAt, message: '密钥已过期' })
+      reminders.push({ kind: 'secret-expired', agent: name, name, oauth: false, severity: 'critical', daysLeft: 0, expiresAt: entry.expiresAt, message: '密钥已过期' })
       continue
     }
     const daysLeft = Math.ceil(msLeft / 86400e3)
     if (daysLeft <= 5) {
-      reminders.push({ kind: 'secret-expiring', agent: name, oauth: false, severity: reminderSeverity(daysLeft), daysLeft, expiresAt: entry.expiresAt, message: daysLeft <= 1 ? '密钥今天到期' : '密钥即将到期' })
+      reminders.push({ kind: 'secret-expiring', agent: name, name, oauth: false, severity: reminderSeverity(daysLeft), daysLeft, expiresAt: entry.expiresAt, message: daysLeft <= 1 ? '密钥今天到期' : '密钥即将到期' })
     }
   }
   const order = { critical: 0, warning: 1, notice: 2 }
@@ -2369,10 +2445,16 @@ function reminderMessage(reminders, origin, notifications) {
     if (r.kind === 'expired' || r.kind === 'secret-expired') return '- ' + r.agent + ' (' + kind + ')：' + r.message
     if (r.kind === 'expiring' || r.kind === 'secret-expiring') return '- ' + r.agent + ' (' + kind + ')：' + r.message + '，剩余 ' + r.daysLeft + ' 天'
     return '- ' + r.agent + ' (' + kind + ')：' + r.message
-    if (r.kind === 'expiring') return '- ' + r.agent + ' (' + kind + ')：' + r.message + '，剩余 ' + r.daysLeft + ' 天'
-    return '- ' + r.agent + ' (' + kind + ')：' + r.message
   })
   return { title: tpl.title, text: renderTemplate(tpl.body, { lines: lines.join('\n'), origin }) }
+}
+
+// One key for a reminder, used on both sides: reading it decides whether this
+// batch was already sent, writing it records that it was. Two different
+// expressions here is how a key-expiry reminder went out every 15 seconds.
+function reminderSentKey(r) {
+  const threshold = r.kind === 'expiring' || r.kind === 'secret-expiring' ? r.daysLeft : 'idle'
+  return r.agent + '\u0000' + r.kind + '\u0000' + threshold
 }
 
 // Send once per (agent, kind, threshold) so a 5-day reminder does not repeat on
@@ -2383,7 +2465,7 @@ async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now()) 
   const sentMap = state.reminderSent ?? {}
   const TTL = 20 * 3600e3
   const fresh = reminders.filter((r) => {
-    const key = r.agent + '\u0000' + r.kind + '\u0000' + (r.kind === 'expiring' || r.kind === 'secret-expiring' ? r.daysLeft : 'idle')
+    const key = reminderSentKey(r)
     const last = sentMap[key]
     return !(typeof last === 'number' && now - last < TTL)
   })
@@ -2417,7 +2499,7 @@ async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now()) 
   // for example an OAuth client registered while this batch was being built.
   const ops = fresh.map((r) => ({
     op: 'set',
-    path: ['reminderSent', r.agent + '\u0000' + r.kind + '\u0000' + (r.kind === 'expiring' ? r.daysLeft : 'idle')],
+    path: ['reminderSent', reminderSentKey(r)],
     value: now,
   }))
   if (ops.length) await mutateState(env, ops).catch(() => {})
@@ -3911,38 +3993,15 @@ export default {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
       if (!session) return fail('vault locked', 423)
-      // The task belongs to the account that created it. A vault that is now
-      // unlocked with a different account must not redeem it, and the check
-      // happens before the credential is read so the refusal says nothing
-      // about the vault contents.
-      if (task.accountId && String(task.accountId).toLowerCase() !== String(session.email ?? '').toLowerCase()) {
-        await addAudit(env, { event: 'fill.redeem-deny', agent: task.agent, itemId: task.cipherId, origin: task.origin, taskId, reason: 'account-mismatch' })
-        return fail('task credential is not valid: account-mismatch', 403)
-      }
-      // The task belongs to the account that created it. A vault that is now
-      // unlocked with a different account must not redeem it.
-      if (task.accountId && String(task.accountId).toLowerCase() !== String(session.email ?? '').toLowerCase()) {
-        await addAudit(env, { event: 'fill.redeem-deny', agent: task.agent, itemId: task.cipherId, origin: task.origin, taskId, reason: 'account-mismatch' })
-        return fail('task credential is not valid: account-mismatch', 403)
-      }
       const body = await request.json().catch(() => ({}))
       const state = await loadState(env)
       const item = state.credentialRequests?.[String(body.id ?? '')]
       if (!item) return fail('request not found', 404)
       if (item.account && String(item.account).toLowerCase() !== String(session.email).toLowerCase()) return fail('wrong vault account', 409)
-      const name = String(body.name ?? item.name).trim()
-      if (!name || !body.value) return fail('name and value required', 400)
       try {
-        await createCipher(env, env.NODEWARDEN_DB, session, { name, username: String(body.username ?? ''), value: String(body.value), url: '', notes: item.description ?? '', group: String(body.group ?? '') }, state.settings?.vaultFolder ?? '')
-        await updateState(env, (next) => {
-          delete next.credentialRequests[String(body.id)]
-          next.grants[grantKey(item.agent, name)] = { agent: item.agent, name, mode: 'credential-request', createdAt: nowIso(), expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, account: session.email }
-          next.itemGroups ??= {}
-          if (String(body.group ?? '').trim()) next.itemGroups[name] = String(body.group).trim()
-          return next
-        })
-        await addAudit(env, { event: 'credential.connect', agent: item.agent, name, via: 'connect-page' })
-        return json({ ok: true, name })
+        const saved = await saveCredentialRequest(env, session, item, body, 'connect-page')
+        if (saved.error) return fail(saved.error, saved.status)
+        return json({ ok: true, name: saved.name, itemId: saved.itemId })
       } catch (error) { return fail(String(error.message ?? error), 500) }
     }
     if (url.pathname === '/logo.png' || url.pathname === '/favicon.ico') {
@@ -4067,17 +4126,10 @@ export default {
       const item = state.credentialRequests?.[String(body.id ?? '')]
       if (!item) return fail('request not found', 404)
       if (item.account && String(item.account).toLowerCase() !== String(session.email).toLowerCase()) return fail('wrong vault account', 409)
-      const name = String(body.name ?? item.name).trim()
-      if (!name || !body.value) return fail('name and value required', 400)
       try {
-        await createCipher(env, env.NODEWARDEN_DB, session, { name, username: String(body.username ?? ''), value: String(body.value), url: '', notes: item.description ?? '', group: String(body.group ?? '') }, state.settings?.vaultFolder ?? '')
-        await updateState(env, (next) => {
-          delete next.credentialRequests[String(body.id)]
-          next.grants[grantKey(item.agent, name)] = { agent: item.agent, name, mode: 'credential-request', createdAt: nowIso(), expiresAt: 0, reads: 0, maxReads: null, revokedAt: null, account: session.email }
-          return next
-        })
-        await addAudit(env, { event: 'credential.connect', agent: item.agent, name, via: 'dsh-plugin' })
-        return json({ ok: true, name })
+        const saved = await saveCredentialRequest(env, session, item, body, 'dsh-plugin')
+        if (saved.error) return fail(saved.error, saved.status)
+        return json({ ok: true, name: saved.name, itemId: saved.itemId })
       } catch (error) { return fail(String(error.message ?? error), 500) }
     }
     if (url.pathname === '/api/plugin/credential-requests' && request.method === 'GET') {
@@ -4728,7 +4780,10 @@ export default {
           })
         }
         return json({ ok: true, name: nextName })
-      } catch (error) { return fail(String(error.message ?? error), 500) }
+      } catch (error) {
+        if (error.code === 'ambiguous_item_name') return json({ ok: false, error: '同名条目不止一个，请改用 itemId 指定要改哪一个', ids: error.ids }, 409)
+        return fail(String(error.message ?? error), 500)
+      }
     }
     if (url.pathname === '/api/items/delete' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -4737,10 +4792,13 @@ export default {
       const body = await request.json().catch(() => ({}))
       const name = String(body.name ?? '')
       try {
-        const deleted = await deleteCipher(env, env.NODEWARDEN_DB, session, name)
+        const deleted = await deleteCipher(env, env.NODEWARDEN_DB, session, name, { itemId: body.itemId ? String(body.itemId) : undefined })
         if (!deleted) return fail('item not found', 404)
         return json({ ok: true })
-      } catch (error) { return fail(String(error.message ?? error), 500) }
+      } catch (error) {
+        if (error.code === 'ambiguous_item_name') return json({ ok: false, error: '同名条目不止一个，请改用 itemId 指定要删哪一个', ids: error.ids }, 409)
+        return fail(String(error.message ?? error), 500)
+      }
     }
     if (url.pathname === '/api/items/create' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -5535,14 +5593,28 @@ export default {
       const body = await request.json().catch(() => ({}))
       const name = String(body.name ?? '')
       if (!name) return fail('name required', 400)
+      // graceHours lets the old token keep working while a running client is
+      // updated. 0 (the default) cuts over immediately.
+      const graceHours = Math.max(0, Math.min(24 * 30, Number(body.graceHours) || 0))
       const token = randomToken()
       const hash = await sha256Base64(token)
       const tokenWrapped = await wrapWithKek(encoder.encode(token), await kekBytes(env))
       let found = false
-      await updateState(env, (state) => { if (state.agents[name]) { state.agents[name].hash = hash; state.agents[name].tokenWrapped = tokenWrapped; found = true } return state })
+      let oldHash = ''
+      await updateState(env, (state) => {
+        const agent = state.agents[name]
+        if (!agent) return state
+        found = true
+        oldHash = agent.hash
+        if (graceHours > 0) agent.previous = { hash: agent.hash, tokenWrapped: agent.tokenWrapped, until: Date.now() + graceHours * 3600e3 }
+        else delete agent.previous
+        agent.hash = hash
+        agent.tokenWrapped = tokenWrapped
+        return state
+      })
       if (!found) return fail('agent not found', 404)
-      await addAudit(env, { event: 'agent.rotate', agent: name })
-      return json({ ok: true, name, token })
+      await addAudit(env, { event: 'agent.rotate', agent: name, graceHours: String(graceHours), oldHash: oldHash.slice(0, 8) })
+      return json({ ok: true, name, token, graceHours })
     }
     if (url.pathname === '/api/agents/delete' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -5997,7 +6069,24 @@ export default {
     if (url.pathname === '/api/audit') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const state = await loadState(env)
-      return json({ entries: state.audit ?? [] })
+      const entries = state.audit ?? []
+      if (url.searchParams.get('format') === 'csv') {
+        // A BOM first, or Excel reads the Chinese fields as mojibake.
+        const fields = ['at', 'event', 'agent', 'name', 'action', 'source', 'ok', 'account', 'targetOrigin', 'reason']
+        const cell = (value) => {
+          const text = value === undefined || value === null ? '' : (typeof value === 'object' ? JSON.stringify(value) : String(value))
+          return /[",\n]/.test(text) ? '"' + text.split('"').join('""') + '"' : text
+        }
+        const csv = [fields.join(',')].concat(entries.map((entry) => fields.map((field) => cell(entry[field])).join(','))).join('\n')
+        return new Response('\ufeff' + csv, {
+          headers: {
+            'content-type': 'text/csv; charset=utf-8',
+            'content-disposition': 'attachment; filename="secrets-broker-audit.csv"',
+            'cache-control': 'no-store',
+          },
+        })
+      }
+      return json({ entries })
     }
     if (url.pathname === '/api/audit/clear' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)

@@ -1,7 +1,14 @@
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
-export const bytesToB64 = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes)))
+// Chunked on purpose: spreading a large Uint8Array into fromCharCode blows the
+// engine's argument limit (RangeError) once a value passes ~64 KB.
+export const bytesToB64 = (bytes) => {
+  const view = new Uint8Array(bytes)
+  let binary = ''
+  for (let offset = 0; offset < view.length; offset += 0x8000) binary += String.fromCharCode.apply(null, view.subarray(offset, offset + 0x8000))
+  return btoa(binary)
+}
 export const b64ToBytes = (text) => Uint8Array.from(atob(String(text)), (c) => c.charCodeAt(0))
 
 export function concatBytes(a, b) {

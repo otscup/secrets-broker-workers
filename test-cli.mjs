@@ -357,6 +357,16 @@ await asyncCheck('C9 sync previews the difference and writes nothing', async () 
   }
 })
 
+// C10 a value-taking option does not become the positional argument
+await asyncCheck('C10 option values are not read as positionals', async () => {
+  const { positionals } = await import('./cli/index.mjs')
+  assert.deepEqual(positionals(['materialize', '--path', '.env', 'my-secret']), ['materialize', 'my-secret'])
+  assert.deepEqual(positionals(['--path', '.env', 'materialize', 'my-secret', '--key', 'K']), ['materialize', 'my-secret'])
+  assert.deepEqual(positionals(['agents', 'connect', '--id', 'codex', '--apply']), ['agents', 'connect'])
+  assert.deepEqual(positionals(['sync', '--remote', 'https://broker.invalid', '--json']), ['sync'])
+  assert.deepEqual(positionals(['materialize', '-p', '.env', '-k', 'K']), ['materialize'])
+})
+
 fs.rmSync(tmp, { recursive: true, force: true })
 const failed = results.filter((entry) => !entry.ok)
 console.log(`==== cli bridge ${results.length - failed.length}/${results.length} passed ====`)

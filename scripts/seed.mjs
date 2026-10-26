@@ -10,13 +10,19 @@
 // guards the UI, the vault password decrypts the credentials.
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { pbkdf2, hkdfExpand, encryptStr } from '../src/crypto.js'
+
+// Run wrangler as a Node script, not through a shell: a shell here would splice
+// --persist and the passwords into a command line and re-parse it.
+const WRANGLER = fileURLToPath(new URL('../node_modules/wrangler/bin/wrangler.js', import.meta.url))
 
 const argv = process.argv.slice(2)
 const flag = (name, fallback) => {
   const at = argv.indexOf('--' + name)
   return at >= 0 && argv[at + 1] ? argv[at + 1] : fallback
 }
+const q = (s) => String(s).split('\u0027').join('\u0027\u0027')
 
 const port = flag('port', '8787')
 const persist = flag('persist', '.wrangler-dev')
@@ -34,7 +40,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT, key TEXT, kdf_type INTEGER, kdf_iterations INTEGER, created_at TEXT);
 CREATE TABLE IF NOT EXISTS ciphers (id TEXT PRIMARY KEY, user_id TEXT, type INTEGER, folder_id TEXT, name TEXT, notes TEXT, data TEXT, key TEXT, favorite INTEGER, reprompt INTEGER, created_at TEXT, updated_at TEXT, deleted_at TEXT, archived_at TEXT);
 CREATE TABLE IF NOT EXISTS folders (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, created_at TEXT, updated_at TEXT);
-INSERT OR IGNORE INTO users (id, email, key, kdf_type, kdf_iterations, created_at) VALUES ('u1', '${email}', 'placeholder', 0, 600000, '${new Date().toISOString()}');
+INSERT OR IGNORE INTO users (id, email, key, kdf_type, kdf_iterations, created_at) VALUES ('u1', '${q(email)}', 'placeholder', 0, 600000, '${q(new Date().toISOString())}');
 `
 
 const sqlFile = persist + '/seed.sql'
@@ -42,7 +48,7 @@ fs.mkdirSync(persist, { recursive: true })
 fs.writeFileSync(sqlFile, SCHEMA)
 
 function d1(file) {
-  const res = spawnSync('npx', ['wrangler', 'd1', 'execute', 'NODEWARDEN_DB', '--local', '--persist-to', persist, '--file', file], { encoding: 'utf8', shell: true })
+  const res = spawnSync(process.execPath, [WRANGLER, 'd1', 'execute', 'NODEWARDEN_DB', '--local', '--persist-to', persist, '--file', file], { encoding: 'utf8' })
   if (res.status !== 0) {
     console.error((res.stderr || res.stdout || '').split('\n').slice(-6).join('\n'))
     throw new Error('d1 execute failed' + (/(locked|SQLITE_BUSY)/.test(res.stderr || '') ? ' (stop scripts/dev.mjs first, then run this again)' : ''))
@@ -64,7 +70,6 @@ async function main() {
   const mac = await hkdfExpand(master, 'mac', 32)
   const profileKey = await encryptStr(Buffer.from([...enc, ...mac]), enc, mac)
 
-  const q = (s) => s.split('\u0027').join('\u0027\u0027')
   const update = persist + '/profilekey.sql'
   fs.writeFileSync(update, "UPDATE users SET key = '" + q(profileKey) + "' WHERE lower(email) = lower('" + q(email) + "');\n")
 

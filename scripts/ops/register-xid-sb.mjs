@@ -1,5 +1,9 @@
+// One-off ops script.
 import fs from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
+const dsh = process.env.DSH_HOME || join(homedir(), '.dsh')
 const response = await fetch('https://auth.otscup.com/register', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
@@ -15,4 +19,4 @@ const response = await fetch('https://auth.otscup.com/register', {
 })
 const body = await response.json().catch(() => ({}))
 console.log(response.status, JSON.stringify({ ...body, registration_access_token: body.registration_access_token ? '[redacted]' : undefined }).slice(0, 900))
-if (response.ok && body.client_id) fs.writeFileSync('E:\\dsh-home\\secrets-broker\\xid-sb-client.json', JSON.stringify(body, null, 2), 'utf8')
+if (response.ok && body.client_id) fs.writeFileSync(join(dsh, 'secrets-broker', 'xid-sb-client.json'), JSON.stringify(body, null, 2), 'utf8')

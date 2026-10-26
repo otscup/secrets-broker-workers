@@ -161,11 +161,18 @@ function waitForComplete(tabId) {
 
 // Poll loop. chrome.alarms is the only timer an MV3 worker is guaranteed; a
 // plain setInterval is killed when the worker sleeps. Chrome clamps a period
-// below 30 seconds up to 30, so asking for 0.1 gets one tick per half minute —
-// state it plainly rather than pretending it is faster. The popup's 立即检查
+// below 30 seconds up to 30, so the fastest real tick is half a minute and every
+// stored pollSeconds under 30 means the same thing. The popup's 立即检查
 // button exists for the case where you do not want to wait.
-const POLL_MINUTES = 0.5
-chrome.alarms.create('poll', { periodInMinutes: POLL_MINUTES })
+
+// The alarm follows the stored settings. Creating it at top level would run on
+// every worker wake and overwrite the interval the user chose, so it is armed
+// only on install/startup; the options page re-arms it when it saves.
+async function armPoll() {
+  const { enabled, pollSeconds } = await settings()
+  await chrome.alarms.clear('poll')
+  if (enabled) chrome.alarms.create('poll', { periodInMinutes: Math.max(0.5, pollSeconds / 60) })
+}
 
 // One poll step, shared by the alarm and the popup's manual check. Returns a
 // short human line so the popup can say what happened.
@@ -210,5 +217,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 // Opening the popup is the only way to reach the options page from the icon.
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.get(DEFAULTS).then((values) => chrome.storage.local.set({ ...DEFAULTS, ...values }))
+  chrome.storage.local.get(DEFAULTS).then((values) => chrome.storage.local.set({ ...DEFAULTS, ...values })).then(armPoll)
 })
+chrome.runtime.onStartup.addListener(armPoll)

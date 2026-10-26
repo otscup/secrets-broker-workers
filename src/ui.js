@@ -759,6 +759,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
       <select id="logs-event-filter" style="flex:0 0 auto"><option value="">全部事件类型</option></select>
       <input id="logs-search" placeholder="搜索事件、Agent、条目、原因…" style="flex:1;min-width:180px">
       <button id="logs-reset" style="flex:0 0 auto">清空筛选</button>
+    <button id="logs-export" style="flex:0 0 auto">导出 CSV</button>
     </div>
     <div class="hint" id="logs-count" style="margin-top:8px"></div>
     <div id="logs-box" class="scroll-list" style="margin-top:var(--sp-3)"></div>
@@ -870,7 +871,8 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 <script>
 const $ = (id) => document.getElementById(id)
 const enc = new TextEncoder()
-const b64 = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes)))
+// Chunked: spreading a long Uint8Array into fromCharCode throws RangeError.
+const b64 = (bytes) => { const view = new Uint8Array(bytes); let binary = ''; for (let offset = 0; offset < view.length; offset += 0x8000) binary += String.fromCharCode.apply(null, view.subarray(offset, offset + 0x8000)); return btoa(binary) }
 const unb64 = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0))
 const cat = (a, b) => { const out = new Uint8Array(a.length + b.length); out.set(a); out.set(b, a.length); return out }
 async function hmac(keyBytes, data) { const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); return new Uint8Array(await crypto.subtle.sign('HMAC', key, data)) }
@@ -1162,6 +1164,9 @@ $('logs-agent-filter').onchange = renderLogs
 $('logs-event-filter').onchange = renderLogs
 $('logs-search').oninput = renderLogs
 $('logs-reset').onclick = () => { for (const id of ['logs-item-filter', 'logs-agent-filter', 'logs-event-filter', 'logs-search']) { const el = $(id); if (el) el.value = '' } renderLogs() }
+// The server writes the CSV, so the file holds the whole stored trail instead of
+// whatever 500 rows happen to be in memory.
+const logsExport = $('logs-export'); if (logsExport) logsExport.onclick = () => { location.href = '/api/audit?format=csv' }
 // A checkbox list of what actually exists, so the operator picks from real
 // item and group names instead of guessing at comma-separated text. Rendered as
 // a scrollable box that matches the modal's other fields.
@@ -1821,7 +1826,6 @@ function healthRowsHtml() {
     if (kind === 'web') web += 1
     else if (kind === 'api') api += 1
     else none += 1
-    if (readableIds.has(item.id)) api += 0
     if ((policies[item.name] && policies[item.name].noApproval) || item.noApproval) noApproval += 1
     // expiresAt is a number, 0 means "no expiry"; Date.parse on a number is NaN.
     if (item.expiresAt > now) { if (item.expiresAt - now < 7 * 86400e3) soon += 1 }
@@ -1832,9 +1836,12 @@ function healthRowsHtml() {
   for (const item of items) {
     const kind = kinds[item.id] || ''
     if (readableIds.has(item.id)) bucketsOf.readable.push(item)
-    bucketsOf[kind === 'web' ? 'web' : 'none'].push(item)
+    // An API key was falling into 未分类 with everything unclassified, so the
+    // expanded list disagreed with the counter above it.
+    if (kind === 'web') bucketsOf.web.push(item)
+    else if (kind !== 'api') bucketsOf.none.push(item)
     if ((policies[item.name] && policies[item.name].noApproval) || item.noApproval) bucketsOf.noApproval.push(item)
-    if (item.expiresAt > 0 && item.expiresAt - now < 7 * 86400e3) bucketsOf.expiry.push(item)
+    if (item.expiresAt > now && item.expiresAt - now < 7 * 86400e3) bucketsOf.expiry.push(item)
   }
   // A row is a summary you can open: the credentials behind the number are one
   // tap away, in place, so checking "which ones are unclassified" does not throw
@@ -2363,7 +2370,17 @@ function noticeItems() {
   if (pending.length) {
     return pending.map((entry) => ({ id: 'pending:' + (entry.id || entry.name), tone: 'red', level: 'pending', text: '待审批：' + (entry.agent || 'Agent') + ' 请求读取「' + entry.name + '」', kind: 'pending', entry }))
   }
-  return []
+  // No approval waiting, but an authorization or a key may still be about to
+  // lapse. These used to be dropped here, so the banner stayed blank while the
+  // bell showed two notices.
+  return (data.reminders || []).map((item) => ({
+    id: 'reminder:' + item.kind + ':' + (item.agent || ''),
+    tone: item.severity === 'critical' ? 'bad' : (item.severity === 'warning' ? 'warn' : 'plain'),
+    level: item.severity === 'critical' ? 'critical' : (item.severity === 'warning' ? 'warning' : 'notice'),
+    text: (item.kind && item.kind.indexOf('secret-') === 0 ? '密钥 ' : '') + (item.agent || '') + '：' + (item.message || ''),
+    kind: item.kind,
+    entry: item,
+  }))
 }
 function renderNoticeBar() {
   const bar = $('notice-bar')
@@ -2416,7 +2433,7 @@ function openNoticeModal() {
       + '<span class="ios-pill ' + tone + '">' + esc(item.message || '') + '</span></div>'
       + '<div class="ios-sub">' + esc(item.kind === 'idle' ? '很久没有读取记录' : '到期后会拒绝，需要重新授权') + '</div>'
       + '<div class="ios-actions">'
-      + (item.expiresAt ? '<button class="ios-chip" data-notice-extend="' + esc(item.agent || '') + '">延期</button>' : '')
+      + (item.expiresAt && !isSecret ? '<button class="ios-chip" data-notice-extend="' + esc(item.agent || '') + '">延期</button>' : '')
       + (item.name ? '<button class="ios-chip" data-notice-open="' + esc(item.name) + '">查看凭据</button>' : '')
       + '</div></div></div>'
   }).join('') : ''
@@ -3293,7 +3310,7 @@ function openItemMenu(name) {
     '<div class="kv"><span>密钥</span><b><button class="ios-pill plain" id="item-reveal" type="button">查看</button></b></div>' +
     '<div class="kv"><span>网址</span><b>' + (item.url ? '<a href="' + esc(item.url) + '" target="_blank" rel="noreferrer">' + esc(item.url) + '</a>' : '未设置') + '</b></div>' +
     '<div class="kv"><span>分组</span><b>' + esc(item.group || '未分组') + '</b></div>' +
-    '<div class="kv"><span>有效期</span><b>' + esc(expiryLabel(item)) + '</b></div></div>' +
+    '<div class="kv"><span>有效期</span><b>' + expiryLabel(item.expiresAt) + '</b></div></div>' +
     fillEditorHtml(item) + '<div class="card edit-only"><label class="field">名称</label><input id="mi-name" value="' + esc(item.name) + '"><label class="field">用户名（留空不改）</label><input id="mi-username" value="' + esc(item.username || '') + '"><label class="field">TOTP Secret（留空不改）</label><input id="mi-totp" value="' + esc(item.totp || '') + '"><label class="field">分组</label><input id="mi-group" value="' + esc(item.group || '') + '" placeholder="例如 blog/prod"><label class="field">网址</label><input id="mi-url" value="' + esc(item.url || '') + '"><label class="field">备注（留空不改）</label><input id="mi-notes" placeholder="新的备注"><label class="field">新密钥值（留空不改）</label><input id="mi-value" type="password" placeholder="留空保留原值"><label class="chk" style="margin-top:8px"><input type="checkbox" id="mi-noapproval" ' + (item.noApproval ? 'checked' : '') + '> 免审批（自动读取，仍记录）</label><div class="row" style="margin-top:14px"><button class="primary" id="mi-save">保存修改</button><button id="mi-share">分享 / 跨账户复制</button><button class="danger" id="mi-delete">删除</button></div><div style="border-top:1px solid var(--line);margin-top:14px;padding-top:10px"><div class="hint">分享给 Agent（同账户直接授权；跨账户会先复制到目标账户文件夹，切回目标账户解锁后自动完成）</div><label class="field">分享给（可多选）</label><div class="pick-list">' + agents.map((agent) => '<label class="pick-row"><input type="checkbox" class="ios-check" data-share-agent value="' + esc(agent.name) + '"><span>' + esc(agentDisplayName(agent)) + '</span></label>').join('') + '</div><label class="field">跨账户目标文件夹（同账户可留空）</label><input id="mi-share-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="mi-share-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mi-share-reads" type="number" min="1"></div>' + expiresField(item) + '</div>')
   $('item-reveal').onclick = () => revealItemSecret(item)
   $('mi-share-sync').onclick = () => { closeItemPage(); selectedItems.clear(); selectedItems.add(item.name); openBulkShare() }
