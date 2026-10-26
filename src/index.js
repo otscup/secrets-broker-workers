@@ -1465,6 +1465,11 @@ function safeNext(value, fallback = '/') {
 }
 
 async function listCiphers(env, db, session) {
+  const v2 = await vault2Context(env)
+  if (v2?.dek) {
+    const items = await listVault2Items(env, session, v2.dek)
+    return items ?? []
+  }
   const user = await vaultUser(env, db, session)
   const result = await db.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key, created_at, updated_at FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL ORDER BY updated_at DESC').bind(user.id).all()
   const state = await loadState(env)
@@ -1494,7 +1499,138 @@ async function listCiphers(env, db, session) {
   return items
 }
 
+// NodeWarden's ciphers table is the old home. Once Vault 2.0 has live rows it is
+// the stale copy, so every item read and write goes to v2 instead. The old table
+// stays readable while v2 is locked (a rekey or a DO eviction must not blank the
+// console), but it is never written again after the switch.
+async function vault2Context(env) {
+  const status = await vault2Status(env).catch(() => null)
+  if (!status?.initialized) return null
+  // Once a row has ever been written through v2, deleting the last one must not
+  // put the old table back in charge: that would silently resume stale writes.
+  if (!status.items) {
+    const cutover = await env.VAULT_DB.prepare("SELECT value FROM meta WHERE key = 'source'").first().catch(() => null)
+    if (cutover?.value !== 'v2') return null
+  }
+  const cached = await (await stateStub(env).fetch('https://state/v2-key')).json().catch(() => ({}))
+  return { status, dek: cached.ok ? Uint8Array.from(cached.dek) : null }
+}
+
+async function vault2WriteKey(env) {
+  const context = await vault2Context(env)
+  if (!context) return null
+  if (context.dek) return context.dek
+  const error = new Error('vault is locked')
+  error.status = 423
+  throw error
+}
+
+function vault2Payload(row) {
+  const payload = row?.payload || {}
+  return {
+    name: String(payload.name || row?.id || ''),
+    username: String(payload.username || ''),
+    password: String(payload.password ?? payload.secret ?? ''),
+    totp: String(payload.totp || ''),
+    url: String(payload.url || ''),
+    notes: String(payload.notes || ''),
+  }
+}
+
+// Give v2 rows the shape the rest of this file already understands, so MCP,
+// console and fill all read one model instead of each growing a v2 branch.
+function vault2Decrypted(row) {
+  const payload = vault2Payload(row)
+  return {
+    id: row.id,
+    type: row.kind === 'web' ? 1 : 2,
+    name: payload.name,
+    notes: payload.notes,
+    data: { login: { username: payload.username, password: payload.password, totp: payload.totp, uris: payload.url ? [{ uri: payload.url }] : [] } },
+    dataText: '',
+  }
+}
+
+async function vault2FindItem(env, dek, name, { itemId } = {}) {
+  let rows = []
+  if (itemId) {
+    const row = await vault2Read(env, dek, itemId).catch(() => null)
+    if (row) rows = [row]
+  } else {
+    const listed = await vault2ListPlain(env, dek, 0)
+    rows = listed.items.filter((row) => !row.deletedAt && vault2Payload(row).name === name)
+  }
+  if (!itemId) {
+    if (rows.length > 1) {
+      const error = new Error('ambiguous item name: ' + name + ' (' + rows.map((row) => row.id).join(', ') + ')')
+      error.code = 'ambiguous_item_name'
+      error.ids = rows.map((row) => row.id)
+      throw error
+    }
+    rows = rows.slice(0, 1)
+  }
+  const row = rows[0]
+  if (!row) return null
+  const values = vault2Payload(row)
+  if (values.name !== name) return null
+  // Keep the stored object intact for writes: an update must not drop payload
+  // fields this console does not know about.
+  return { row: { ...row, source: 'v2', payload: row.payload || {} }, fields: values, decrypted: vault2Decrypted(row) }
+  return result
+}
+
+async function listVault2Items(env, session, dek) {
+  const listed = await vault2ListPlain(env, dek, 0)
+  const live = listed.items.filter((row) => !row.deletedAt)
+  if (!live.length) return null
+  const state = await loadState(env)
+  return live.map((row) => {
+    const payload = vault2Payload(row)
+    const name = payload.name || row.id
+    const kind = state.credentialKinds?.[row.id]
+    return {
+      id: row.id,
+      type: kind === 'web' || (!kind && row.kind === 'web') ? 1 : 2,
+      name,
+      url: payload.url,
+      folderId: null,
+      createdAt: row.updatedAt ?? '',
+      creator: session.email,
+      username: payload.username,
+      group: state.itemGroups?.[name] ?? '',
+      expiresAt: state.secretExpiry?.[name]?.expiresAt ?? 0,
+      noApproval: state.policies?.[name]?.noApproval === true,
+      revision: row.revision,
+      source: 'v2',
+      // Decryption can fail on a row still sealed under the previous key after a
+      // rekey; show it as unreadable instead of pretending it is not there.
+      broken: !row.payload,
+    }
+  })
+}
+
 async function readSecretFromRows(env, db, session, name, { itemId } = {}) {
+  const v2 = await vault2Context(env)
+  if (v2?.dek) {
+    let found = null
+    try {
+      found = await vault2FindItem(env, v2.dek, name, { itemId })
+    } catch (error) {
+      if (error.code !== 'ambiguous_item_name') throw error
+      await addAudit(env, { event: 'secret.read-ambiguous', name, count: error.ids?.length ?? 0, reason: 'duplicate item name; rename one of them' })
+      return null
+    }
+    if (!found) return null
+    const payload = found.fields
+    return {
+      value: payload.password,
+      username: payload.username,
+      totp: payload.totp,
+      type: found.decrypted.type,
+      url: payload.url,
+      id: found.row.id,
+    }
+  }
   const user = await vaultUser(env, db, session)
   const state = await loadState(env)
   let folderId = null
@@ -1522,6 +1658,8 @@ async function readSecretFromRows(env, db, session, name, { itemId } = {}) {
 }
 
 async function findCipherRow(env, db, session, name, { itemId } = {}) {
+  const v2 = await vault2Context(env)
+  if (v2?.dek) return vault2FindItem(env, v2.dek, name, { itemId })
   const user = await vaultUser(env, db, session)
   const state = await loadState(env)
   let folderId = null
@@ -1588,7 +1726,102 @@ async function processTransfers(env, session) {
   return completed
 }
 
+function forgetItemState(state, name) {
+  delete state.policies?.[name]
+  delete state.itemGroups?.[name]
+  for (const key of Object.keys(state.grants ?? {})) if (state.grants[key].name === name) delete state.grants[key]
+  for (const [id, entry] of Object.entries(state.pending ?? {})) if (entry.name === name) delete state.pending[id]
+  // A deleted credential must not leave a classification or a fill policy
+  // behind: the id is gone from the vault, so anything keyed by it is dead
+  // weight, and a recreated item with the same name must start unclassified.
+  const gone = Object.keys(state.itemIds ?? {}).filter((key) => key === name).map((key) => state.itemIds[key])
+  for (const id of gone) {
+    delete state.credentialKinds?.[id]
+    delete state.fillPolicies?.[id]
+    delete state.plaintextReadPolicies?.[id]
+    delete state.usePolicies?.[id]
+  }
+  delete state.itemIds?.[name]
+  return state
+}
+
+async function updateVault2Item(env, dek, currentName, changes) {
+  const found = await vault2FindItem(env, dek, currentName, { itemId: changes.itemId })
+  if (!found) return null
+  const nextName = typeof changes.newName === 'string' && changes.newName.trim() ? changes.newName.trim() : currentName
+  const payload = { ...found.row.payload }
+  // Blank means "keep" for the secret and the TOTP seed, exactly like the old
+  // editor: a field the UI never received must not wipe what is stored.
+  if (typeof changes.notes === 'string') payload.notes = changes.notes
+  if (typeof changes.value === 'string' && changes.value.length > 0) { payload.password = changes.value; delete payload.secret }
+  if (typeof changes.username === 'string') payload.username = changes.username
+  if (typeof changes.totp === 'string' && changes.totp.length > 0) payload.totp = changes.totp
+  if (typeof changes.url === 'string') payload.url = changes.url
+  payload.name = nextName
+  const kind = changes.kind === 'web' ? 'web' : changes.kind === 'api' ? 'api' : found.row.kind
+  await vault2Update(env, dek, found.row.id, { kind, payload })
+  await updateState(env, (state) => {
+    state.itemGroups ??= {}
+    if (nextName !== currentName) {
+      if (state.itemGroups[currentName] !== undefined) state.itemGroups[nextName] = state.itemGroups[currentName]
+      delete state.itemGroups[currentName]
+      if (state.policies?.[currentName]) { state.policies[nextName] = state.policies[currentName]; delete state.policies[currentName] }
+    }
+    if (typeof changes.group === 'string') {
+      if (changes.group.trim()) state.itemGroups[nextName] = changes.group.trim()
+      else delete state.itemGroups[nextName]
+    }
+    return state
+  })
+  await addAudit(env, { event: 'item.update', name: nextName, oldName: currentName === nextName ? undefined : currentName })
+  return nextName
+}
+
+async function deleteVault2Item(env, dek, name, { itemId } = {}) {
+  const found = await vault2FindItem(env, dek, name, { itemId })
+  if (!found) return false
+  await vault2Delete(env, found.row.id)
+  await updateState(env, (state) => forgetItemState(state, name))
+  await addAudit(env, { event: 'item.delete', name })
+  return true
+}
+
+async function createVault2Item(env, dek, fields) {
+  const name = String(fields.name ?? '').trim()
+  if (!name) throw new Error('name required')
+  if (await vault2FindItem(env, dek, name)) throw new Error('item already exists')
+  const id = crypto.randomUUID()
+  const kind = fields.kind === 'web' ? 'web' : 'api'
+  const payload = {
+    name,
+    username: String(fields.username ?? ''),
+    password: String(fields.value ?? fields.password ?? ''),
+    totp: String(fields.totp ?? ''),
+    url: String(fields.url ?? ''),
+    notes: String(fields.notes ?? ''),
+  }
+  await vault2Create(env, dek, { id, kind, payload })
+  await updateState(env, (next) => {
+    next.itemGroups ??= {}
+    if (fields.group && String(fields.group).trim()) next.itemGroups[name] = String(fields.group).trim()
+    // The new cipher's id is known here, so record it before anything can
+    // share the item. A share that cannot find an id writes an unbound grant.
+    next.itemIds ??= {}
+    next.itemIds[name] = id
+    next.policies ??= {}
+    // NOTE: /agent/items/save passes an explicit field allowlist without
+    // noApproval, so Agents cannot self-grant it. Admin create flows here
+    // keep their previous behavior (noApproval honored when provided).
+    if (fields.noApproval === true) next.policies[name] = { noApproval: true }
+    return next
+  })
+  await addAudit(env, { event: 'item.create', name })
+  return { name, id }
+}
+
 async function updateCipher(env, db, session, currentName, changes) {
+  const dek = await vault2WriteKey(env)
+  if (dek) return updateVault2Item(env, dek, currentName, changes)
   const found = await findCipherRow(env, db, session, currentName, { itemId: changes.itemId })
   if (!found) return null
   const { row } = found
@@ -1644,27 +1877,12 @@ async function updateCipher(env, db, session, currentName, changes) {
 }
 
 async function deleteCipher(env, db, session, name, { itemId } = {}) {
+  const dek = await vault2WriteKey(env)
+  if (dek) return deleteVault2Item(env, dek, name, { itemId })
   const found = await findCipherRow(env, db, session, name, { itemId })
   if (!found) return false
   await db.prepare('UPDATE ciphers SET deleted_at = ?, updated_at = ? WHERE id = ?').bind(nowIso(), nowIso(), found.row.id).run()
-  await updateState(env, (state) => {
-    delete state.policies?.[name]
-    delete state.itemGroups?.[name]
-    for (const key of Object.keys(state.grants ?? {})) if (state.grants[key].name === name) delete state.grants[key]
-    for (const [id, entry] of Object.entries(state.pending ?? {})) if (entry.name === name) delete state.pending[id]
-    // A deleted credential must not leave a classification or a fill policy
-    // behind: the id is gone from the vault, so anything keyed by it is dead
-    // weight, and a recreated item with the same name must start unclassified.
-    const gone = Object.keys(state.itemIds ?? {}).filter((key) => key === name).map((key) => state.itemIds[key])
-    for (const id of gone) {
-      delete state.credentialKinds?.[id]
-      delete state.fillPolicies?.[id]
-      delete state.plaintextReadPolicies?.[id]
-      delete state.usePolicies?.[id]
-    }
-    delete state.itemIds?.[name]
-    return state
-  })
+  await updateState(env, (state) => forgetItemState(state, name))
   await addAudit(env, { event: 'item.delete', name })
   return true
 }
@@ -1682,6 +1900,8 @@ async function listFolders(env, db, session) {
 async function createCipher(env, db, session, fields, folderNameOverride) {
   const name = String(fields.name ?? '').trim()
   if (!name) throw new Error('name required')
+  const dek = await vault2WriteKey(env)
+  if (dek) return createVault2Item(env, dek, { ...fields, name })
   if (await findCipherRow(env, db, session, name)) throw new Error('item already exists')
   const user = await vaultUser(env, db, session)
   const state = await loadState(env)
@@ -4235,7 +4455,7 @@ export default {
         const saved = await saveCredentialRequest(env, session, item, body, 'dsh-plugin')
         if (saved.error) return fail(saved.error, saved.status)
         return json({ ok: true, name: saved.name, itemId: saved.itemId })
-      } catch (error) { return fail(String(error.message ?? error), 500) }
+      } catch (error) { return fail(String(error.message ?? error), error.status ?? 500) }
     }
     if (url.pathname === '/api/plugin/credential-requests' && request.method === 'GET') {
       if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
@@ -4311,7 +4531,7 @@ export default {
           return json({ ok: true, name, created: !found, kindApplied: false, warning: 'item id unavailable; classification not applied' })
         }
         return json({ ok: true, name: found ? name : name, updated: Boolean(found), created: !found, kindApplied: Boolean(wantKind && itemId) })
-      } catch (error) { return fail(String(error.message ?? error), 500) }
+      } catch (error) { return fail(String(error.message ?? error), error.status ?? 500) }
     }
     if (url.pathname === '/api/plugin/items/delete' && request.method === 'POST') {
       if (!pluginAuthorized(request, env)) return fail('unauthorized', 401)
@@ -4325,7 +4545,7 @@ export default {
         if (!deleted) return fail('item not found', 404)
         await addAudit(env, { event: 'item.delete', name, source: 'dsh-plugin' })
         return json({ ok: true, name })
-      } catch (error) { return fail(String(error.message ?? error), 500) }
+      } catch (error) { return fail(String(error.message ?? error), error.status ?? 500) }
     }
     // The operator's own list, so the plugin can show what it may pick from
     // without loading the console. Names and groups only: never a value.
@@ -4887,7 +5107,7 @@ export default {
         return json({ ok: true, name: nextName })
       } catch (error) {
         if (error.code === 'ambiguous_item_name') return json({ ok: false, error: '同名条目不止一个，请改用 itemId 指定要改哪一个', ids: error.ids }, 409)
-        return fail(String(error.message ?? error), 500)
+        return fail(String(error.message ?? error), error.status ?? 500)
       }
     }
     if (url.pathname === '/api/items/delete' && request.method === 'POST') {
@@ -4902,7 +5122,7 @@ export default {
         return json({ ok: true })
       } catch (error) {
         if (error.code === 'ambiguous_item_name') return json({ ok: false, error: '同名条目不止一个，请改用 itemId 指定要删哪一个', ids: error.ids }, 409)
-        return fail(String(error.message ?? error), 500)
+        return fail(String(error.message ?? error), error.status ?? 500)
       }
     }
     if (url.pathname === '/api/items/create' && request.method === 'POST') {
@@ -4910,12 +5130,13 @@ export default {
       const session = await getSession(env)
       if (!session) return fail('locked', 423)
       const body = await request.json().catch(() => ({}))
-      try { return json({ ok: true, ...(await createCipher(env, env.NODEWARDEN_DB, session, body)) }) } catch (error) { return fail(String(error.message ?? error), 400) }
+      try { return json({ ok: true, ...(await createCipher(env, env.NODEWARDEN_DB, session, body)) }) } catch (error) { return fail(String(error.message ?? error), error.status ?? 400) }
     }
     if (url.pathname === '/api/items/import' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
       if (!session) return fail('locked', 423)
+      try { await vault2WriteKey(env) } catch (error) { return fail(String(error.message ?? error), error.status ?? 423) }
       const body = await request.json().catch(() => ({}))
       const entries = Array.isArray(body) ? body : Array.isArray(body.items) ? body.items : []
       const created = []
@@ -4936,13 +5157,22 @@ export default {
       const refused = await secondFactorWall(request, env, 'items.export', code)
       if (refused) return refused
       try {
-        const user = await vaultUser(env, env.NODEWARDEN_DB, session)
-        const rows = await env.NODEWARDEN_DB.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
         const state = await loadState(env)
+        const v2 = await vault2Context(env)
         const items = []
-        for (const row of rows.results ?? []) {
-          const decrypted = await decryptCipherRow(row, session)
-          items.push({ name: decrypted.name, url: cipherUrl(decrypted.data), notes: decrypted.notes, value: extractSecret(decrypted), group: state.itemGroups?.[decrypted.name] ?? '', noApproval: state.policies?.[decrypted.name]?.noApproval === true })
+        if (v2?.dek) {
+          const listed = await vault2ListPlain(env, v2.dek, 0)
+          for (const row of listed.items.filter((entry) => !entry.deletedAt)) {
+            const payload = vault2Payload(row)
+            items.push({ name: payload.name, url: payload.url, notes: payload.notes, value: payload.password, group: state.itemGroups?.[payload.name] ?? '', noApproval: state.policies?.[payload.name]?.noApproval === true })
+          }
+        } else {
+          const user = await vaultUser(env, env.NODEWARDEN_DB, session)
+          const rows = await env.NODEWARDEN_DB.prepare('SELECT id, user_id, type, folder_id, name, notes, data, key FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL').bind(user.id).all()
+          for (const row of rows.results ?? []) {
+            const decrypted = await decryptCipherRow(row, session)
+            items.push({ name: decrypted.name, url: cipherUrl(decrypted.data), notes: decrypted.notes, value: extractSecret(decrypted), group: state.itemGroups?.[decrypted.name] ?? '', noApproval: state.policies?.[decrypted.name]?.noApproval === true })
+          }
         }
         await addAudit(env, { event: 'items.export', via: 'web', totp: true, count: items.length })
         return json({ exportedAt: nowIso(), items })
@@ -6349,6 +6579,7 @@ export default {
     // eats a vault.
     if (url.pathname === '/api/sync/apply' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      if (await vault2Context(env)) return fail('Vault 2.0 is the active store; use /api/v2/sync/push', 410)
       const state = await loadState(env)
       const remote = state.settings?.remoteBroker
       if (!remote?.url || !remote?.tokenWrapped) return fail('还没有配置远端，先填地址和令牌', 409)
@@ -7596,7 +7827,7 @@ const TOOL_META = {
         })
         await addAudit(env, { event: 'secret.write', agent: resolved.name, name })
         return json({ ok: true, name: created.name, created: true })
-      } catch (error) { return fail(String(error.message ?? error), 500) }
+      } catch (error) { return fail(String(error.message ?? error), error.status ?? 500) }
     }
     // Reading a stored password out of the admin panel is the most direct way to
     // turn one stolen session cookie into every credential in the vault, so it is

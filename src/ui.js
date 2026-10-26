@@ -1144,19 +1144,19 @@ $('v2-unlock').onclick = async () => {
   try {
     await api(initialising ? '/api/v2/init' : '/api/v2/unlock', { method: 'POST', body: JSON.stringify({ password }) })
     $('v2-password').value = ''
-    await loadVault2()
+    await Promise.all([loadVault2(), loadItems()])
     $('v2-msg').textContent = initialising ? '已初始化并解锁' : '已解锁'
   } catch (error) { $('v2-msg').textContent = error.message }
 }
 $('v2-lock').onclick = async () => {
-  try { await api('/api/v2/lock', { method: 'POST' }); await loadVault2() } catch (error) { $('v2-msg').textContent = error.message }
+  try { await api('/api/v2/lock', { method: 'POST' }); await Promise.all([loadVault2(), loadItems()]) } catch (error) { $('v2-msg').textContent = error.message }
 }
 $('v2-import').onclick = async () => {
   if (!confirm('把密文库里的条目复制一份到 Vault 2.0？已经存在的会跳过，原来的密文库不会被动。')) return
   $('v2-msg').textContent = '导入中…'
   try {
     const result = await api('/api/v2/import', { method: 'POST' })
-    await loadVault2()
+    await Promise.all([loadVault2(), loadItems()])
     $('v2-msg').textContent = '导入 ' + result.imported + ' 条，跳过 ' + result.skipped + ' 条（共 ' + result.total + ' 条）'
   } catch (error) { $('v2-msg').textContent = error.message }
 }

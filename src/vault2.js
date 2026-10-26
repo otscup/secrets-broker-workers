@@ -93,9 +93,13 @@ export async function vault2Create(env, dek, item) {
   const ciphertext = await sealItem(dek, id, item.payload ?? {})
   const revision = await nextRevision(env)
   const at = new Date().toISOString()
-  await env.VAULT_DB.prepare('INSERT INTO vault_items (id, kind, ciphertext, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(id, kind, ciphertext, revision, at, at)
-    .run()
+  await env.VAULT_DB.batch([
+    env.VAULT_DB.prepare('INSERT INTO vault_items (id, kind, ciphertext, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind(id, kind, ciphertext, revision, at, at),
+    // Pin the source: an emptied v2 must not hand the item page back to the old
+    // cipher table, or the next write lands somewhere nobody reads.
+    env.VAULT_DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('source', 'v2')"),
+  ])
   return { id, kind, revision, updatedAt: at }
 }
 
@@ -248,6 +252,7 @@ export async function vault2Push(env, rows) {
     ).bind(id, kind, ciphertext, revision, at, at, deletedAt).run()
     written += 1
   }
+  if (written) await env.VAULT_DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('source', 'v2')").run()
   return { written, revision: await currentRevision(env) }
 }
 
