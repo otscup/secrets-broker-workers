@@ -9,7 +9,7 @@ import {
 } from './crypto.js'
 import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, ALLOWED_ALGS } from './oidc.js'
 import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
-import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf, vault2Push } from './vault2.js'
+import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2ListPlain, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf, vault2Push } from './vault2.js'
 import { publicKeyFingerprint } from './envelope.js'
 
 const encoder = new TextEncoder()
@@ -7850,6 +7850,11 @@ const TOOL_META = {
           return json({ ok: true, deviceId: paired.id, name: paired.name, fingerprint: paired.fingerprint })
         }
         if (route === 'items' && request.method === 'GET') {
+          if (url.searchParams.get('plain') === '1') {
+            const dek = await unlockedKey()
+            if (!dek) return fail('vault is locked', 423)
+            return json(await vault2ListPlain(env, dek, Number(url.searchParams.get('since') ?? 0)))
+          }
           return json(await vault2List(env, Number(url.searchParams.get('since') ?? 0)))
         }
         if (route === 'items' && request.method === 'POST') {

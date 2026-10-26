@@ -71,6 +71,22 @@ export async function vault2List(env, since = 0) {
   return { items: results, revision: Number(meta?.value ?? 0), keygen: keygen?.value ?? null }
 }
 
+// The panel needs names, not ciphertext. Only the holder of the data key can
+// open a row, so this refuses without one rather than returning blank fields.
+export async function vault2ListPlain(env, dek, since = 0) {
+  const listed = await vault2List(env, since)
+  const items = []
+  for (const row of listed.items) {
+    if (row.deletedAt) {
+      items.push({ id: row.id, kind: row.kind, revision: row.revision, deletedAt: row.deletedAt })
+      continue
+    }
+    const payload = await openItem(dek, row.id, row.ciphertext).catch(() => null)
+    items.push({ id: row.id, kind: row.kind, revision: row.revision, updatedAt: row.updatedAt, payload })
+  }
+  return { items, revision: listed.revision, keygen: listed.keygen }
+}
+
 export async function vault2Create(env, dek, item) {
   const id = item.id || crypto.randomUUID()
   const kind = item.kind === 'web' ? 'web' : 'api'

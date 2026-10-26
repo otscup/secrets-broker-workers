@@ -241,6 +241,24 @@ let deviceId = ''
   else fail('P6', JSON.stringify({ row, revoked: revoked.status, after: after.status }))
 }
 
+// P7: the panel gets names, not ciphertext -- and only while unlocked.
+{
+  await call('/api/v2/items', { method: 'POST', body: { kind: 'api', payload: { name: 'panel-item', secret: 'sk-plain-1' } } })
+  const plain = await call('/api/v2/items?plain=1')
+  const open = (plain.body.items ?? []).find((row) => row.payload?.name === 'panel-item')
+  if (plain.status === 200 && open?.payload?.secret === 'sk-plain-1') pass('P7 plain=1 gives the panel decrypted names')
+  else fail('P7', JSON.stringify({ status: plain.status, body: plain.body }).slice(0, 200))
+}
+
+// P8: plain=1 is not an unauthenticated door.
+{
+  const naked = await mf.dispatchFetch(BASE + '/api/v2/items?plain=1')
+  const withDevice = await deviceCall('/api/v2/items?plain=1', deviceToken)
+  const ok = naked.status === 401 && (withDevice.status === 401 || !JSON.stringify(withDevice.body ?? '').includes('sk-test-123'))
+  if (ok) pass('P8 plain=1 refuses an unauthenticated or device caller')
+  else fail('P8', JSON.stringify({ naked: naked.status, device: withDevice.status }))
+}
+
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== v2 api ' + passed + '/' + results.length + ' passed ====')
