@@ -408,7 +408,7 @@ try {
     }))
   })()`)
   v2devices.length === 2 && v2devices[0].name === 'laptop' && v2devices[0].tags.includes('在线') && v2devices[0].tags.includes('可写') && v2devices[0].revoke && v2devices[1].name === 'old-pc' && v2devices[1].tags.includes('离线') && v2devices[1].revoke
-    ? pass('A24 the Vault 2.0 device list shows online state, write access and a revoke button')
+    ? pass('A24 the device list shows online state, write access and a revoke button')
     : fail('A24', JSON.stringify(v2devices).slice(0, 300))
 
   // A25 - the write switch is a control on the row, labelled with the state it is

@@ -114,6 +114,18 @@ const ancestors = {}
   else fail('T5', missing.join(' | '))
 }
 
+// T6: devices have their own tab, and the list lives there instead of being
+// duplicated in the Vault 2.0 card. A second copy would drift silently.
+{
+  const view = ancestors['view-devices'] || []
+  const list = ancestors['v2-devices'] || []
+  const needed = ['devices-refresh', 'devices-status', 'devices-msg', 'pair-command']
+  const missing = needed.filter((id) => !ancestors[id] || !ancestors[id].includes('view-devices'))
+  const ok = uiHtml.includes('data-view="devices"') && view.includes('dashboard') && list.includes('view-devices') && !list.includes('card-vault2') && missing.length === 0
+  if (ok) pass('T6 the device list lives in its own dashboard tab')
+  else fail('T6', JSON.stringify({ view, list, missing }))
+}
+
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== html structure ' + passed + '/' + results.length + ' passed ====')
 if (passed !== results.length) process.exit(1)
