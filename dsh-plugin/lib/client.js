@@ -72,7 +72,7 @@ window.__ModuleLoader__.load({
   --sb-ease: cubic-bezier(.32,.72,0,1);
   --sb-ease-back: cubic-bezier(.34,1.32,.64,1);
   --sb-dur: .3s;
-  --sb-h-body: 470px;
+  --sb-h-sheet: 582px;
   --sb-bg: #F2F2F7; --sb-card: #FFFFFF; --sb-elevated: #FFFFFF; --sb-fill: rgba(120,120,128,.12);
   --sb-label: #000000; --sb-label-2: rgba(60,60,67,.6); --sb-label-3: rgba(60,60,67,.3);
   --sb-sep: rgba(60,60,67,.18);
@@ -107,7 +107,7 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
 .sb-badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; border-radius: var(--sb-r-pill); background: var(--sb-red); color: #fff; font-size: var(--sb-fs-mini); line-height: 18px; text-align: center; padding: 0 var(--sb-sp-1); }
 .sb-badge > span { display: block; animation: sb-roll var(--sb-dur) var(--sb-ease) both; }
 .sb-backdrop { position: fixed; inset: 0; z-index: 2147482999; background: rgba(0,0,0,.28); backdrop-filter: blur(2px); animation: sb-fade var(--sb-dur) var(--sb-ease) both; }
-.sb-sheet { position: fixed; right: 16px; bottom: 16px; z-index: 2147483000; width: min(400px, calc(100vw - 32px)); max-height: min(78vh, 660px); display: flex; flex-direction: column; overflow: hidden; background: var(--sb-bg); border-radius: var(--sb-r-sheet); box-shadow: var(--sb-shadow-sheet); transform-origin: bottom right; animation: sb-sheet-in var(--sb-dur) var(--sb-ease) both; }
+.sb-sheet { position: fixed; right: 16px; bottom: 16px; z-index: 2147483000; width: min(400px, calc(100vw - 32px)); height: var(--sb-h-sheet); max-height: calc(100vh - 32px); display: flex; flex-direction: column; overflow: hidden; background: var(--sb-bg); border-radius: var(--sb-r-sheet); box-shadow: var(--sb-shadow-sheet); transform-origin: bottom right; animation: sb-sheet-in var(--sb-dur) var(--sb-ease) both; }
 .sb-nav { display: flex; align-items: center; gap: var(--sb-sp-2); padding: var(--sb-sp-3) var(--sb-sp-4); background: var(--sb-card); border-bottom: 1px solid var(--sb-sep); flex: 0 0 auto; }
 .sb-nav-title { flex: 1; font-size: var(--sb-fs-body); font-weight: 600; line-height: var(--sb-lh-body); letter-spacing: -.01em; }
 .sb-nav-sub { font-size: var(--sb-fs-cap); color: var(--sb-label-2); font-weight: 400; }
@@ -166,7 +166,7 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
    own, and a colour on this wrapper would outrank them. */
 .sb-view { display: flex; flex-direction: column; gap: var(--sb-sp-4); width: 100%; max-width: 760px; font-size: var(--sb-fs-sub); line-height: var(--sb-lh-sub); }
 /* The three tabs share one height, so switching never resizes the sheet. */
-.sb-host > .sb-body { flex: 0 0 auto; height: var(--sb-h-body); }
+.sb-host > .sb-body { flex: 1 1 auto; min-height: 0; height: auto; }
 .sb-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: var(--sb-sp-2); }
 .sb-kpi { background: var(--sb-card); border-radius: var(--sb-r-card); padding: var(--sb-sp-3); box-shadow: var(--sb-shadow-card); display: flex; flex-direction: column; gap: 2px; }
 .sb-kpi-label { display: flex; align-items: center; gap: 6px; font-size: var(--sb-fs-mini); color: var(--sb-label-2); }
