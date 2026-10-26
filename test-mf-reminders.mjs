@@ -115,6 +115,17 @@ const state = async () => mf.dispatchFetch('https://broker.test/api/state', { he
   else fail('R9', JSON.stringify({ keys }))
 }
 
+// R10: the trail can be taken out as a file. Same session, one request, and the
+// header has to name the columns an operator will read in a spreadsheet.
+{
+  const response = await mf.dispatchFetch('https://broker.test/api/audit?format=csv', { headers: { cookie } })
+  const body = await response.text()
+  const type = String(response.headers.get('content-type') || '')
+  const ok = response.status === 200 && type.includes('text/csv') && /^time,/.test(body) && body.includes('secret.read') && /(^|\n)\d{4}-\d\d-\d\dT/.test(body)
+  if (ok) pass('R10 /api/audit?format=csv returns the trail as a file')
+  else fail('R10', JSON.stringify({ status: response.status, type, head: body.slice(0, 80) }))
+}
+
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== reminders ' + passed + '/' + results.length + ' passed ====')

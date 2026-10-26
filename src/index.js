@@ -6072,7 +6072,7 @@ export default {
       const entries = state.audit ?? []
       if (url.searchParams.get('format') === 'csv') {
         // A BOM first, or Excel reads the Chinese fields as mojibake.
-        const fields = ['at', 'event', 'agent', 'name', 'action', 'source', 'ok', 'account', 'targetOrigin', 'reason']
+        const fields = ['time', 'event', 'agent', 'name', 'action', 'source', 'ok', 'account', 'targetOrigin', 'reason']
         const cell = (value) => {
           const text = value === undefined || value === null ? '' : (typeof value === 'object' ? JSON.stringify(value) : String(value))
           return /[",\n]/.test(text) ? '"' + text.split('"').join('""') + '"' : text
