@@ -153,6 +153,8 @@ jobs:
         run: npm run test:ui-item-page
       - name: Local bridge (cli)
         run: npm run test:cli
+      - name: Run a command with the key in its environment (cli)
+        run: npm run test:exec
       - name: Local client discovery (cli)
         run: npm run test:agents
       - name: DSH plugin refuses cross-site approvals

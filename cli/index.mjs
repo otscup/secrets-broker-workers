@@ -31,6 +31,7 @@ import { runMaterialize } from './materialize.mjs'
 import { runSync } from './sync.mjs'
 import { pair, pairRequest, pairWait, unlock, count, loadDevice, pull, push } from './vault.mjs'
 import { createLocalServer } from './vaulttools.mjs'
+import { buildEnv, runExec } from './exec.mjs'
 import { detect, adapters, plan, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
@@ -66,6 +67,9 @@ Usage
                                  pair this machine with a v2 vault, keep the key locally
                                  (no cookie: prints a device code to approve in a browser)
   secrets-broker serve --vault   answer MCP from the vault this machine holds
+  secrets-broker exec --env KEY=item -- <command>
+                                 run a command with the value in its environment,
+                                 so no .env file has to hold it
   secrets-broker unlock          check the stored key against the vault fingerprint
   secrets-broker pull [--since N] [--to FILE]
                                  decrypt the vault into a file (mode 0600)
@@ -129,6 +133,48 @@ async function main() {
     const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
     process.stdout.write('secrets-broker ' + pkg.version + '\n')
     return 0
+  }
+
+  if (command === 'exec') {
+    const raw = process.argv.slice(3)
+    const specs = []
+    let start = -1
+    for (let index = 0; index < raw.length; index += 1) {
+      if (raw[index] === '--') { start = index + 1; break }
+      if (raw[index] === '--env') { specs.push(String(raw[index + 1] ?? '')); index += 1; continue }
+      if (raw[index].startsWith('--env=')) specs.push(raw[index].slice(6))
+    }
+    const child = start > 0 ? raw.slice(start) : []
+    if (!specs.length) {
+      log('exec needs at least one --env KEY=item')
+      return 2
+    }
+    let pulled
+    try {
+      pulled = await pull({ since: 0 })
+    } catch (error) {
+      process.stderr.write('cannot read the vault: ' + String(error?.message ?? error) + '\n')
+      return 1
+    }
+    let env = {}
+    let missing = []
+    try {
+      ({ env, missing } = buildEnv(pulled.items, specs))
+    } catch (error) {
+      process.stderr.write(String(error?.message ?? error) + '\n')
+      return 2
+    }
+    if (missing.length) {
+      for (const item of missing) process.stderr.write(`no item named "${item.name}" for ${item.key}${item.guess ? '; did you mean "' + item.guess + '"?' : ''}\n`)
+      return 1
+    }
+    try {
+      const result = await runExec({ command: child, env })
+      return result.code
+    } catch (error) {
+      process.stderr.write(String(error?.message ?? error) + '\n')
+      return 1
+    }
   }
 
   if (command === 'agents') {

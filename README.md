@@ -471,6 +471,23 @@ Agents are created in the **Agents** tab; the token is shown only once.
 The item's **no-approval** toggle in the **Items** tab makes reads immediate while still
 recording audit events.
 
+### Run a command with the key in its environment
+
+A `.env` file is a plaintext copy of your vault that any process on the machine
+can read. `exec` puts the value in one child process's environment instead:
+
+```bash
+secrets-broker exec --env OPENAI_API_KEY=openai-prod -- npm run dev
+secrets-broker exec --env GH_USER=GitHub@username --env GH_TOKEN=GitHub@password -- gh auth login
+```
+
+- `KEY=item` gives the item's secret; `KEY=item@field` gives one field
+  (`username`, `password`, `url` or `totp`) of a web login.
+- A misspelled item name stops the command and offers the closest name; it never
+  runs the child with a wrong or empty value.
+- The value exists only while that child runs. Nothing is written to disk, and
+  the broker's own log never sees it. The child inherits your normal environment.
+
 ## Classifying a credential
 
 Every credential is labelled **api**, **web** or unclassified, shown next to its
