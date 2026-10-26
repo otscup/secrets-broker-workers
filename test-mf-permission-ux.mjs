@@ -112,6 +112,45 @@ const mcp = async (name, args) => {
   else fail('N5', JSON.stringify({ text: text.slice(0, 200), denied }))
 }
 
+// N6-N9: an out-of-scope item can be requested, the list says so, repeats reuse
+// the same request, and a muted agent gets no new request.
+const toolPayload = (raw) => JSON.parse(JSON.parse(raw).result.content[0].text)
+{
+  const list = toolPayload(await mcp('list_secrets', {}))
+  const item = list.find((entry) => entry.name === SHUT)
+  if (item && item.requestable === true && item.grant_status === 'none') pass('N6a an out-of-scope item starts requestable')
+  else fail('N6a', JSON.stringify(item))
+}
+{
+  const first = toolPayload(await mcp('request_access', { name: SHUT }))
+  const state = await getState()
+  const entry = Object.values(state.pending || {}).find((e) => e.agent === 'in-scope' && e.name === SHUT)
+  if (first.status === 'pending' && first.request_id && first.approval_url && entry) pass('N6 an item outside the allowlist can still be requested')
+  else fail('N6', JSON.stringify({ first, entry }))
+}
+{
+  const list = toolPayload(await mcp('list_secrets', {}))
+  const item = list.find((entry) => entry.name === SHUT)
+  if (item && item.requestable === false && item.grant_status === 'pending') pass('N7 the list marks an out-of-scope item already pending')
+  else fail('N7', JSON.stringify(item))
+}
+{
+  const first = toolPayload(await mcp('request_access', { name: SHUT }))
+  const second = toolPayload(await mcp('request_access', { name: SHUT }))
+  if (first.request_id && first.request_id === second.request_id) pass('N8 a repeated request is idempotent')
+  else fail('N8', JSON.stringify({ first, second }))
+}
+{
+  const state = await getState()
+  state.agents['in-scope'].muted = true
+  await putState(state)
+  const request = toolPayload(await mcp('request_access', { name: SHUT }))
+  const list = toolPayload(await mcp('list_secrets', {}))
+  const item = list.find((entry) => entry.name === SHUT)
+  if (request.status === 'muted' && item && item.grant_status === 'muted' && item.requestable === false) pass('N9 a muted agent gets no request and the list says muted')
+  else fail('N9', JSON.stringify({ request, item }))
+}
+
 // N4: the consent page offers the plaintext opt-in unchecked, with a 24h default.
 {
   const reg = await (await mf.dispatchFetch('https://broker.test/oauth/register', {

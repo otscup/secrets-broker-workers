@@ -138,8 +138,13 @@ let v2WebId = ''
   state.capabilities = { ...(state.capabilities || {}), [key]: { id: key, subjectId: AGENT, accountId: ACCT, itemId: v2Id, itemName: V2_NAME, action: 'secret.read', mode: 'preapproved', createdAt: '2024-01-01', createdBy: 'test', expiresAt: Date.now() + 3600e3, maxUses: null, usedCount: 0, revokedAt: null, policyVersion: 1 } }
   await putState(state)
   const listed = JSON.parse(toolText(await mcp('list_secrets', {})))
+  const listedName = listed.find((item) => item.name === V2_NAME)
+  const outside = listed.find((item) => item.name === 'v2-web')
   const explained = JSON.parse(toolText(await mcp('explain_access', { name: V2_NAME })))
-  const ok = listed.map((item) => item.name).join(',') === V2_NAME && listed[0]?.kind === 'api' && explained.decision === 'allow' && explained.itemId === v2Id
+  const ok = listed.map((item) => item.name).join(',') === 'v2-openai,v2-web' &&
+    listedName?.kind === 'api' && listedName?.grant_status === 'granted' &&
+    outside?.requestable === true && outside?.grant_status === 'none' &&
+    explained.decision === 'allow' && explained.itemId === v2Id
   if (ok) pass('A4 list_secrets and explain_access read the v2 source')
   else fail('A4', JSON.stringify({ listed, explained }).slice(0, 500))
 }

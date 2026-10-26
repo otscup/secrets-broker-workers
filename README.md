@@ -528,6 +528,21 @@ secrets-broker exec --env GH_USER=GitHub@username --env GH_TOKEN=GitHub@password
 - The value exists only while that child runs. Nothing is written to disk, and
   the broker's own log never sees it. The child inherits your normal environment.
 
+### Work from the local copy when offline
+
+`pull` saves a ciphertext copy the daemon and the commit guard can use without a
+network:
+
+```bash
+secrets-broker pull                 # once while online
+secrets-broker pull --offline       # answer from that copy, no network
+secrets-broker pull --offline --to ./vault.json
+```
+
+`--offline` fails if no copy exists; a revoked device still gets `401/403`
+instead of reading the old copy. `--to` writes decrypted values to disk (mode
+0600) — treat that file as a secret and delete it when done.
+
 ### Stop a commit that carries a vault value
 
 An agent that reads a key and then writes a test file is one `git add` away from
@@ -581,6 +596,11 @@ The Worker uses authorization code + PKCE. Register the callback URL at the
 identity provider (xid supports dynamic client registration; a public client with
 `token_endpoint_auth_method=none` works). After login, the profile stores the
 OIDC subject/email/name; admin login can use either the password or OIDC.
+
+After one password unlock, the Worker also stores a `SESSION_KEK`-wrapped copy
+of that vault account's keys for each OIDC binding on the same account. The next
+OIDC login restores them automatically. `锁定` clears the copies, and a binding
+made for a different vault account never receives them.
 
 ## Security notes
 

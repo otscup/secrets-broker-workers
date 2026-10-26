@@ -213,8 +213,11 @@ try {
     for (const hit of String(command).matchAll(/((?:[\w.-]+\/)*test-[\w-]+\.mjs)/g)) named.add(hit[1])
   }
   const probe = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' })
-  if (probe.status !== 0) {
-    pass('A13 skipped: not a git checkout')
+  // The CI runner copies the repo and creates an empty .git; without an index
+  // every file looks untracked and A13 would fail for the copy, not the change.
+  const tracked = probe.status === 0 ? spawnSync('git', ['ls-files'], { encoding: 'utf8' }).stdout.trim() : ''
+  if (probe.status !== 0 || !tracked) {
+    pass('A13 skipped: not a real git checkout')
   } else {
     const untracked = [...named].filter((file) => spawnSync('git', ['ls-files', '--error-unmatch', file], { encoding: 'utf8' }).status !== 0)
     untracked.length === 0

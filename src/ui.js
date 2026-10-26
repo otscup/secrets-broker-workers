@@ -3111,6 +3111,7 @@ function describe(entry) {
     case 'grant.delete': return '删除 ' + agent + ' 对 ' + name + ' 的授权记录'
     case 'profile.update': return '更新个人资料'
     case 'admin.oidc-login': return 'OIDC 登录' + (entry.email ? '（' + entry.email + '）' : '')
+    case 'vault.oidc-unlock': return 'OIDC 自动解锁保险库' + (entry.email ? '（' + entry.email + '）' : '')
     case 'settings.update': return '更新系统设置'
     case 'agent.delete': return '删除 Agent ' + agent
     case 'vault.unlock': return '解锁了 vault' + (entry.ttl ? '（' + entry.ttl + '）' : '')
@@ -3158,7 +3159,7 @@ const LOG_EVENT_GROUPS = [
   { key: 'blocked', label: '被拦下的请求', match: ['access.denied'] },
   { key: 'grant', label: '授权变更', match: ['grant.share', 'grant.revoke', 'grant.extend', 'request.approve', 'request.deny', 'request.auto-approve', 'request.create'] },
   { key: 'ai', label: 'AI 与 Telegram', match: ['ai.ask', 'telegram.*'] },
-  { key: 'login', label: '登录与解锁', match: ['admin.login', 'admin.login-fail', 'admin.oidc-login', 'admin.origin-mismatch', 'vault.unlock', 'vault.lock'] },
+  { key: 'login', label: '登录与解锁', match: ['admin.login', 'admin.login-fail', 'admin.oidc-login', 'admin.origin-mismatch', 'vault.unlock', 'vault.lock', 'vault.oidc-unlock'] },
   { key: 'item', label: '条目与分类', match: ['item.create', 'item.update', 'item.delete', 'fill-policy.update', 'use-policy.update', 'plaintext-read-policy.update'] },
   { key: 'oauth', label: 'OAuth 与填充', match: ['oauth.*', 'fill.*'] },
   { key: 'risk', label: '仅风险事件', red: true, match: [] },
@@ -3458,7 +3459,7 @@ async function saveAgentFromModal(originalName) {
       const renamed = await api('/api/agents/rename', { method: 'POST', body: JSON.stringify({ name: originalName, newName: requested }) })
       currentName = renamed.name
     }
-    await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name: currentName, alias: $('ma-alias').value.trim(), note: $('ma-note').value.trim(), allow: $('ma-allowall').checked ? [] : pickListValues('ma-allow'), groups: pickListValues('ma-groups'), allowAll: $('ma-allowall').checked, write: $('ma-write').checked, tools: [...document.querySelectorAll('[data-mcp-tool]')].filter((box) => box.checked).map((box) => box.value) }) })
+    await api('/api/agents/update', { method: 'POST', body: JSON.stringify({ name: currentName, alias: $('ma-alias').value.trim(), note: $('ma-note').value.trim(), allow: $('ma-allowall').checked ? [] : pickListValues('ma-allow'), groups: pickListValues('ma-groups'), allowAll: $('ma-allowall').checked, write: $('ma-write').checked, muted: $('ma-muted').checked, tools: [...document.querySelectorAll('[data-mcp-tool]')].filter((box) => box.checked).map((box) => box.value) }) })
     show('modal', false); await refreshAll(); toast('已保存 Agent')
   } catch (error) { toast(error.message, true) }
 }
@@ -3516,11 +3517,12 @@ function mcpToolFields(agent) {
   return '<label class="field">MCP 工具权限（一个都不勾 = 允许全部，与之前一样）</label><div class="pick-box" style="max-height:170px;overflow:auto;border:1px solid var(--separator);border-radius:10px;padding:6px 8px;margin:4px 0 8px">' + boxes + '</div>'
 }
 function agentPermFields(agent) {
-  return '<div class="hint" style="margin:2px 0 6px">这里的「可申请条目」是<b>范围</b>：决定这个 Agent 有资格申请哪些条目（list_secrets 也按它过滤）。它不等于已经拿到授权——分享/审批产生的是一次具体的<b>授权</b>，在「授权」页能看到。两者都满足才能读到值。</div>'
-    + '<label class="field">可申请条目（范围内的条目，不勾=看不到也申请不了）</label>' + pickListHtml('ma-allow', knownItemNames(), agentPermAllow(agent), '密钥库里还没有条目。')
+  return '<div class="hint" style="margin:2px 0 6px">这里的「可申请条目」只影响免审批和自动授权的范围；任何可见条目都可以申请，审批仍由人完成。它不等于已经拿到授权——分享/审批产生的是一次具体的<b>授权</b>，在「授权」页能看到。</div>'
+    + '<label class="field">免审批范围（不勾也能申请，只是每次要人批）</label>' + pickListHtml('ma-allow', knownItemNames(), agentPermAllow(agent), '密钥库里还没有条目。')
     + '<label class="field">可申请分组（范围内按分组放行）</label>' + pickListHtml('ma-groups', knownGroups(), agent.groups || [], '还没有任何分组。')
     + mcpToolFields(agent)
     + agentActionFields(agent)
+    + '<label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-muted" ' + (agent.muted ? 'checked' : '') + '> 暂停这个 Agent 的读取和申请（管理员可恢复）</label>'
 }
 // Wire the action-grant controls that agentPermFields renders. Shared by the
 // token and OAuth dialogs so both can grant read/use/fill from one place.
@@ -3650,7 +3652,7 @@ async function loadProfile() {
       providerRows.push('</div></div>')
     }
     const oidc = data.oidcEnabled
-      ? '<div class="hint">可以绑定多个身份服务商，每个单独绑定、单独解绑。</div>' + (providerRows.join('') || '<div class="hint">还没有可用的身份服务商。</div>')
+      ? '<div class="hint">可以绑定多个身份服务商，每个单独绑定、单独解绑。用主密码解锁一次保险库后，OIDC 登录会自动解锁；点「锁定」会撤销这个行为。旧版绑定没有记住所属账户，重新绑定一次即可启用。</div>' + (providerRows.join('') || '<div class="hint">还没有可用的身份服务商。</div>')
       : '<div class="hint">未配置 OIDC。先在「设置」里添加身份服务商。</div>'
     $('oidc-box').innerHTML = oidc
     for (const button of $('oidc-box').querySelectorAll('[data-oidc-unbind]')) button.onclick = async () => {

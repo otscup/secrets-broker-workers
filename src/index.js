@@ -1250,6 +1250,27 @@ async function putSession(env, session) {
   await stateStub(env).fetch('https://state/session', { method: 'PUT', body: JSON.stringify({ wrapped, expiresAt: session.expiresAt ?? 0 }) })
 }
 
+// OIDC can only restore what a password unlock has already opened once. The
+// keys are wrapped with SESSION_KEK, never stored as plaintext.
+function forgetOidcVault(next, providerId) {
+  for (const key of Object.keys(next.oidcVault ?? {})) if (key.startsWith(providerId + '\u0000')) delete next.oidcVault[key]
+}
+
+async function rememberOidcVault(env, session, state) {
+  const account = String(session.email ?? '').toLowerCase()
+  // A binding is tied to the vault account it was created for. Without this
+  // check, unlocking account B would hand B's keys to an OIDC identity bound
+  // to account A.
+  const bindings = Object.values(state.profile?.oidcBindings ?? {}).filter((entry) => entry?.sub && String(entry.account ?? '').toLowerCase() === account)
+  if (!bindings.length) return
+  const wrapped = await wrapWithKek(encoder.encode(JSON.stringify({ email: session.email, symEncKey: session.symEncKey, symMacKey: session.symMacKey })), await kekBytes(env))
+  await updateState(env, (next) => {
+    next.oidcVault ??= {}
+    for (const binding of bindings) next.oidcVault[(binding.providerId ?? binding.id ?? 'default') + '\u0000' + binding.sub] = { email: session.email, account: session.email, wrapped, boundAt: nowIso() }
+    return next
+  })
+}
+
 async function adminAuthorized(request, env) {
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
     const origin = request.headers.get('origin')
@@ -1342,6 +1363,18 @@ function activeGrant(state, agent, name) {
 // approving them could silently mint the wrong action's capability.
 function findPending(state, agent, name, action) {
   return Object.entries(state.pending).find(([, entry]) => entry.agent === agent && entry.name === name && entry.action === action)?.[0] ?? null
+}
+
+// Agent-facing summary: granted means a live grant/capability already exists,
+// pending means waiting for a human, none means the agent may ask.
+function grantStatusForAgent(state, agent, agentName, name, itemId) {
+  if (agent.muted) return 'muted'
+  if (!itemId) return 'not_found'
+  if (findPending(state, agentName, name, 'secret.read')) return 'pending'
+  const cap = state.capabilities?.[capabilityKey(agentName, itemId, 'secret.read')]
+  const capLive = cap && !cap.revokedAt && !(cap.expiresAt && cap.expiresAt < Date.now()) && (cap.maxReads == null || (cap.reads ?? 0) < cap.maxReads)
+  if (capLive || activeGrant(state, agentName, name) || state.policies?.[name]?.noApproval === true) return 'granted'
+  return 'none'
 }
 
 // Restore is revoke's inverse, and it has to undo the same two things: the
@@ -3735,9 +3768,16 @@ async function ensureItemId(env, db, session, name) {
 
 // The agent-facing vocabulary for an access decision. It names the state, not
 // the internals, and never carries a credential or another account's details.
+function accessRefused(access) {
+  return ['forbidden', 'notfound', 'muted', 'outside_scope', 'not_found', 'throttled'].includes(access.status)
+}
+
 function accessStatusLabel(access) {
   if (access.status === 'allowed') return { status: 'allowed', message: 'access already allowed; use get_secret' }
-  if (access.status === 'pending') return { status: 'pending', message: 'pending approval: ' + access.approvalUrl }
+  if (access.status === 'pending') return { status: 'pending', message: 'pending approval: ' + access.approvalUrl, requestId: access.requestId, approvalUrl: access.approvalUrl, itemId: access.itemId }
+  if (access.status === 'muted' || access.status === 'outside_scope' || access.status === 'not_found' || access.status === 'throttled') {
+    return { status: access.status, code: access.code ?? access.status, message: access.error ?? access.status, retryAfterMs: access.retryAfterMs }
+  }
   const reason = String(access.reason ?? '')
   if (reason === 'unbound-legacy-identity') {
     return { status: 'identity-unbound', message: 'the existing authorisation is not bound to a credential id; an administrator must re-grant it' }
@@ -3766,11 +3806,12 @@ function accessStatusLabel(access) {
   if (reason === 'no-plaintext-read-policy') {
     return { status: 'read-forbidden-by-kind', message: 'plaintext reads are not enabled for this credential' }
   }
-  return { status: 'forbidden', message: access.error ?? 'access denied' }
+  return { status: 'forbidden', code: access.code ?? 'no_grant', message: access.error ?? 'access denied' }
 }
 
-async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx, consumeRead = true, action = 'secret.read', target = null }) {
-  if (agent.account && session.email && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) return { status: 'forbidden', error: 'agent is bound to another vault account' }
+async function agentAccess(env, { session, agentName, agent, state, name, origin, ctx, consumeRead = true, action = 'secret.read', target = null, createRequest = false }) {
+  if (agent.account && session.email && String(agent.account).toLowerCase() !== String(session.email).toLowerCase()) return { status: createRequest ? 'outside_scope' : 'forbidden', code: 'outside_scope', error: 'agent is bound to another vault account' }
+  if (agent.muted) return { status: 'muted', code: 'muted', error: 'this agent is muted by the operator' }
   // Legacy scope is only a fallback for secret.read; it must not pre-block an
   // explicit action grant (e.g. a new agent granted secret.use on one item).
   if (agent.legacy && !agentInScope(agent, state.itemGroups, name)) {
@@ -3783,6 +3824,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     if (resolved) { state.itemIds ??= {}; state.itemIds[name] = resolved }
   }
   const itemId = state.itemIds?.[name] ?? ''
+  if (createRequest && !itemId) return { status: 'not_found', code: 'not_found', error: 'no item named "' + name + '" in this account' }
   const decision = authorizeSecretAction(state, { agent, agentName, itemId, itemName: name, action, target, accountId: session.email })
   shadowAudit(env, state, action, agentName, name, itemId, decision.ok, decision.legacy)
   // A live capability that covers another site is not a grant and not a
@@ -3806,7 +3848,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     // this agent, time-boxed. It makes the request eligible, which is exactly
     // what pressing 批准 would do — the only difference is who answered.
     const autoRuleLive = autoRuleActive(state, agentName)
-    if (!decision.grantEligible && !decision.legacy && !noApprovalInScope && !autoRuleLive) {
+    if (!decision.grantEligible && !decision.legacy && !noApprovalInScope && !autoRuleLive && !createRequest) {
       const why = !itemId ? '当前账户里没有名为「' + name + '」的条目（名字必须与面板完全一致，空格也算）'
         : !agentInScope(agent, state.itemGroups, name) ? '该条目不在 Agent 的可申请范围内'
         : '在可申请范围内，但缺少这条授权'
@@ -3849,6 +3891,10 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   if (!noApprovalSatisfies && (!decision.capability || needsTargetApproval) && !legacyGrant) {
     let pendingId = findPending(state, agentName, name, action)
     if (!pendingId) {
+      const rateKey = agentName + '\u0000' + name + '\u0000' + action
+      if (createRequest && Date.now() - Number(state.requestRate?.[rateKey] ?? 0) < 15_000) {
+        return { status: 'throttled', code: 'rate_limited', retryAfterMs: 15_000 - (Date.now() - Number(state.requestRate?.[rateKey] ?? 0)) }
+      }
       pendingId = crypto.randomUUID()
       // The pending request records the target origin so the approver can see
       // which site the credential would be filled into. A fill request without
@@ -3858,7 +3904,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
       // cheque, so the origin is recorded for both and checked when it decides.
       const bindsTarget = action === 'secret.fill' || action === 'secret.use'
       const entry = { id: pendingId, agent: agentName, name, account: session.email, action, createdAt: nowIso(), targetOrigin: bindsTarget ? String(target?.origin ?? origin ?? '') : '', ...(action === 'secret.materialize' ? { target: { path: String(target?.path ?? ''), key: String(target?.key ?? '') } } : {}) }
-      await updateState(env, (next) => { next.pending[pendingId] = entry; if (itemId) { next.itemIds ??= {}; next.itemIds[name] = itemId } return next })
+      await updateState(env, (next) => { next.pending[pendingId] = entry; next.requestRate ??= {}; if (createRequest) next.requestRate[rateKey] = Date.now(); if (itemId) { next.itemIds ??= {}; next.itemIds[name] = itemId } return next })
       await addAudit(env, { event: 'request.create', agent: agentName, name })
       // An active auto-approval rule answers it now instead of asking. It is
       // time-boxed and audited with source 'auto-rule', so a grant made while
@@ -4821,8 +4867,10 @@ export default {
         if (!id) return fail('id required', 400)
         await updateState(env, (next) => {
           if (next.settings?.oidcProviders) delete next.settings.oidcProviders[id]
-          // A binding of a deleted provider is dropped with it.
+          // A binding of a deleted provider is dropped with it, including the
+          // wrapped Vault keys that login would otherwise restore.
           if (next.profile?.oidcBindings) delete next.profile.oidcBindings[id]
+          forgetOidcVault(next, id)
           return next
         })
         await addAudit(env, { event: 'oidc.provider.delete', provider: id })
@@ -4840,6 +4888,7 @@ export default {
       if (request.method === 'DELETE') {
         await updateState(env, (next) => {
           if (next.profile?.oidcBindings) delete next.profile.oidcBindings[id]
+          forgetOidcVault(next, id)
           // Unbinding the legacy provider must also clear the single global
           // identity, otherwise oidcBindingFor keeps reporting it as bound.
           if (id === 'default' && next.profile) { delete next.profile.oidcSub; delete next.profile.oidcEmail }
@@ -5016,6 +5065,7 @@ export default {
             providerId: oidc.id, issuer: oidc.issuer, sub: claims.sub,
             email: String(user.email ?? ''), name: String(user.name ?? user.preferred_username ?? ''),
             avatarUrl: String(user.picture ?? ''), boundAt: new Date().toISOString(),
+            account: String(state.settings?.vaultEmail ?? ''),
           }
           // The single global identity (oidcIssuer/oidcSub) predates the
           // provider list and belongs to the legacy 'default' provider. Writing
@@ -5034,6 +5084,17 @@ export default {
         })
         const cookie = await createAdminCookie(env, request)
         await addAudit(env, { event: 'admin.oidc-login', email: user.email ?? claims.sub ?? '' })
+        const currentSession = await getSession(env)
+        if (currentSession) await rememberOidcVault(env, currentSession, await loadState(env))
+        const vaultBinding = (await loadState(env)).oidcVault?.[oidc.id + '\u0000' + claims.sub]
+        if (vaultBinding) {
+          try {
+            const keys = JSON.parse(new TextDecoder().decode(await unwrapWithKek(vaultBinding.wrapped, await kekBytes(env))))
+            if (String(keys.email ?? '').toLowerCase() !== String(vaultBinding.account ?? '').toLowerCase()) throw new Error('binding account mismatch')
+            await putSession(env, { email: keys.email, symEncKey: keys.symEncKey, symMacKey: keys.symMacKey, expiresAt: Date.now() + 24 * 3600 * 1000 })
+            await addAudit(env, { event: 'vault.oidc-unlock', email: keys.email, provider: oidc.id })
+          } catch { /* a stale binding must not block the sign-in */ }
+        }
         const headers = new Headers({ location: stateData.next === 'profile' ? '/?view=profile' : '/' })
         headers.append('set-cookie', `${SESSION_COOKIE}=${cookie}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=604800`)
         headers.append('set-cookie', clearOidcCookie)
@@ -5054,9 +5115,11 @@ export default {
         if (encBytes.length !== 32 || macBytes.length !== 32) return fail('invalid session keys', 400)
         const ttl = body.ttl === 'permanent' ? 0 : Math.max(60, Math.min(60 * 86400, Number(body.ttl) || 86400)) * 1000
         const expiresAt = ttl === 0 ? 0 : Date.now() + ttl
-        const email = await vaultEmail(env, env.NODEWARDEN_DB, await loadState(env))
+        const state = await loadState(env)
+        const email = await vaultEmail(env, env.NODEWARDEN_DB, state)
         const sessionData = { email, symEncKey: String(body.symEncKey), symMacKey: String(body.symMacKey), expiresAt }
         await putSession(env, sessionData)
+        await rememberOidcVault(env, sessionData, state)
         const completedTransfers = await processTransfers(env, sessionData)
         await pruneForeignGrants(env, sessionData)
         await addAudit(env, { event: 'vault.unlock', email, ttl: body.ttl ?? '24h' })
@@ -5069,6 +5132,9 @@ export default {
       const state = await loadState(env)
       if (!(await verifyAdminPassword(env, state, body.password))) return fail('管理密码错误', 401)
       await stateStub(env).fetch('https://state/session', { method: 'DELETE' })
+      // An explicit lock must also revoke OIDC auto-unlock; otherwise the next
+      // OIDC sign-in would silently reopen the vault the operator just locked.
+      await updateState(env, (next) => { next.oidcVault = {}; return next })
       await addAudit(env, { event: 'vault.lock', source: 'password-confirmed' })
       // A locked vault ends every open task: the executor may no longer
       // redeem a credential.
@@ -6050,6 +6116,7 @@ export default {
           if (Array.isArray(body.groups)) agent.groups = body.groups.map(String).filter(Boolean)
           if (typeof body.allowAll === 'boolean') agent.allowAll = body.allowAll
           if (typeof body.write === 'boolean') agent.write = body.write
+          if (typeof body.muted === 'boolean') agent.muted = body.muted
           // Optional per-agent MCP surface. Empty/absent keeps today's behaviour
           // (every tool the token can reach); a non-empty list is an allowlist.
           if (Array.isArray(body.tools)) agent.tools = body.tools.map(String).map((tool) => tool.trim()).filter(Boolean).slice(0, 32)
@@ -6066,6 +6133,7 @@ export default {
         if (Array.isArray(body.groups)) profile.groups = body.groups.map(String).filter(Boolean)
         if (typeof body.allowAll === 'boolean') profile.allowAll = body.allowAll
         if (typeof body.write === 'boolean') profile.write = body.write
+        if (typeof body.muted === 'boolean') profile.muted = body.muted
         if (Array.isArray(body.tools)) profile.tools = body.tools.map(String).map((tool) => tool.trim()).filter(Boolean).slice(0, 32)
         return state
       })
@@ -7366,8 +7434,8 @@ const TOOL_META = {
       }
       if (body.method === 'tools/list') {
         return result({ tools: [
-          { name: 'list_secrets', description: 'List secret item names available to this agent (no values), sorted by name, each with its kind so you know whether to call get_secret or request_fill.', inputSchema: { type: 'object', properties: { filter: { type: 'string', description: 'Only names containing this text (case-insensitive)' }, limit: { type: 'number', description: 'Maximum entries, default 200' } }, additionalProperties: false } },
-          { name: 'request_access', description: 'Request approval to read a secret by name. Returns an approval URL if pending.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
+          { name: 'list_secrets', description: 'List secret item names in this account (no values), sorted by name. Each entry has kind, requestable, and grant_status (granted/pending/none/muted/not_found) so you know whether to call get_secret or request_access.', inputSchema: { type: 'object', properties: { filter: { type: 'string', description: 'Only names containing this text (case-insensitive)' }, limit: { type: 'number', description: 'Maximum entries, default 200' } }, additionalProperties: false } },
+          { name: 'request_access', description: 'Request approval to read any visible secret by name, even when it is outside the agent allowlist. Returns request_id and approval_url when pending; repeated calls for the same item reuse that request. Statuses: pending, not_found, outside_scope, muted, rate_limited.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'explain_access', description: 'Explain, without returning any value, why this agent can or cannot use a credential: its kind, the account it belongs to, the grant that exists and the rule that decides. Use it when a tool answers "not allowed" and you need to know whether to request access, ask for a fill, or stop.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' }, action: { type: 'string', enum: ['secret.read', 'secret.use', 'secret.fill', 'secret.materialize'], description: 'Action to explain (default secret.read)' }, origin: { type: 'string', description: 'Target origin, for secret.fill' }, url: { type: 'string', description: 'Target URL, for secret.use' } }, required: ['name'], additionalProperties: false } },
           { name: 'get_secret', description: 'Read a secret value after approval. Disabled unless MCP_ALLOW_READ=1.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
           { name: 'get_credential', description: 'Read username, password and TOTP for a login item after approval.', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Bitwarden item name' } }, required: ['name'] } },
@@ -7440,13 +7508,22 @@ const TOOL_META = {
             const filter = String(args.filter ?? '').trim().toLowerCase()
             const limit = Math.min(Math.max(Math.floor(Number(args.limit)) || 200, 1), 500)
             const visible = items
-              .filter((item) => resolved.agent.allowAll === true || (resolved.agent.allow ?? []).includes(item.name) || (resolved.agent.groups ?? []).includes(item.group))
               .filter((item) => !filter || String(item.name).toLowerCase().includes(filter))
               .sort((a, b) => String(a.name).localeCompare(String(b.name)))
               .slice(0, limit)
               // `kind` is what tells the caller to use get_secret (api) or
               // request_fill (web); without it a web login looks like a struck name.
-              .map((item) => ({ name: item.name, kind: credentialKind(resolved.state, item.id) || 'unclassified', noApproval: item.noApproval === true, url: item.url }))
+              .map((item) => {
+                const grantStatus = grantStatusForAgent(resolved.state, resolved.agent, resolved.name, item.name, item.id)
+                return {
+                  name: item.name,
+                  kind: credentialKind(resolved.state, item.id) || 'unclassified',
+                  noApproval: item.noApproval === true,
+                  url: item.url,
+                  requestable: grantStatus === 'none',
+                  grant_status: grantStatus,
+                }
+              })
             return result(text(visible))
           }
           if (name === 'request_access') {
@@ -7455,11 +7532,11 @@ const TOOL_META = {
             // The same authority checks as the real use, minus the counter:
             // the DO still validates the identity binding, so a legacy grant
             // without one is reported here instead of at read time.
-            const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx, consumeRead: false })
+            const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx, consumeRead: false, createRequest: true })
             const label = accessStatusLabel(access)
             if (label.status === 'allowed') return result(text(label.message))
-            if (label.status === 'pending') return result(text(label.message))
-            return result(text(label.message, true))
+            if (label.status === 'pending') return result(text({ status: 'pending', request_id: label.requestId, approval_url: label.approvalUrl, item_id: label.itemId }))
+            return result(text({ status: label.status, code: label.code, error: label.message, ...(label.retryAfterMs ? { retry_after_ms: label.retryAfterMs } : {}) }, true))
           }
           if (name === 'get_secret') {
             if (env.MCP_ALLOW_READ !== '1') return result(text('get_secret is disabled; set MCP_ALLOW_READ=1 to expose values', true))
@@ -7470,7 +7547,7 @@ const TOOL_META = {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
               return result(pendingText(access))
             }
-            if (access.status === 'forbidden' || access.status === 'notfound') {
+            if (accessRefused(access)) {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: resolved.agent.oauth ? 'oauth' : 'token', action: 'secret.read', ok: false })
               return result(text(access.error, true))
             }
@@ -7497,7 +7574,7 @@ const TOOL_META = {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
               return result(pendingText(access))
             }
-            if (access.status === 'forbidden' || access.status === 'notfound') {
+            if (accessRefused(access)) {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: credKind, action: 'secret.read', ok: false })
               return result(text(access.error, true))
             }
@@ -7534,7 +7611,7 @@ const TOOL_META = {
             // materialize_redeem with it instead of asking again (asking again
             // would just queue another approval).
             if (access.status === 'pending') return result(text(JSON.stringify({ status: 'pending', id: access.requestId, approvalUrl: access.approvalUrl, path: dest.path, key: dest.key })))
-            if (access.status === 'forbidden' || access.status === 'notfound') return result(text(access.error, true))
+            if (accessRefused(access)) return result(text(access.error, true))
             if (access.status !== 'materialize-ok') return result(text('materialize was not authorized', true))
             return result(text(JSON.stringify({ status: 'approved', path: dest.path, key: dest.key })))
           }
@@ -7601,7 +7678,7 @@ const TOOL_META = {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: fillKind, action: 'secret.fill', ok: false })
               return result(pendingText(access))
             }
-            if (access.status === 'forbidden' || access.status === 'notfound') {
+            if (accessRefused(access)) {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: fillKind, action: 'secret.fill', ok: false })
               return result(text(access.error, true))
             }
@@ -7676,7 +7753,7 @@ const TOOL_META = {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: useKind, action: 'secret.use', ok: false })
               return result(pendingText(access))
             }
-            if (access.status === 'forbidden' || access.status === 'notfound') {
+            if (accessRefused(access)) {
               await recordGeoEvent(env, request, ctx, { agent: resolved.name, kind: useKind, action: 'secret.use', ok: false })
               return result(text(access.error, true))
             }
@@ -7870,7 +7947,7 @@ const TOOL_META = {
           name, origin: url.origin, ctx,
         })
         if (access.status === 'pending') return json({ status: 'pending', requestId: access.requestId, approvalUrl: access.approvalUrl }, 202)
-        if (access.status === 'forbidden') return fail(access.error, 403)
+        if (accessRefused(access)) return fail(access.error, 403)
         if (access.status === 'notfound') return fail(access.error, 404)
         // Second layer: the same guard already ran inside agentAccess. A
         // website login is refused; only an api credential with an explicit

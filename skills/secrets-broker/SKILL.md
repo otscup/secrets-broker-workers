@@ -95,6 +95,39 @@ Example shell pattern:
 API_KEY="<resolved-by-mcp>" command-that-needs-key
 ```
 
+## Local operation (`guard`, offline pull)
+
+The CLI can use the same paired vault without the model, for local automation:
+
+```bash
+# Open the vault once while online; this also saves a ciphertext copy.
+secrets-broker pull
+
+# Later, with no network, answer from that copy.
+secrets-broker pull --offline
+secrets-broker pull --offline --to ./vault.json   # file is mode 0600
+```
+
+- `--offline` never touches the network. If no copy exists it answers
+  `no local copy yet; run secrets-broker pull once while online`.
+- A revoked device still gets `401/403` instead of silently reading the old copy.
+- `--to` writes decrypted values to disk. Treat that file as a secret and delete
+  it when the job is done.
+
+```bash
+# Install a pre-commit hook that blocks staged values the vault already holds.
+secrets-broker guard --install
+secrets-broker guard                  # check the current index once
+secrets-broker guard --repo ../other  # install/check another checkout
+```
+
+- The hook compares staged content with the local vault copy, prints the file and
+  a masked value, and exits 1. It only knows values from a previous `pull`; with
+  no local copy it says so and allows the commit instead of pretending it checked.
+- It is a safety net, not a boundary: `git commit --no-verify` skips it.
+- `--install` refuses to overwrite an existing hook; use `--force` only after
+  moving the old hook aside.
+
 ## Choosing an agent identity
 
 For service integrations, create one broker Agent per tool/agent:

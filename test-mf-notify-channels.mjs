@@ -88,8 +88,8 @@ const telegram = {
   const body = await requestAccess()
   const text = body?.result?.content?.[0]?.text ?? ''
   const hits = outbound.filter((url) => url.includes('api.telegram.org'))
-  hits.length === 0 && /not allowed/.test(text)
-    ? pass('N1 a muted channel sends nothing') : fail('N1', JSON.stringify({ hits, text: text.slice(0, 200) }))
+  hits.length === 0 && /"status":"pending"/.test(text)
+    ? pass('N1 a muted channel sends nothing while the request is still recorded') : fail('N1', JSON.stringify({ hits, text: text.slice(0, 200) }))
 }
 
 // N2 - switched on: the same call reaches Telegram.
