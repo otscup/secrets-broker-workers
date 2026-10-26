@@ -153,6 +153,19 @@ const state = {
   else fail('A7', JSON.stringify({ bare: { rc: bare.requireClassification, up: bare.unclassifiedPlaintext, wp: bare.webPlaintext }, on: { rc: on.requireClassification, up: on.unclassifiedPlaintext, wp: on.webPlaintext } }))
 }
 
+// A8: the snapshot only describes the account the caller is unlocked into.
+// itemIds is an append-only name cache that survives an account switch, so
+// without the scope filter the model was told about items belonging to a
+// different vault -- which reads to a user like a privilege leak.
+{
+  const scoped = aiSnapshot(state, { vaultUnlocked: true, scope: new Set(['tavily-api-key']) })
+  const names = scoped.items.map((item) => item.name)
+  const unfiltered = aiSnapshot(state, { vaultUnlocked: true })
+  const ok = names.length === 1 && names[0] === 'tavily-api-key' && scoped.counts.items === 1 && unfiltered.items.length === 3
+  if (ok) pass('A8 the snapshot only lists items that belong to the unlocked account')
+  else fail('A8', JSON.stringify({ names, count: scoped.counts.items, unfiltered: unfiltered.items.length }))
+}
+
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== ai assistant ' + passed + '/' + results.length + ' passed ====')
 if (passed !== results.length) process.exit(1)
