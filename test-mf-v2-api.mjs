@@ -242,16 +242,43 @@ let deviceId = ''
   else fail('D1', JSON.stringify({ row }).slice(0, 220))
 }
 
-// P6: revoking a device stops its pulls immediately.
+// D2: write permission is a per-device switch the console flips, not a re-pair.
+// Off then on again must both take effect, and the device token keeps working
+// either way (only push cares).
+{
+  const off = await call('/api/v2/devices/' + deviceId, { method: 'PATCH', body: { canWrite: false } })
+  const afterOff = (await call('/api/v2/devices')).body.devices?.find((device) => device.id === deviceId)
+  const on = await call('/api/v2/devices/' + deviceId, { method: 'PATCH', body: { canWrite: true } })
+  const afterOn = (await call('/api/v2/devices')).body.devices?.find((device) => device.id === deviceId)
+  const ok = off.status === 200 && afterOff?.canWrite === false && on.status === 200 && afterOn?.canWrite === true
+  if (ok) pass('D2 the write flag flips without re-pairing')
+  else fail('D2', JSON.stringify({ off: off.status, afterOff, on: on.status, afterOn }).slice(0, 260))
+}
+
+// P6: revoking a device stops its pulls immediately. A live device must also
+// refuse to be purged -- deleting a live row would strip its key envelope while
+// its token still works.
 {
   await call('/api/v2/unlock', { method: 'POST', body: { password: MASTER } })
+  const livePurge = await call('/api/v2/devices/' + deviceId + '?purge=1', { method: 'DELETE' })
   const list = await call('/api/v2/devices')
   const revoked = await call('/api/v2/devices/' + deviceId, { method: 'DELETE' })
   const after = await deviceCall('/api/v2/items?since=0', deviceToken)
   const row = (list.body.devices || []).find((device) => device.id === deviceId)
-  const ok = row?.name === 'laptop' && revoked.status === 200 && after.status === 401
-  if (ok) pass('P6 a revoked device stops pulling ciphertext')
-  else fail('P6', JSON.stringify({ row, revoked: revoked.status, after: after.status }))
+  const ok = row?.name === 'laptop' && livePurge.status === 409 && revoked.status === 200 && after.status === 401
+  if (ok) pass('P6 a revoked device stops pulling ciphertext, and a live one cannot be purged')
+  else fail('P6', JSON.stringify({ row, livePurge: livePurge.status, revoked: revoked.status, after: after.status }))
+}
+
+// D3: a revoked device can be purged from the list, and an unknown id is a 404.
+{
+  const purged = await call('/api/v2/devices/' + deviceId + '?purge=1', { method: 'DELETE' })
+  const after = (await call('/api/v2/devices')).body.devices || []
+  const gone = !after.some((device) => device.id === deviceId)
+  const unknown = await call('/api/v2/devices/nope-nope?purge=1', { method: 'DELETE' })
+  const ok = purged.status === 200 && gone && unknown.status === 404
+  if (ok) pass('D3 purge removes a revoked device, unknown id is 404')
+  else fail('D3', JSON.stringify({ purged: purged.status, gone, unknown: unknown.status }).slice(0, 220))
 }
 
 // P7: the panel gets names, not ciphertext -- and only while unlocked.

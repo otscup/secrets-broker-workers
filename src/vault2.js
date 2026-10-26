@@ -193,6 +193,27 @@ export async function vault2RevokeDevice(env, id) {
   return { id, revokedAt: at }
 }
 
+// Write permission is a per-device switch, not a re-pair: flipping it off leaves
+// the key envelope alone, so turning it back on needs no browser approval.
+export async function vault2SetDeviceWrite(env, id, canWrite) {
+  const row = await env.VAULT_DB.prepare('SELECT id, revoked_at FROM devices WHERE id = ?').bind(id).first()
+  if (!row) return null
+  if (row.revoked_at) return { id, error: 'device is revoked' }
+  await env.VAULT_DB.prepare('UPDATE devices SET can_write = ? WHERE id = ?').bind(canWrite ? 1 : 0, id).run()
+  return { id, canWrite: Boolean(canWrite) }
+}
+
+// Only a revoked device can be purged: deleting a live one would silently strip
+// its key envelope while its token still works. Purge is irreversible.
+export async function vault2PurgeDevice(env, id) {
+  const row = await env.VAULT_DB.prepare('SELECT id, revoked_at FROM devices WHERE id = ?').bind(id).first()
+  if (!row) return null
+  if (!row.revoked_at) return { id, error: 'revoke the device first' }
+  await env.VAULT_DB.prepare('DELETE FROM keyrings WHERE device_id = ?').bind(id).run()
+  await env.VAULT_DB.prepare('DELETE FROM devices WHERE id = ?').bind(id).run()
+  return { id, purged: true }
+}
+
 export async function vault2DeviceByToken(env, token) {
   const value = String(token ?? '')
   if (value.length < 20) return null

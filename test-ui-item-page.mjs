@@ -411,7 +411,21 @@ try {
     ? pass('A24 the Vault 2.0 device list shows online state, write access and a revoke button')
     : fail('A24', JSON.stringify(v2devices).slice(0, 300))
 
-  // A11 - nothing threw while all of that happened.
+  // A25 - the write switch is a control on the row, labelled with the state it is
+// currently in, and a revoked row offers 删除 instead of a toggle that would 409.
+const v2controls = await evaluate(`(() => {
+const rows = [...document.querySelectorAll('#v2-devices .ios-row')]
+return rows.map((row) => ({
+name: row.querySelector('b')?.textContent.trim(),
+write: row.querySelector('[data-v2-write]')?.textContent.trim() || null,
+purge: !!row.querySelector('[data-v2-purge]')
+}))
+})()`)
+v2controls.length === 2 && v2controls[0].write === '可写' && v2controls[0].purge === false
+  ? pass('A25 a live device row carries a labelled write switch, a revoked row carries 删除')
+  : fail('A25', JSON.stringify(v2controls).slice(0, 300))
+
+// A11 - nothing threw while all of that happened.
   problems.length === 0 ? pass('A11 no runtime errors') : fail('A11', problems.slice(0, 3).join(' | '))
 } finally {
   try { ws?.close() } catch {}

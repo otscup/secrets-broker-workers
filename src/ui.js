@@ -1103,6 +1103,29 @@ $('items-refresh').onclick = loadItems; $('items-select').onclick = () => { item
 $('mcp-url').textContent = location.origin + '/mcp'
 $('v2-refresh').onclick = loadVault2
 $('v2-devices').addEventListener('click', async (event) => {
+  const write = event.target.closest('[data-v2-write]')
+  if (write) {
+    const on = write.dataset.write === '1'
+    write.disabled = true
+    try {
+      await api('/api/v2/devices/' + encodeURIComponent(write.dataset.v2Write), { method: 'PATCH', body: JSON.stringify({ canWrite: !on }) })
+      await loadVault2()
+      $('v2-msg').textContent = on ? '已改为只读：这台设备不能再用 push 写入' : '已允许写入：这台设备可以 push 了'
+    } catch (error) { $('v2-msg').textContent = error.message; write.disabled = false }
+    return
+  }
+  const purge = event.target.closest('[data-v2-purge]')
+  if (purge) {
+    const name = purge.closest('[data-device]')?.querySelector('b')?.textContent || ''
+    if (!confirm('删除设备「' + name + '」的记录？\n\n只对已撤销的设备可用，删掉后这条记录和它留下的钥匙信封都不再保留，无法恢复。')) return
+    purge.disabled = true
+    try {
+      await api('/api/v2/devices/' + encodeURIComponent(purge.dataset.v2Purge) + '?purge=1', { method: 'DELETE' })
+      await loadVault2()
+      $('v2-msg').textContent = '已删除「' + name + '」的记录'
+    } catch (error) { $('v2-msg').textContent = error.message; purge.disabled = false }
+    return
+  }
   const button = event.target.closest('[data-v2-revoke]')
   if (!button) return
   const name = button.closest('[data-device]')?.querySelector('b')?.textContent || ''
@@ -2040,9 +2063,13 @@ function renderVault2Devices(devices) {
     ? devices.map((device) => {
       const state = vault2DeviceState(device)
       const seen = device.lastSeenAt ? new Date(device.lastSeenAt).toLocaleString() : '从未连接'
-      return '<div class="ios-row" data-device="' + esc(device.id) + '"><div class="ios-main"><div class="ios-title"><b>' + esc(device.name) + '</b> <span class="' + state.cls + '">' + state.label + '</span>' + (device.canWrite ? ' <span class="kind-tag kind-api">可写</span>' : '') + '</div><div class="ios-sub">最近活动 ' + esc(seen) + '</div></div>' + (device.revokedAt ? '' : '<button class="mini" data-v2-revoke="' + esc(device.id) + '">撤销</button>') + '</div>'
+      const made = device.createdAt ? new Date(device.createdAt).toLocaleDateString() : ''
+      const actions = device.revokedAt
+        ? '<button class="mini danger" data-v2-purge="' + esc(device.id) + '">删除</button>'
+        : '<button class="mini" data-v2-write="' + esc(device.id) + '" data-write="' + (device.canWrite ? '1' : '0') + '">' + (device.canWrite ? '可写' : '只读') + '</button><button class="mini" data-v2-revoke="' + esc(device.id) + '">撤销</button>'
+      return '<div class="ios-row" data-device="' + esc(device.id) + '"><div class="ios-main"><div class="ios-title"><b>' + esc(device.name) + '</b> <span class="' + state.cls + '">' + state.label + '</span>' + (device.canWrite ? ' <span class="kind-tag kind-api">可写</span>' : '') + '</div><div class="ios-sub">最近活动 ' + esc(seen) + (made ? ' · 配对于 ' + esc(made) : '') + '</div></div>' + actions + '</div>'
     }).join('')
-    : '<div class="hint">还没有配对设备。在另一台机器上运行 secrets-broker pair，用这里的设备码批准后它就会出现在这里。</div>') + '</div>'
+    : '<div class="hint">还没有配对设备。在另一台机器上运行 secrets-broker pair --url https://sb.otscup.com，把屏幕上出现的设备码填进这里批准，它就会出现在下面。</div>') + '</div>'
   host.classList.remove('hidden')
 }
 

@@ -9,7 +9,7 @@ import {
 } from './crypto.js'
 import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, ALLOWED_ALGS } from './oidc.js'
 import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
-import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2ListPlain, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf, vault2Push } from './vault2.js'
+import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2ListPlain, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2SetDeviceWrite, vault2PurgeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf, vault2Push } from './vault2.js'
 import { publicKeyFingerprint } from './envelope.js'
 
 const encoder = new TextEncoder()
@@ -7822,8 +7822,24 @@ const TOOL_META = {
         if (route === 'devices' && request.method === 'GET') {
           return json({ devices: await vault2Devices(env) })
         }
+        if (route.startsWith('devices/') && request.method === 'PATCH') {
+          const id = route.slice('devices/'.length)
+          const body = await request.json().catch(() => ({}))
+          const result = await vault2SetDeviceWrite(env, id, body.canWrite === true)
+          if (!result) return fail('device not found', 404)
+          if (result.error) return fail(result.error, 409)
+          await addAudit(env, { event: 'vault.device-write', agent: 'admin', name: result.id, canWrite: result.canWrite })
+          return json(result)
+        }
         if (route.startsWith('devices/') && request.method === 'DELETE') {
           const id = route.slice('devices/'.length)
+          if (url.searchParams.get('purge') === '1') {
+            const purged = await vault2PurgeDevice(env, id)
+            if (!purged) return fail('device not found', 404)
+            if (purged.error) return fail(purged.error, 409)
+            await addAudit(env, { event: 'vault.device-purge', agent: 'admin', name: id })
+            return json(purged)
+          }
           const revoked = await vault2RevokeDevice(env, id)
           if (!revoked) return fail('device not found', 404)
           await addAudit(env, { event: 'vault.device-revoke', agent: 'admin', name: id })
