@@ -3968,6 +3968,9 @@ export default {
       const now = Date.now()
       const windowHours = Math.max(1, Math.min(24 * 30, Number(url.searchParams.get('hours')) || 24))
       const since = now - windowHours * 3600e3
+      // Hourly buckets, so the panel can draw a trend and a weekday heatmap
+      // without shipping the audit trail to the browser.
+      const buckets = new Array(windowHours).fill(null).map(() => ({ reads: 0, denied: 0 }))
       const byAgent = {}
       const byItem = {}
       let reads = 0
@@ -3979,14 +3982,17 @@ export default {
         if (event !== 'secret.read' && event !== 'secret.read-deny') continue
         const agent = String(entry.agent ?? '') || '(admin)'
         const name = String(entry.name ?? '') || '(unknown)'
+        const bucket = buckets[Math.min(windowHours - 1, Math.floor((at - since) / 3600e3))]
         if (event === 'secret.read-deny') {
           denied += 1
+          if (bucket) bucket.denied += 1
           const slot = byAgent[agent] ?? (byAgent[agent] = { agent, reads: 0, denied: 0, items: {}, lastAt: '' })
           slot.denied += 1
           if (!slot.lastAt || at > Date.parse(slot.lastAt)) slot.lastAt = new Date(at).toISOString()
           continue
         }
         reads += 1
+        if (bucket) bucket.reads += 1
         const slot = byAgent[agent] ?? (byAgent[agent] = { agent, reads: 0, denied: 0, items: {}, lastAt: '' })
         slot.reads += 1
         slot.items[name] = (slot.items[name] ?? 0) + 1
@@ -4007,6 +4013,7 @@ export default {
       const pending = Object.values(state.pending ?? {}).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, action: entry.action ?? '', createdAt: entry.createdAt ?? '' }))
       return json({
         windowHours, reads, denied,
+        series: buckets.map((bucket, index) => ({ t: since + index * 3600e3, reads: bucket.reads, denied: bucket.denied })),
         agents: Object.values(byAgent).sort((a, b) => b.reads - a.reads),
         items: Object.entries(byItem).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, reads: count })),
         capabilities, pending,

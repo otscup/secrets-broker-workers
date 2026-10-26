@@ -72,6 +72,7 @@ window.__ModuleLoader__.load({
   --sb-ease: cubic-bezier(.32,.72,0,1);
   --sb-ease-back: cubic-bezier(.34,1.32,.64,1);
   --sb-dur: .3s;
+  --sb-h-body: 470px;
   --sb-bg: #F2F2F7; --sb-card: #FFFFFF; --sb-elevated: #FFFFFF; --sb-fill: rgba(120,120,128,.12);
   --sb-label: #000000; --sb-label-2: rgba(60,60,67,.6); --sb-label-3: rgba(60,60,67,.3);
   --sb-sep: rgba(60,60,67,.18);
@@ -164,6 +165,38 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
    never drift apart. No colour here: the buttons and tables below set their
    own, and a colour on this wrapper would outrank them. */
 .sb-view { display: flex; flex-direction: column; gap: var(--sb-sp-4); width: 100%; max-width: 760px; font-size: var(--sb-fs-sub); line-height: var(--sb-lh-sub); }
+/* The three tabs share one height, so switching never resizes the sheet. */
+.sb-host > .sb-body { flex: 0 0 auto; height: var(--sb-h-body); }
+.sb-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: var(--sb-sp-2); }
+.sb-kpi { background: var(--sb-card); border-radius: var(--sb-r-card); padding: var(--sb-sp-3); box-shadow: var(--sb-shadow-card); display: flex; flex-direction: column; gap: 2px; }
+.sb-kpi-label { display: flex; align-items: center; gap: 6px; font-size: var(--sb-fs-mini); color: var(--sb-label-2); }
+.sb-kpi-dot { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+.sb-kpi-value { font-size: 22px; line-height: 26px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.sb-kpi-sub { font-size: var(--sb-fs-mini); color: var(--sb-label-3); }
+.sb-chart { width: 100%; display: block; overflow: visible; }
+.sb-chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sb-sp-2); }
+.sb-heat { display: grid; grid-template-columns: repeat(24, 1fr); gap: 3px; }
+.sb-heat-cell { aspect-ratio: 1; border-radius: 3px; background: var(--sb-blue); }
+.sb-heat-cell[data-level="0"] { background: var(--sb-fill); }
+.sb-heat-cell[data-level="1"] { opacity: .28; }
+.sb-heat-cell[data-level="2"] { opacity: .5; }
+.sb-heat-cell[data-level="3"] { opacity: .72; }
+.sb-heat-cell[data-level="4"] { opacity: .92; }
+.sb-heat-axis { display: grid; grid-template-columns: repeat(24, 1fr); gap: 3px; margin-top: 4px; font-size: 9px; color: var(--sb-label-3); }
+.sb-heat-axis > span:not(:nth-child(4n+1)) { visibility: hidden; }
+.sb-bars { display: flex; flex-direction: column; gap: 6px; }
+.sb-bar-row { display: grid; grid-template-columns: 1fr 40px; gap: var(--sb-sp-2); align-items: center; font-size: var(--sb-fs-mini); }
+.sb-bar-track { height: 8px; border-radius: 4px; background: var(--sb-fill); overflow: hidden; }
+.sb-bar-fill { height: 100%; border-radius: 4px; background: var(--sb-blue); }
+.sb-bar-name { color: var(--sb-label-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 3px; }
+.sb-bar-count { text-align: right; color: var(--sb-label-2); font-variant-numeric: tabular-nums; }
+.sb-legend { display: flex; flex-wrap: wrap; gap: var(--sb-sp-3); font-size: var(--sb-fs-mini); color: var(--sb-label-2); }
+.sb-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.sb-field { display: flex; flex-direction: column; gap: 4px; }
+.sb-field > label { font-size: var(--sb-fs-mini); color: var(--sb-label-2); }
+.sb-inline { display: flex; gap: var(--sb-sp-2); align-items: center; flex-wrap: wrap; }
+.sb-note { margin: 0; font-size: var(--sb-fs-mini); color: var(--sb-label-3); }
+.sb-section-title { margin: var(--sb-sp-1) 0 0; font-size: var(--sb-fs-cap); font-weight: 600; color: var(--sb-label-2); }
 @keyframes sb-fade { from { opacity: 0 } to { opacity: 1 } }
 @keyframes sb-sheet-in { from { opacity: 0; transform: translateY(18px) scale(.94); border-radius: 28px } to { opacity: 1; transform: none; border-radius: var(--sb-r-sheet) } }
 @keyframes sb-roll { from { transform: translateY(60%); opacity: .2 } to { transform: translateY(0); opacity: 1 } }
@@ -195,21 +228,106 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
       return svg;
     }
 
+    // ---- charts --------------------------------------------------------
+    // Plain SVG built from tokens: no library, no literal colour. Units are the
+    // viewBox's, so the same markup scales to the panel or the settings page.
+    const esc = (value) => String(value).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+    const PALETTE = ["var(--sb-blue)", "var(--sb-green)", "var(--sb-orange)", "var(--sb-red)"];
+    const seriesOf = (usage) => (Array.isArray(usage && usage.series) ? usage.series : []);
+
+    // r = 15.9155 makes the circumference 100, so a slice length is a percent.
+    function donutMarkup(parts, caption) {
+      const total = parts.reduce((sum, part) => sum + part.value, 0);
+      let acc = 0;
+      const arcs = [];
+      for (const part of parts) {
+        const len = total ? (part.value / total) * 100 : 0;
+        if (len <= 0) continue;
+        // A one-pixel gap between slices, halved on each side of the seam.
+        const cut = Math.min(0.5, len / 4);
+        arcs.push({ len: len - cut * 2, offset: 100 - acc + 25 - cut, color: part.color });
+        acc += len;
+      }
+      const ring = arcs.length
+        ? arcs.map((arc) => `<circle cx="21" cy="21" r="15.9155" fill="none" stroke="${arc.color}" stroke-width="4" stroke-dasharray="${arc.len.toFixed(2)} ${(100 - arc.len).toFixed(2)}" stroke-dashoffset="${arc.offset.toFixed(2)}"/>`).join("")
+        : `<circle cx="21" cy="21" r="15.9155" fill="none" stroke="var(--sb-fill)" stroke-width="4"/>`;
+      return `<svg viewBox="0 0 42 42" width="92" height="92" aria-hidden="true">${ring}` +
+        `<text x="21" y="20.6" text-anchor="middle" font-size="7" font-weight="600" fill="var(--sb-label)">${esc(total)}</text>` +
+        `<text x="21" y="26.4" text-anchor="middle" font-size="3.2" fill="var(--sb-label-2)">${esc(caption)}</text></svg>`;
+    }
+
+    // Hourly reads (blue) stacked under denials (red).
+    function trendMarkup(series, slots) {
+      const data = series.slice(-slots);
+      if (!data.length) return `<svg class="sb-chart" viewBox="0 0 1 100" height="72" aria-hidden="true"></svg>`;
+      const max = Math.max(1, ...data.map((bucket) => (bucket.reads || 0) + (bucket.denied || 0)));
+      const width = data.length;
+      const bars = data.map((bucket, index) => {
+        const reads = ((bucket.reads || 0) / max) * 96;
+        const denied = ((bucket.denied || 0) / max) * 96;
+        const x = index + 0.15;
+        return `<rect x="${x.toFixed(2)}" y="${(100 - reads - denied).toFixed(2)}" width="0.7" height="${reads.toFixed(2)}" fill="var(--sb-blue)"/>` +
+          (denied > 0 ? `<rect x="${x.toFixed(2)}" y="${(100 - denied).toFixed(2)}" width="0.7" height="${denied.toFixed(2)}" fill="var(--sb-red)"/>` : "");
+      }).join("");
+      return `<svg class="sb-chart" viewBox="0 0 ${width} 100" height="72" preserveAspectRatio="none" aria-hidden="true">` +
+        `<line x1="0" y1="99.6" x2="${width}" y2="99.6" stroke="var(--sb-sep)" stroke-width="1" vector-effect="non-scaling-stroke"/>${bars}</svg>`;
+    }
+
+    // Seven rows of weekdays by twenty-four hours. Four steps, the way a calendar
+    // heatmap does it: the ramp is by quartile of the busiest cell.
+    function heatCells(series) {
+      const cells = new Array(7 * 24).fill(0);
+      for (const bucket of series) {
+        const at = new Date(Number(bucket.t));
+        if (Number.isNaN(at.getTime())) continue;
+        cells[at.getDay() * 24 + at.getHours()] += (bucket.reads || 0) + (bucket.denied || 0);
+      }
+      const max = Math.max(1, ...cells);
+      return cells.map((value) => (value === 0 ? 0 : value <= max * 0.25 ? 1 : value <= max * 0.5 ? 2 : value <= max * 0.75 ? 3 : 4));
+    }
+
+    function heatMarkup(series) {
+      const cells = heatCells(series);
+      const grid = cells.map((level) => `<span class="sb-heat-cell" data-level="${level}"></span>`).join("");
+      const axis = Array.from({ length: 24 }, (_, hour) => `<span>${hour}</span>`).join("");
+      return `<div class="sb-heat">${grid}</div><div class="sb-heat-axis">${axis}</div>`;
+    }
+
+    function barMarkup(rows) {
+      const max = Math.max(1, ...rows.map((row) => row.value));
+      return `<div class="sb-bars">` + rows.map((row) =>
+        `<div class="sb-bar-row"><div><div class="sb-bar-name">${esc(row.name)}</div>` +
+        `<div class="sb-bar-track"><div class="sb-bar-fill" style="width:${((row.value / max) * 100).toFixed(1)}%"></div></div></div>` +
+        `<div class="sb-bar-count">${row.value}</div></div>`).join("") + `</div>`;
+    }
+
     function View({ t }) {
-      const [state, setState] = react.useState({ status: "loading", pending: [], requests: [] });
+      const [state, setState] = react.useState({ status: "loading", pending: [], requests: [], items: [], usage: null, config: null });
+      const [form, setForm] = react.useState({ url: "", token: "" });
+      const [note, setNote] = react.useState(null);
+      const [busy, setBusy] = react.useState("");
       const load = () => {
-        setState((current) => ({ ...current, status: "loading" }));
         Promise.allSettled([
           fetch("/api/secrets-broker/pending").then((response) => response.json()),
           fetch("/api/secrets-broker/credential-requests").then((response) => response.json()),
-          fetch("/api/secrets-broker/usage?hours=24").then((response) => response.json()).catch(() => ({}))
-        ]).then(([pendingResult, requestResult, usageResult]) => {
-          const pendingPayload = pendingResult.status === "fulfilled" ? pendingResult.value : null;
-          if (!pendingPayload || pendingPayload.ok === false) throw new Error((pendingPayload && pendingPayload.error) || "broker error");
-          const requestPayload = requestResult.status === "fulfilled" ? requestResult.value : null;
-          const usagePayload = usageResult.status === "fulfilled" ? usageResult.value : {};
-          setState({ status: "ready", pending: Array.isArray(pendingPayload.pending) ? pendingPayload.pending : [], requests: Array.isArray(requestPayload?.requests) ? requestPayload.requests : [], usage: usagePayload && usagePayload.ok === false ? null : usagePayload });
-        }).catch((error) => setState({ status: "error", error: String(error.message || error), pending: [], requests: [] }));
+          fetch("/api/secrets-broker/usage?hours=168").then((response) => response.json()),
+          fetch("/api/secrets-broker/items").then((response) => response.json()),
+          fetch("/api/secrets-broker/config").then((response) => response.json())
+        ]).then(([pendingResult, requestResult, usageResult, itemResult, configResult]) => {
+          const value = (result) => (result.status === "fulfilled" && result.value && result.value.ok !== false ? result.value : null);
+          const pending = value(pendingResult);
+          if (!pending) throw new Error((pendingResult.status === "fulfilled" && pendingResult.value && pendingResult.value.error) || "broker error");
+          const config = value(configResult);
+          setState({
+            status: "ready",
+            pending: Array.isArray(pending.pending) ? pending.pending : [],
+            requests: Array.isArray(value(requestResult)?.requests) ? value(requestResult).requests : [],
+            usage: value(usageResult),
+            items: Array.isArray(value(itemResult)?.items) ? value(itemResult).items : [],
+            config
+          });
+          if (config) setForm((current) => ({ ...current, url: current.url || config.url || "" }));
+        }).catch((error) => setState({ status: "error", error: String(error.message || error), pending: [], requests: [], items: [] }));
       };
       react.useEffect(() => {
         ensureCss();
@@ -217,64 +335,173 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
         const timer = setInterval(load, 15000);
         return () => clearInterval(timer);
       }, []);
+      const post = (path, body) => fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((response) => response.json());
       const decide = (id, decision) => {
-        fetch("/api/secrets-broker/decide", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, decision }) }).then((response) => response.json()).then((payload) => {
+        post("/api/secrets-broker/decide", { id, decision }).then((payload) => {
           if (!payload || payload.ok === false) throw new Error((payload && payload.error) || "failed");
           setState((current) => ({ ...current, pending: current.pending.filter((entry) => entry.id !== id) }));
-        }).catch((error) => setState((current) => ({ ...current, status: "error", error: String(error.message || error) })));
+        }).catch((error) => setNote({ ok: false, text: String(error.message || error) }));
       };
-      const children = [
-        react.createElement("p", { style: s.intro }, t("intro")),
-        react.createElement("div", { style: s.row },
-          react.createElement("a", { className: "sb-btn sb-btn--primary", href: "https://sb.otscup.com", target: "_blank", rel: "noreferrer" }, t("open")),
-          react.createElement("button", { type: "button", className: "sb-btn", onClick: load }, t("retry"))
-        )
-      ];
-      if (state.status === "loading") children.push(react.createElement("p", { style: s.intro }, t("loading")));
-      if (state.status === "error") children.push(react.createElement("p", { style: s.intro }, t("error") + " " + (state.error || "")));
-      if (state.status === "ready" && state.pending.length === 0) children.push(react.createElement("p", { style: s.intro }, t("empty")));
-      for (const entry of state.pending) {
-        // An approval is for one action against one target, so both belong on the
-        // card: "read the value" and "use it against api.example.com" are not the
-        // same request to agree to.
-        const actionLabel = { "secret.read": "读取明文", "secret.use": "代持调用", "secret.fill": "网页填充", "secret.materialize": "写入本地文件" }[entry.action] || entry.action || "";
-        const targetLine = [actionLabel, entry.targetOrigin].filter(Boolean).join(" · ");
-        children.push(react.createElement("div", { key: entry.id, style: s.card },
-          react.createElement("p", { style: s.title }, (entry.agent || "Agent") + " → " + (entry.name || "")),
-          targetLine ? react.createElement("p", { style: s.meta }, targetLine) : null,
-          react.createElement("p", { style: s.meta }, t("created") + ": " + (entry.createdAt ? new Date(entry.createdAt).toLocaleString() : "")),
-          react.createElement("div", { style: s.buttons },
-            react.createElement("button", { type: "button", className: "sb-btn sb-btn--primary", onClick: () => decide(entry.id, "once") }, t("approveOnce")),
-            react.createElement("button", { type: "button", className: "sb-btn", onClick: () => decide(entry.id, "24h") }, t("approve24")),
-            react.createElement("button", { type: "button", className: "sb-btn", onClick: () => decide(entry.id, "always") }, t("approveAlways")),
-            react.createElement("button", { type: "button", className: "sb-btn sb-btn--danger", onClick: () => decide(entry.id, "deny") }, t("deny"))
-          )
-        ));
-      }
-      for (const entry of state.requests || []) {
-        children.push(react.createElement("div", { key: "req-" + entry.id, style: s.card },
-          react.createElement("p", { style: s.title }, "需要补充密钥：" + (entry.name || "")),
-          react.createElement("p", { style: s.meta }, (entry.agent || "Agent") + (entry.description ? " · " + entry.description : "")),
-          react.createElement("div", { style: s.buttons },
-            react.createElement("a", { className: "sb-btn sb-btn--primary", href: "https://sb.otscup.com/connect?id=" + encodeURIComponent(entry.id), target: "_blank", rel: "noreferrer" }, "打开连接器填写")
-          )
-        ));
-      }
+      const run = (key, action) => {
+        setBusy(key);
+        setNote(null);
+        action().catch((error) => setNote({ ok: false, text: String(error.message || error) })).finally(() => setBusy(""));
+      };
+      const testBroker = () => run("test", () => post("/api/secrets-broker/config/test", { url: form.url, token: form.token }).then((payload) => {
+        if (!payload.ok) setNote({ ok: false, text: payload.error || "连接失败" });
+        else setNote({ ok: true, text: "已连接 · " + payload.latencyMs + " ms · 待审批 " + (payload.pending ?? 0) + " 条" });
+      }));
+      const saveBroker = () => run("save", () => post("/api/secrets-broker/config/save", { url: form.url, token: form.token }).then((payload) => {
+        if (!payload.ok) setNote({ ok: false, text: payload.error || "保存失败" });
+        else { setNote({ ok: true, text: "已保存 · " + payload.url + " · " + payload.latencyMs + " ms" }); setForm((current) => ({ ...current, token: "" })); load(); }
+      }));
+      const removeItem = (name) => run("delete:" + name, () => post("/api/secrets-broker/items/delete", { name }).then((payload) => {
+        if (payload.ok === false) setNote({ ok: false, text: payload.error || "删除失败" });
+        else load();
+      }));
       const usage = state.usage;
-      if (usage && usage.ok !== false) {
-        const agents = Array.isArray(usage.agents) ? usage.agents : [];
-        const caps = Array.isArray(usage.capabilities) ? usage.capabilities : [];
-        const cell = (value, key) => react.createElement("td", { key }, value);
-        const head = (...labels) => react.createElement("thead", null, react.createElement("tr", null, labels.map((label) => react.createElement("th", { key: label }, label))));
-        children.push(react.createElement("p", { style: s.title }, "谁在用我的密钥（最近 " + (usage.windowHours || 24) + " 小时）"));
-        if (usage.requireClassification === true) {
-          children.push(react.createElement("p", { style: s.meta }, "未分类的凭据已禁止 Agent 读取明文。"));
-        }
-        if (agents.length === 0) {
-          children.push(react.createElement("p", { style: s.intro }, "这段时间没有读取记录。"));
-        } else {
-          children.push(react.createElement("div", { style: s.card },
-            react.createElement("table", { className: "sb-table" },
+      const agents = Array.isArray(usage?.agents) ? usage.agents : [];
+      const caps = Array.isArray(usage?.capabilities) ? usage.capabilities : [];
+      const topItems = Array.isArray(usage?.items) ? usage.items.slice(0, 6) : [];
+      const series = seriesOf(usage);
+      const cell = (value, key) => react.createElement("td", { key }, value);
+      const head = (...labels) => react.createElement("thead", null, react.createElement("tr", null, labels.map((label) => react.createElement("th", { key: label }, label))));
+      const card = (key, className, ...kids) => react.createElement("div", { key, className: className || "sb-card" }, ...kids);
+      const html = (key, className, markup) => react.createElement("div", { key, className, dangerouslySetInnerHTML: { __html: markup } });
+
+      const children = [react.createElement("p", { style: s.intro, key: "intro" }, t("intro"))];
+
+      // ---- connection: which broker this panel talks to ----------------
+      const config = state.config;
+      children.push(card("connect",
+        react.createElement("div", { className: "sb-inline" },
+          react.createElement("span", { className: "sb-section-title" }, "连接"),
+          react.createElement("span", { className: "sb-chip" + (config?.tokenSet ? " sb-chip--green" : " sb-chip--red") }, config?.tokenSet ? "token 已配置 " + (config.tokenHint || "") : "未配置 token")
+        ),
+        react.createElement("div", { className: "sb-inline" },
+          (config?.presets || []).map((preset) => react.createElement("button", {
+            key: preset.id, type: "button", className: "sb-chip", style: { cursor: "pointer", border: 0 },
+            onClick: () => setForm((current) => ({ ...current, url: preset.url }))
+          }, preset.label))
+        ),
+        react.createElement("div", { className: "sb-field" },
+          react.createElement("label", null, "Broker 地址"),
+          react.createElement("input", { className: "sb-input", style: { marginBottom: 0 }, value: form.url, placeholder: "https://sb.otscup.com", onChange: (event) => setForm((current) => ({ ...current, url: event.target.value })) })
+        ),
+        react.createElement("div", { className: "sb-field" },
+          react.createElement("label", null, "插件 token（留空则沿用已保存的）"),
+          react.createElement("input", { className: "sb-input", style: { marginBottom: 0 }, type: "password", value: form.token, placeholder: config?.tokenHint || "x-broker-plugin-token", onChange: (event) => setForm((current) => ({ ...current, token: event.target.value })) })
+        ),
+        react.createElement("div", { className: "sb-inline" },
+          react.createElement("button", { type: "button", className: "sb-btn", disabled: busy === "test", onClick: testBroker }, busy === "test" ? "测试中…" : "测试连接"),
+          react.createElement("button", { type: "button", className: "sb-btn sb-btn--primary", disabled: busy === "save", onClick: saveBroker }, busy === "save" ? "保存中…" : "保存"),
+          react.createElement("a", { className: "sb-btn", href: form.url || config?.url || "#", target: "_blank", rel: "noreferrer" }, "打开后台")
+        ),
+        note ? react.createElement("p", { className: "sb-note", style: note.ok ? { color: "var(--sb-green)" } : { color: "var(--sb-red)" } }, note.text) : null,
+        react.createElement("p", { className: "sb-note" }, "换后端只改这里；Agent 用的 MCP 地址在各自的客户端配置里，不随这个改动。")
+      ));
+
+      // ---- KPI + charts -------------------------------------------------
+      if (usage) {
+        const kpi = (key, dot, label, value, sub) => react.createElement("div", { className: "sb-kpi", key },
+          react.createElement("div", { className: "sb-kpi-label" }, react.createElement("span", { className: "sb-kpi-dot", style: { background: dot } }), label),
+          react.createElement("div", { className: "sb-kpi-value" }, value),
+          sub ? react.createElement("div", { className: "sb-kpi-sub" }, sub) : null
+        );
+        children.push(react.createElement("div", { className: "sb-kpis", key: "kpis" },
+          kpi("reads", "var(--sb-blue)", "读取", String(usage.reads ?? 0), "最近 " + (usage.windowHours || 24) + " 小时"),
+          kpi("denied", "var(--sb-red)", "被拒", String(usage.denied ?? 0), "同一窗口"),
+          kpi("agents", "var(--sb-green)", "活跃 Agent", String(agents.length), "有读取记录"),
+          kpi("items", "var(--sb-orange)", "条目", String(state.items.length), "vault 内")
+        ));
+        children.push(card("charts", "sb-card",
+          react.createElement("div", { className: "sb-chart-head" },
+            react.createElement("span", { className: "sb-section-title" }, "读取趋势（24 小时）"),
+            react.createElement("span", { className: "sb-note" }, "蓝 读取 / 红 被拒")
+          ),
+          html("trend", "", trendMarkup(series, 24)),
+          react.createElement("span", { className: "sb-section-title" }, "活跃热力（7 天 × 24 小时）"),
+          html("heat", "", heatMarkup(series)),
+          react.createElement("p", { className: "sb-note" }, "格子越亮读得越多；本地时间。")
+        ));
+        const donutParts = agents.slice(0, 4).map((agent, index) => ({ name: agent.agent, value: agent.reads || 0, color: PALETTE[index % PALETTE.length] }));
+        if (donutParts.length) children.push(card("split", "sb-card",
+          react.createElement("div", { className: "sb-inline", style: { alignItems: "flex-start", gap: "var(--sb-sp-4)" } },
+            html("donut", "", donutMarkup(donutParts, "次读取")),
+            react.createElement("div", { style: { flex: "1 1 160px", minWidth: 0 } },
+              react.createElement("div", { className: "sb-legend" }, donutParts.map((part) => react.createElement("span", { key: part.name, className: "sb-legend-item" },
+                react.createElement("span", { className: "sb-kpi-dot", style: { background: part.color } }), part.name + " · " + part.value))),
+              topItems.length ? html("top", "", barMarkup(topItems.map((item) => ({ name: item.name, value: item.reads })))) : null
+            )
+          )
+        ));
+      }
+
+      // ---- items: the management half that moved out of the popup ------
+      children.push(card("items",
+        react.createElement("div", { className: "sb-chart-head" },
+          react.createElement("span", { className: "sb-section-title" }, "条目（" + state.items.length + "）"),
+          react.createElement("span", { className: "sb-note" }, "删除会同时撤销相关授权")
+        ),
+        state.items.length
+          ? react.createElement("table", { className: "sb-table" },
+            head("名称", "分组", "网址", ""),
+            react.createElement("tbody", null, state.items.slice(0, 40).map((item) => react.createElement("tr", { key: item.name },
+              cell(item.name, "name"),
+              cell(item.group || "—", "group"),
+              cell(item.url || "—", "url"),
+              react.createElement("td", { key: "del" }, react.createElement("button", {
+                type: "button", className: "sb-btn sb-btn--danger", disabled: busy === "delete:" + item.name,
+                onClick: () => removeItem(item.name)
+              }, "删除"))
+            ))))
+          : react.createElement("p", { className: "sb-note" }, "vault 里还没有条目。")
+      ));
+
+      // ---- approvals ----------------------------------------------------
+      if (state.status === "error") children.push(react.createElement("p", { style: s.intro, key: "err" }, t("error") + " " + (state.error || "")));
+      children.push(card("pending",
+        react.createElement("div", { className: "sb-chart-head" },
+          react.createElement("span", { className: "sb-section-title" }, "待审批（" + state.pending.length + "）"),
+          react.createElement("button", { type: "button", className: "sb-btn", onClick: load }, t("retry"))
+        ),
+        state.pending.length === 0 ? react.createElement("p", { className: "sb-note" }, t("empty")) : null,
+        ...state.pending.map((entry) => {
+          const actionLabel = { "secret.read": "读取明文", "secret.use": "代持调用", "secret.fill": "网页填充", "secret.materialize": "写入本地文件" }[entry.action] || entry.action || "";
+          const targetLine = [actionLabel, entry.targetOrigin].filter(Boolean).join(" · ");
+          return react.createElement("div", { key: entry.id, className: "sb-row", style: { flexDirection: "column", alignItems: "stretch", gap: "var(--sb-sp-1)", cursor: "default" } },
+            react.createElement("div", { className: "sb-row-title" }, (entry.agent || "Agent") + " → " + (entry.name || "")),
+            react.createElement("div", { className: "sb-row-sub" }, targetLine + (entry.createdAt ? " · " + new Date(entry.createdAt).toLocaleString() : "")),
+            react.createElement("div", { className: "sb-actions", style: { marginTop: "var(--sb-sp-1)" } },
+              react.createElement("button", { type: "button", className: "sb-btn sb-btn--primary", onClick: () => decide(entry.id, "once") }, t("approveOnce")),
+              react.createElement("button", { type: "button", className: "sb-btn", onClick: () => decide(entry.id, "24h") }, t("approve24")),
+              react.createElement("button", { type: "button", className: "sb-btn", onClick: () => decide(entry.id, "always") }, t("approveAlways")),
+              react.createElement("button", { type: "button", className: "sb-btn sb-btn--danger", onClick: () => decide(entry.id, "deny") }, t("deny"))
+            )
+          );
+        })
+      ));
+
+      if (state.requests.length) {
+        children.push(card("requests",
+          react.createElement("span", { className: "sb-section-title" }, "需要补充密钥"),
+          ...state.requests.map((entry) => react.createElement("div", { key: entry.id, className: "sb-row", style: { cursor: "default" } },
+            react.createElement("div", { className: "sb-row-main" },
+              react.createElement("div", { className: "sb-row-title" }, entry.name || ""),
+              react.createElement("div", { className: "sb-row-sub" }, (entry.agent || "Agent") + (entry.description ? " · " + entry.description : ""))
+            ),
+            react.createElement("a", { className: "sb-btn sb-btn--primary", href: (config?.url || "https://sb.otscup.com") + "/connect?id=" + encodeURIComponent(entry.id), target: "_blank", rel: "noreferrer" }, "填写")
+          ))
+        ));
+      }
+
+      // ---- who is using what -------------------------------------------
+      if (usage) {
+        children.push(card("agents",
+          react.createElement("span", { className: "sb-section-title" }, "谁在用我的密钥（最近 " + (usage.windowHours || 24) + " 小时）"),
+          usage.requireClassification === true ? react.createElement("p", { className: "sb-note" }, "未分类的凭据已禁止 Agent 读取明文。") : null,
+          agents.length
+            ? react.createElement("table", { className: "sb-table" },
               head("Agent", "读取", "被拒", "读过的条目", "最近"),
               react.createElement("tbody", null, agents.map((agent) => react.createElement("tr", { key: agent.agent },
                 cell(agent.agent, "agent"),
@@ -282,13 +509,12 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
                 cell(String(agent.denied ?? 0), "denied"),
                 cell(Object.entries(agent.items || {}).map(([name, count]) => name + " ×" + count).join("，") || "—", "items"),
                 cell(agent.lastAt ? new Date(agent.lastAt).toLocaleString() : "—", "last")
-              )))
-            )
-          ));
-        }
+              ))))
+            : react.createElement("p", { className: "sb-note" }, "这段时间没有读取记录。")
+        ));
         if (caps.length) {
-          children.push(react.createElement("p", { style: s.title }, "当前有效授权"));
-          children.push(react.createElement("div", { style: s.card },
+          children.push(card("caps",
+            react.createElement("span", { className: "sb-section-title" }, "当前有效授权"),
             react.createElement("table", { className: "sb-table" },
               head("Agent", "条目", "动作", "剩余次数", "到期"),
               react.createElement("tbody", null, caps.map((cap) => react.createElement("tr", { key: cap.agent + cap.name + cap.action },
@@ -297,12 +523,11 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
                 cell(cap.action, "action"),
                 cell(cap.usesLeft == null ? "不限" : cap.usesLeft + "/" + cap.maxUses, "uses"),
                 cell(cap.expiresAt ? new Date(cap.expiresAt).toLocaleString() : "永久", "expires")
-              )))
-            )
+              ))))
           ));
         }
       }
-      return react.createElement("div", { className: "sb-scope sb-view", style: s.wrap }, ...children);
+      return react.createElement("div", { className: "sb-scope sb-view", key: "view" }, ...children);
     }
 
     function startPopup(ctx) {
@@ -424,9 +649,9 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
           busy = true;
         }
         try {
-          let pendingResponse, requestResponse, usageResponse, activityResponse, itemsResponse;
+          let pendingResponse, requestResponse, usageResponse, activityResponse;
           if (fromCache && last) {
-            ({ pendingResponse, requestResponse, usageResponse, activityResponse, itemsResponse } = last);
+            ({ pendingResponse, requestResponse, usageResponse, activityResponse } = last);
           } else {
             // A poll that only updates the badge needs the two queue endpoints
             // and nothing else. It used to pull all five every 15s, open or not,
@@ -438,15 +663,14 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
               fetch('/api/secrets-broker/credential-requests').then((r) => r.json()).catch(() => ({ requests: [] })),
             ]);
             if (badgeOnly) {
-              ({ usageResponse, activityResponse, itemsResponse } = last ?? { usageResponse: {}, activityResponse: { activity: [] }, itemsResponse: {} });
+              ({ usageResponse, activityResponse } = last ?? { usageResponse: {}, activityResponse: { activity: [] } });
             } else {
-              [usageResponse, activityResponse, itemsResponse] = await Promise.all([
+              [usageResponse, activityResponse] = await Promise.all([
                 fetch('/api/secrets-broker/usage?hours=1').then((r) => r.json()).catch(() => ({})),
                 fetch('/api/secrets-broker/activity?limit=12').then((r) => r.json()).catch(() => ({ activity: [] })),
-                fetch('/api/secrets-broker/items').then((r) => r.json()).catch(() => ({})),
               ]);
             }
-            last = { pendingResponse, requestResponse, usageResponse, activityResponse, itemsResponse };
+            last = { pendingResponse, requestResponse, usageResponse, activityResponse };
           }
           const pending = (pendingResponse.pending || []).filter((entry) => !dismissed.has(entry.id));
           const requests = (requestResponse.requests || []).filter((entry) => !dismissed.has(entry.id));
@@ -625,29 +849,8 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
               card.appendChild(pad);
               out.push(card);
             }
-            const caps = Array.isArray(usageResponse && usageResponse.capabilities) ? usageResponse.capabilities : [];
-            if (caps.length) {
-              out.push(cls('div', 'sb-group-head', 'Agent 权限'));
-              const card = cls('div', 'sb-card');
-              const table = cls('table', 'sb-table');
-              const thead = document.createElement('thead');
-              const headerRow = document.createElement('tr');
-              for (const label of ['条目', '动作', '剩余', '到期']) headerRow.appendChild(cls('th', '', label));
-              thead.appendChild(headerRow);
-              table.appendChild(thead);
-              const tbody = document.createElement('tbody');
-              for (const cap of caps) {
-                const tr = document.createElement('tr');
-                tr.appendChild(cls('td', '', cap.name || ''));
-                tr.appendChild(cls('td', '', cap.action || ''));
-                tr.appendChild(cls('td', '', cap.usesLeft == null ? '不限' : cap.usesLeft + '/' + cap.maxUses));
-                tr.appendChild(cls('td', '', cap.expiresAt ? new Date(cap.expiresAt).toLocaleDateString() : '永久'));
-                tbody.appendChild(tr);
-              }
-              table.appendChild(tbody);
-              card.appendChild(table);
-              out.push(card);
-            }
+            // Agent permissions moved to the settings page: the popup answers
+            // "what needs me now", it is not a management screen.
           }
 
           if (tab === 'activity') {
@@ -724,35 +927,9 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
               }
             };
             out.push(nameInput, userInput, valueInput, urlInput, noteInput, save, hint);
-            // A key stored by mistake is removed by clicking it, not by typing its
-            // name back in — the operator may not remember the spelling.
-            const stored = Array.isArray(itemsResponse && itemsResponse.items) ? itemsResponse.items : [];
-            const list = mk('div', '', 'max-height:170px;overflow:auto;margin-top:10px;border-top:1px solid var(--sb-sep);padding-top:6px');
-            list.appendChild(mk('div', '已存 ' + stored.length + ' 个，点名称右边的 × 删除', 'font-size:var(--sb-fs-mini);color:var(--sb-label-3);margin-bottom:4px'));
-            for (const item of stored) {
-              const row = mk('div', '', 'display:flex;align-items:center;gap:6px;padding:3px 0;font-size:var(--sb-fs-cap)');
-              const label = mk('span', (item.name || '') + (item.group ? ' · ' + item.group : ''), 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap');
-              // Clicking the name fills the form, so an update needs no retyping.
-              label.style.cursor = 'pointer';
-              label.onclick = () => { nameInput.value = item.name || ''; urlInput.value = item.url || ''; nameInput.focus() };
-              const kill = mk('button', '×', styleDanger);
-              kill.title = '从 vault 删除 ' + (item.name || '');
-              kill.onclick = async () => {
-                if (!confirm('从 vault 删除「' + (item.name || '') + '」？')) return;
-                kill.disabled = true;
-                try {
-                  const response = await fetch('/api/secrets-broker/items/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: item.name }) });
-                  const payload = await response.json().catch(() => ({}));
-                  if (!response.ok || payload.ok === false) throw new Error(payload.error || 'delete failed');
-                  row.remove();
-                  hint.textContent = '已删除 ' + (item.name || '');
-                  hint.style.color = 'var(--sb-green)';
-                } catch (error) { kill.disabled = false; hint.textContent = String(error.message || error); hint.style.color = 'var(--sb-red)' }
-              };
-              row.append(label, kill);
-              list.appendChild(row);
-            }
-            out.push(list);
+            // Deleting lives on the settings page, where the whole list is visible
+            // with its group and URL. The popup only adds.
+            out.push(mk('div', '条目在「设置 → 密钥授权」里管理，包括删除。', 'font-size:var(--sb-fs-mini);color:var(--sb-label-3);margin-top:8px'));
           }
 
           // Replace the body in one pass: the sheet's nav and segmented control
