@@ -10,6 +10,7 @@ import {
 import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, ALLOWED_ALGS } from './oidc.js'
 import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
 import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf } from './vault2.js'
+import { publicKeyFingerprint } from './envelope.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -98,6 +99,46 @@ export class BrokerState extends DurableObject {
         this.v2Key = null
         return json({ ok: true })
       }
+    }
+    if (url.pathname === '/pair' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      this.pairing ??= new Map()
+      const now = Date.now()
+      for (const [code, entry] of this.pairing) if (entry.expiresAt <= now) this.pairing.delete(code)
+      if (body.op === 'request') {
+        this.pairing.set(String(body.code), {
+          name: String(body.name || ''),
+          jwk: body.jwk ?? null,
+          fingerprint: String(body.fingerprint || ''),
+          pollHash: String(body.pollHash || ''),
+          expiresAt: Number(body.expiresAt || 0),
+          approved: null,
+        })
+        return json({ ok: true })
+      }
+      if (body.op === 'lookup') {
+        const entry = this.pairing.get(String(body.code))
+        if (!entry) return json({ ok: false, reason: 'unknown' })
+        return json({ ok: true, entry: { name: entry.name, jwk: entry.jwk, fingerprint: entry.fingerprint, expiresAt: entry.expiresAt, approved: Boolean(entry.approved), deviceId: entry.approved?.deviceId ?? null } })
+      }
+      if (body.op === 'approve') {
+        const entry = this.pairing.get(String(body.code))
+        if (!entry) return json({ ok: false, reason: 'unknown' })
+        if (entry.approved) return json({ ok: false, reason: 'already' })
+        entry.approved = { deviceId: String(body.deviceId || ''), token: String(body.token || ''), envelope: body.envelope ?? null, keygen: String(body.keygen || ''), fingerprint: String(body.fingerprint || '') }
+        return json({ ok: true })
+      }
+      if (body.op === 'poll') {
+        for (const [code, entry] of this.pairing) {
+          if (!entry.pollHash || entry.pollHash !== String(body.pollHash || '')) continue
+          if (!entry.approved) return json({ ok: true, status: 'pending' })
+          // One-time redeem: the second poll cannot find the entry at all.
+          this.pairing.delete(code)
+          return json({ ok: true, status: 'approved', approved: entry.approved })
+        }
+        return json({ ok: false, reason: 'unknown' })
+      }
+      return json({ ok: false, reason: 'bad-op' }, 400)
     }
     if (url.pathname === '/grant/consume' && request.method === 'POST') {
       const body = await request.json().catch(() => ({}))
@@ -3909,6 +3950,41 @@ function standaloneLoginPage(next, providers = []) {
   </script></body></html>`
 }
 
+// Browser half of device-code pairing. The whole point of this page is the key
+// fingerprint: it must match the line the terminal printed, or the typing of a
+// short code would let anyone swap in their own public key.
+function pairPage({ code, entry }) {
+  const gone = !entry
+  const approved = Boolean(entry?.approved)
+  const status = gone ? '这个配对码不存在，或者已经过期（五分钟内有效）。' : approved ? '这台设备已经批准过了。' : '确认终端上显示的公钥指纹与下面这串一致，再点批准。'
+  return String.raw`<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>配对设备 · Secrets Broker</title><style>${consolePageCss()}</style>${consoleThemeBoot()}</head><body><div class="wrap">
+    <div class="brand"><img src="/logo.png" alt=""><div><h1>配对设备</h1><p class="sub">批准后这台机器会拿到一把只能自己解开的信封</p></div></div>
+    <div class="group">
+      <div class="row"><span class="row__label">配对码</span><b>${escapeHtml(code || '—')}</b></div>
+      <div class="row"><span class="row__label">设备</span><b>${escapeHtml(entry?.name || '—')}</b></div>
+      <div class="row"><span class="row__label">公钥指纹</span><code id="fp" style="font-size:15px;letter-spacing:1px">${escapeHtml(entry?.fingerprint || '—')}</code></div>
+      <div class="row"><span class="row__label">过期时间</span><span>${entry?.expiresAt ? new Date(entry.expiresAt).toLocaleTimeString('zh-CN') : '—'}</span></div>
+    </div>
+    <p class="sub" id="status">${escapeHtml(status)}</p>
+    ${gone || approved ? '' : '<button class="primary" id="approve">批准这台设备</button>'}
+  </div><script>
+    const code=${JSON.stringify(code || '')}
+    const button=document.getElementById('approve')
+    if(button)button.onclick=async()=>{
+      const status=document.getElementById('status')
+      button.disabled=true
+      status.textContent='正在批准…'
+      try{
+        const response=await fetch('/api/v2/pair/approve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code})})
+        const data=await response.json()
+        if(!response.ok)throw new Error(data.error||'批准失败')
+        status.textContent='已批准：'+data.name+' · '+data.fingerprint
+        button.remove()
+      }catch(error){status.textContent=String(error.message||error);button.disabled=false}
+    }
+  </script></body></html>`
+}
+
 function connectPage(request) {
   const item = request
   return String.raw`<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>连接密钥 · Secrets Broker</title><style>${consolePageCss()}</style>${consoleThemeBoot()}</head><body><div class="wrap">
@@ -7566,6 +7642,61 @@ const TOOL_META = {
     }
     // The v2 vault. Admin session required: device tokens arrive with /pair in
     // the next step, and until then the browser is the only caller.
+    // Device-code pairing, request half: a machine that cannot open a browser
+    // asks for a short code. Nothing is granted here — the poll token only lets
+    // that machine collect what an admin approves in the browser.
+    if (url.pathname === '/api/v2/pair/request' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const name = String(body.name ?? '').trim().slice(0, 60)
+      const jwk = body.publicJwk && typeof body.publicJwk === 'object' ? body.publicJwk : null
+      if (!name) return fail('name is required', 400)
+      if (!jwk || jwk.kty !== 'EC' || jwk.crv !== 'P-256' || !jwk.x || !jwk.y) return fail('publicJwk must be a P-256 public key', 400)
+      if (!(await vault2Status(env)).initialized) return fail('vault is not initialised', 409)
+      // No O/0 or I/1: the code gets read off a terminal and typed into a phone.
+      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+      const chunk = (count) => [...crypto.getRandomValues(new Uint8Array(count))].map((byte) => alphabet[byte % alphabet.length]).join('')
+      const code = chunk(4) + '-' + chunk(4)
+      const pollToken = base64Url(crypto.getRandomValues(new Uint8Array(32)))
+      const expiresAt = Date.now() + 5 * 60 * 1000
+      const fingerprint = await publicKeyFingerprint(jwk)
+      await stateStub(env).fetch('https://state/pair', {
+        method: 'POST',
+        body: JSON.stringify({ op: 'request', code, name, jwk, fingerprint, pollHash: await sha256Base64(pollToken), expiresAt }),
+      })
+      return json({ code, pollToken, url: url.origin + '/pair?code=' + encodeURIComponent(code), fingerprint, expiresAt })
+    }
+    // Poll half. The token, never the code, proves this is the machine that asked.
+    if (url.pathname === '/api/v2/pair/poll' && request.method === 'POST') {
+      const body = await request.json().catch(() => ({}))
+      const pollToken = String(body.pollToken ?? '')
+      if (pollToken.length < 16) return fail('pollToken is required', 400)
+      const response = await stateStub(env).fetch('https://state/pair', {
+        method: 'POST',
+        body: JSON.stringify({ op: 'poll', pollHash: await sha256Base64(pollToken) }),
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!result.ok) return fail('pairing not found or expired', 410)
+      if (result.status !== 'approved') return json({ status: 'pending' }, 202)
+      return json({
+        status: 'approved',
+        deviceId: result.approved.deviceId,
+        token: result.approved.token,
+        envelope: result.approved.envelope,
+        keygen: result.approved.keygen,
+        fingerprint: result.approved.fingerprint,
+      })
+    }
+    // The approval page. Behind the admin session, and it shows the same key
+    // fingerprint the terminal printed, so a swapped key cannot be approved.
+    if (url.pathname === '/pair' && request.method === 'GET') {
+      const code = String(url.searchParams.get('code') ?? '').toUpperCase()
+      if (!(await adminAuthorized(request, env))) return new Response(null, { status: 302, headers: { location: '/login?next=' + encodeURIComponent('/pair?code=' + code) } })
+      const peek = await (await stateStub(env).fetch('https://state/pair', {
+        method: 'POST',
+        body: JSON.stringify({ op: 'lookup', code }),
+      })).json().catch(() => ({}))
+      return htmlResponse(pairPage({ code, entry: peek.ok ? peek.entry : null }))
+    }
     if (url.pathname.startsWith('/api/v2/')) {
       const isAdmin = await adminAuthorized(request, env)
       const route = url.pathname.slice('/api/v2/'.length)
@@ -7674,6 +7805,26 @@ const TOOL_META = {
           if (!revoked) return fail('device not found', 404)
           await addAudit(env, { event: 'vault.device-revoke', agent: 'admin', name: id })
           return json(revoked)
+        }
+        if (route === 'pair/approve' && request.method === 'POST') {
+          const dek = await unlockedKey()
+          if (!dek) return fail('vault is locked', 423)
+          const body = await request.json().catch(() => ({}))
+          const code = String(body.code ?? '').trim().toUpperCase()
+          const peek = await (await stateStub(env).fetch('https://state/pair', {
+            method: 'POST',
+            body: JSON.stringify({ op: 'lookup', code }),
+          })).json().catch(() => ({}))
+          if (!peek.ok) return fail('pairing not found or expired', 410)
+          if (peek.entry.approved) return fail('this code was already approved', 409)
+          const paired = await vault2Pair(env, dek, { name: peek.entry.name, publicJwk: peek.entry.jwk })
+          const keygen = String((await env.VAULT_DB.prepare("SELECT value FROM meta WHERE key = 'keygen'").first())?.value ?? '')
+          await stateStub(env).fetch('https://state/pair', {
+            method: 'POST',
+            body: JSON.stringify({ op: 'approve', code, deviceId: paired.id, token: paired.token, envelope: paired.envelope, keygen, fingerprint: paired.fingerprint }),
+          })
+          await addAudit(env, { event: 'vault.device', agent: 'admin', name: paired.name })
+          return json({ ok: true, deviceId: paired.id, name: paired.name, fingerprint: paired.fingerprint })
         }
         if (route === 'items' && request.method === 'GET') {
           return json(await vault2List(env, Number(url.searchParams.get('since') ?? 0)))

@@ -51,8 +51,61 @@ export async function pair({ url, cookie, name = 'this computer' }) {
   return { id: body.id, name: body.name, fingerprint: body.fingerprint, file: FILE }
 }
 
-export async function unlock() {
-  const record = loadDevice()
+// Device-code pairing: no cookie, no password on the command line. This machine
+// asks for a short code, prints it beside the key fingerprint, and waits for an
+// admin to approve the same fingerprint in a browser.
+export async function pairRequest({ url, name = 'this computer' }) {
+  if (!url) throw new Error('a broker url is required')
+  const base = String(url).replace(/\/+$/, '')
+  const keypair = await newDeviceKeypair()
+  const response = await fetch(base + '/api/v2/pair/request', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, publicJwk: keypair.publicJwk }),
+  })
+  const text = await response.text()
+  if (!response.ok) throw new Error('pairing request failed (' + response.status + '): ' + text.slice(0, 300))
+  const body = JSON.parse(text)
+  return { base, keypair, code: body.code, pollToken: body.pollToken, url: body.url, fingerprint: body.fingerprint, expiresAt: body.expiresAt }
+}
+
+export async function pairPoll({ base, pollToken }) {
+  const response = await fetch(base + '/api/v2/pair/poll', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pollToken }),
+  })
+  if (response.status === 202) return { status: 'pending' }
+  if (response.status === 410) throw new Error('this pairing request expired or was already redeemed')
+  const text = await response.text()
+  if (!response.ok) throw new Error('pairing poll failed (' + response.status + '): ' + text.slice(0, 300))
+  return JSON.parse(text)
+}
+
+export async function pairWait({ base, pollToken, keypair, name, timeoutMs = 5 * 60 * 1000 }) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const result = await pairPoll({ base, pollToken })
+    if (result.status === 'approved') {
+      saveDevice({
+        url: base,
+        deviceId: result.deviceId,
+        name,
+        privateJwk: keypair.privateJwk,
+        envelope: result.envelope,
+        token: result.token,
+        keygen: result.keygen,
+        fingerprint: result.fingerprint,
+        pairedAt: new Date().toISOString(),
+      })
+      return { id: result.deviceId, name, fingerprint: result.fingerprint, file: FILE }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+  }
+  throw new Error('nobody approved the pairing within five minutes')
+}
+
+export async function unlock() {  const record = loadDevice()
   if (!record) throw new Error('no paired device yet: run `secrets-broker pair --url <broker>` first')
   let current = record
   let dek = await unwrapDekDevice(record.envelope, record.privateJwk).catch(() => null)

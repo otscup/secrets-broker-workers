@@ -29,7 +29,7 @@ import { createBridge } from './bridge.mjs'
 import { login } from './oauth.mjs'
 import { runMaterialize } from './materialize.mjs'
 import { runSync } from './sync.mjs'
-import { pair, unlock, count, loadDevice } from './vault.mjs'
+import { pair, pairRequest, pairWait, unlock, count, loadDevice } from './vault.mjs'
 import { detect, adapters, plan, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
@@ -61,8 +61,9 @@ Usage
                                  ask, then write an approved credential into a file
   secrets-broker sync --remote URL
                                  compare this broker with another one, read-only
-  secrets-broker pair --url URL --cookie C
+  secrets-broker pair --url URL [--cookie C]
                                  pair this machine with a v2 vault, keep the key locally
+                                 (no cookie: prints a device code to approve in a browser)
   secrets-broker unlock          check the stored key against the vault fingerprint
   secrets-broker rekey --password P --cookie C
                                  re-encrypt the vault under a new key (revokes what an old key could read)
@@ -201,12 +202,20 @@ async function main() {
       const index = argv.indexOf(flagName)
       return index >= 0 ? argv[index + 1] : ''
     }
+    const name = flag('--name') || 'this computer'
+    const url = flag('--url') || brokerUrl()
+    const cookie = flag('--cookie') || process.env.BROKER_ADMIN_COOKIE || ''
     try {
-      const paired = await pair({
-        url: flag('--url') || brokerUrl(),
-        cookie: flag('--cookie') || process.env.BROKER_ADMIN_COOKIE || '',
-        name: flag('--name') || 'this computer',
-      })
+      // A cookie is the one-step path; a machine with no browser session gets the
+      // device code and an approval in whatever browser the admin already has.
+      if (cookie) {
+        const paired = await pair({ url, cookie, name })
+        process.stdout.write(`paired ${paired.name} (${paired.id})\nvault key: ${paired.fingerprint}\nstored in ${paired.file}\n`)
+        return 0
+      }
+      const request = await pairRequest({ url, name })
+      process.stdout.write(`open this page and approve the device:\n  ${request.url}\n\ncode: ${request.code}\nkey fingerprint: ${request.fingerprint}\n\nthe fingerprint above must match the one on that page. waiting for approval…\n`)
+      const paired = await pairWait({ base: request.base, pollToken: request.pollToken, keypair: request.keypair, name })
       process.stdout.write(`paired ${paired.name} (${paired.id})\nvault key: ${paired.fingerprint}\nstored in ${paired.file}\n`)
       return 0
     } catch (error) {

@@ -168,6 +168,6 @@ const rotated = await call('/api/v2/rekey', { method: 'POST', body: { password: 
 }
 
 const failed = results.filter((r) => !r.ok).length
-console.log(failed ? `\n${failed} FAILED` : `\nALL ${results.length} PASSED`)
+console.log(`==== v2 rekey ${results.length - failed}/${results.length} passed ====`)
 await mf.dispose()
 process.exit(failed ? 1 : 0)

@@ -140,3 +140,13 @@ export async function dekFingerprint(dek) {
   const bytes = new Uint8Array(digest)
   return [...bytes.slice(0, 6)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
+
+// Eight hex characters of a public key, so a human can compare the terminal
+// line with the browser before approving. Public key material only, and derived
+// from a fixed field order so both sides hash the same bytes.
+export async function publicKeyFingerprint(publicJwk) {
+  const canonical = JSON.stringify({ kty: publicJwk?.kty ?? '', crv: publicJwk?.crv ?? '', x: publicJwk?.x ?? '', y: publicJwk?.y ?? '' })
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode(canonical))
+  const hex = [...new Uint8Array(digest).slice(0, 4)].map((byte) => byte.toString(16).padStart(2, '0')).join('').toUpperCase()
+  return hex.slice(0, 4) + '-' + hex.slice(4, 8)
+}
