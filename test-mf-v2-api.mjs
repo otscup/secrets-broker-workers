@@ -259,6 +259,28 @@ let deviceId = ''
   else fail('P8', JSON.stringify({ naked: naked.status, device: withDevice.status }))
 }
 
+// I1: importing needs this vault open first; a locked vault refuses instead of
+// half-writing rows that cannot be sealed.
+{
+  await call('/api/v2/lock', { method: 'POST' })
+  const locked = await call('/api/v2/import', { method: 'POST' })
+  if (locked.status === 423 && String(locked.body.error || '').includes('vault is locked')) pass('I1 import refuses while this vault is locked')
+  else fail('I1', JSON.stringify({ status: locked.status, body: locked.body }).slice(0, 200))
+}
+
+// I2: with both open it either copies rows or says the cipher vault is closed,
+// and it never destroys what this vault already holds.
+{
+  await call('/api/v2/unlock', { method: 'POST', body: { password: MASTER } })
+  const before = await call('/api/v2/items?plain=1')
+  const run = await call('/api/v2/import', { method: 'POST' })
+  const after = await call('/api/v2/items?plain=1')
+  const kept = (after.body.items ?? []).some((row) => row.payload?.name === 'panel-item')
+  const honest = run.status === 200 ? Number.isFinite(run.body.imported) && Number.isFinite(run.body.total) : (run.status === 423 && String(run.body.error || '').includes('cipher vault'))
+  if (honest && kept && (after.body.items ?? []).length >= (before.body.items ?? []).length) pass('I2 import reports its counts and keeps the items this vault already had')
+  else fail('I2', JSON.stringify({ status: run.status, body: run.body, kept }).slice(0, 240))
+}
+
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== v2 api ' + passed + '/' + results.length + ' passed ====')

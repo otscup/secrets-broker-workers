@@ -7865,6 +7865,40 @@ const TOOL_META = {
           await addAudit(env, { event: 'vault.item.create', agent: 'admin', name: String(body.payload?.name ?? created.id) })
           return json(created, 201)
         }
+        // Import copies the cipher vault into this one. Both have to be open:
+        // each row is decrypted with the cipher key and sealed again with the
+        // v2 data key, so neither key on its own is enough. The row id is kept
+        // as the item id, which makes a second run collide on the primary key
+        // instead of duplicating everything.
+        // shortcut: one pass over at most 2000 rows, upgrade to a resumable job
+        // if a vault ever exceeds that.
+        if (route === 'import' && request.method === 'POST') {
+          const dek = await unlockedKey()
+          if (!dek) return fail('vault is locked', 423)
+          const session = await getSession(env)
+          if (!session) return fail('the cipher vault is locked', 423)
+          const user = await vaultUser(env, env.NODEWARDEN_DB, session)
+          const rows = await env.NODEWARDEN_DB.prepare('SELECT id, type, name, notes, data FROM ciphers WHERE user_id = ? AND deleted_at IS NULL AND archived_at IS NULL ORDER BY updated_at DESC LIMIT 2000').bind(user.id).all()
+          const state = await loadState(env)
+          let imported = 0
+          let skipped = 0
+          for (const row of rows.results ?? []) {
+            let decrypted = null
+            try { decrypted = await decryptCipherRow(row, session) } catch { skipped += 1; continue }
+            const payload = {
+              name: decrypted.name || '(untitled)',
+              username: extractUsername(decrypted),
+              password: extractSecret(decrypted),
+              totp: extractTotp(decrypted),
+              url: cipherUrl(decrypted.data),
+              notes: decrypted.notes || '',
+            }
+            const kind = state.credentialKinds?.[row.id] === 'web' ? 'web' : 'api'
+            try { await vault2Create(env, dek, { id: row.id, kind, payload }); imported += 1 } catch { skipped += 1 }
+          }
+          await addAudit(env, { event: 'vault.import', agent: 'admin', name: String(imported), reason: 'skipped ' + skipped })
+          return json({ ok: true, imported, skipped, total: (rows.results ?? []).length })
+        }
         if (route.startsWith('items/')) {
           const id = route.slice('items/'.length)
           if (request.method === 'GET') {
