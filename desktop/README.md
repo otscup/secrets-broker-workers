@@ -1,8 +1,13 @@
 # Secrets Broker desktop
 
-M0 of `docs/tauri-desktop-plan.md`: a Tauri v2 window that opens the existing
-console HTML offline. The window does not yet start a sidecar; pairing, tray and
-Windows Hello are M1+.
+M1 of `docs/tauri-desktop-plan.md`: a Tauri v2 window that opens the existing
+console HTML offline, starts the local sidecar, and keeps running in the tray.
+Closing the window hides it; the tray menu shows the daemon status and can quit.
+Pairing, offline vault and Windows Hello are M2+.
+
+The sidecar uses the CLI's existing token store. Without a paired device token it
+exits immediately, so the app stays usable offline but the tray reports
+`未连接`; run `secrets-broker pair` online first.
 
 ## Build requirements
 

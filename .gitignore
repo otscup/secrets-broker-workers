@@ -49,3 +49,5 @@ test-*.mjs
 !test-cli-devkey.mjs
 
 desktop/src-tauri/gen/
+desktop/src-tauri/resources/sidecar/
+.tmp/

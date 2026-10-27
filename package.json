@@ -111,8 +111,9 @@
     "test:plugin-operator": "node test-plugin-endpoints.mjs",
     "test:ai-assistant": "node test-mf-ai-assistant.mjs",
     "desktop:ui": "node desktop/build-ui.mjs",
-    "desktop:dev": "npm run desktop:ui && cd desktop && npx tauri dev",
-    "desktop:build": "npm run desktop:ui && cd desktop && npx tauri build",
+    "desktop:sidecar": "node desktop/copy-sidecar.mjs",
+    "desktop:dev": "npm run desktop:ui && npm run desktop:sidecar && cd desktop && npx tauri dev",
+    "desktop:build": "npm run desktop:ui && npm run desktop:sidecar && cd desktop && npx tauri build",
     "prepublishOnly": "node scripts/check-pack.mjs && npm run test:cli && npm run test:exec && npm run test:guard && npm run test:cache && npm run test:offline && npm run test:devkey && npm run test:daemon && npm run test:v2-cli"
   },
   "devDependencies": {
