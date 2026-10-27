@@ -5249,14 +5249,23 @@ export default {
     if (url.pathname === '/api/folders') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const session = await getSession(env)
-      if (!session) return fail('locked', 423)
+      if (!session) {
+        const v2 = await vault2Context(env)
+        if (!v2?.dek) return fail('locked', 423)
+        return json({ folders: [] })
+      }
       try { return json({ folders: await listFolders(env, env.NODEWARDEN_DB, session) }) } catch (error) { return fail(String(error.message ?? error), 500) }
     }
     if (url.pathname === '/api/items') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
-      const session = await getSession(env)
-      if (!session) return fail('locked', 423)
-      const completedTransfers = await processTransfers(env, session)
+      const legacy = await getSession(env)
+      let session = legacy
+      if (!session) {
+        const v2 = await vault2Context(env)
+        if (!v2?.dek) return fail('locked', 423)
+        session = { email: await vaultEmail(env, env.NODEWARDEN_DB, await loadState(env)) }
+      }
+      const completedTransfers = legacy ? await processTransfers(env, legacy) : []
       try {
         const items = await listCiphers(env, env.NODEWARDEN_DB, session)
         // Self-heal the id->name map. A credential classified before the id was
