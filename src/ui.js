@@ -1015,6 +1015,16 @@ $('unlock').onclick = async () => {
   const password = $('master-password').value; if (!password) return
   status('unlock-status', '正在浏览器本地派生密钥…（约 0.3–1 秒）')
   try {
+    // Vault 2.0 has its own password envelope. If it is active, unlock it
+    // directly instead of requiring the legacy NodeWarden KDF metadata.
+    const v2 = await api('/api/v2/status').catch(() => null)
+    if (v2?.initialized) {
+      await api('/api/v2/unlock', { method: 'POST', body: JSON.stringify({ password }) })
+      $('master-password').value = ''
+      status('unlock-status', '已解锁', 'ok')
+      show('unlock-card', false); show('dashboard', true); await loadAll()
+      return
+    }
     const info = await api('/api/bootstrap'); if (info.kdfType !== 0) throw new Error('这个账户使用 Argon2 KDF（常见于从 NodeWarden/Bitwarden 导入），当前控制台只支持 PBKDF2。请先在 NodeWarden 里把 KDF 改为 PBKDF2 并重新加密，或新建一个 PBKDF2 账户。')
     const masterKey = await pbkdf2(password, String(info.email).toLowerCase(), info.kdfIterations)
     const encKey = await hkdf(masterKey, 'enc', 32), macKey = await hkdf(masterKey, 'mac', 32)
