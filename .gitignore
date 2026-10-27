@@ -32,6 +32,7 @@ test-*.mjs
 !test-cli.mjs
 !test-cli-backup.mjs
 !test-cli-backup-scheduler.mjs
+!test-release-check.mjs
 !test-agents.mjs
 !test-envelope.mjs
 !test-v2-schema.mjs

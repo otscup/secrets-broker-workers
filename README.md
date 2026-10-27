@@ -485,6 +485,14 @@ a broken file list or a failing line stops the publish instead of shipping it.
 The `files` list must keep `cli/`, `src/envelope.js`, `src/vaultdiff.js` and
 `mcp-stdio/`: an import outside those paths resolves to nothing once installed.
 
+### Build the desktop release
+
+`npm run release:desktop` builds the UI, stages the sidecar, builds the MSI and
+then checks that the Tauri and Cargo versions match the MSI filename. The same
+steps run on `windows-latest` in `.github/workflows/desktop.yml`; it is
+`workflow_dispatch`/`desktop-v*` only, and uploads the MSI and executable as an
+artifact. Builds are unsigned until a code-signing certificate is configured.
+
 ### Keep the vault open on this machine
 
 Every agent that starts `secrets-broker serve` decrypts the vault again. Running

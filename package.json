@@ -21,6 +21,7 @@
     "test:cli": "node test-cli.mjs",
     "test:backup": "node test-cli-backup.mjs",
     "test:backup-scheduler": "node test-cli-backup-scheduler.mjs",
+    "test:release": "node test-release-check.mjs",
     "test:exec": "node test-cli-exec.mjs",
     "test:scan": "node test-cli-scan.mjs",
     "test:guard": "node test-cli-guard.mjs",
@@ -119,7 +120,9 @@
     "desktop:sidecar": "node desktop/copy-sidecar.mjs",
     "desktop:dev": "npm run desktop:ui && npm run desktop:sidecar && cd desktop && npx tauri dev",
     "desktop:build": "npm run desktop:ui && npm run desktop:sidecar && cd desktop && npx tauri build",
-    "prepublishOnly": "node scripts/check-pack.mjs && npm run test:cli && npm run test:backup && npm run test:backup-scheduler && npm run test:exec && npm run test:guard && npm run test:cache && npm run test:offline && npm run test:devkey && npm run test:daemon && npm run test:v2-cli"
+    "release:check": "node scripts/check-release.mjs",
+    "release:desktop": "npm run desktop:build && npm run release:check",
+    "prepublishOnly": "node scripts/check-pack.mjs && npm run test:cli && npm run test:backup && npm run test:backup-scheduler && npm run test:release && npm run test:exec && npm run test:guard && npm run test:cache && npm run test:offline && npm run test:devkey && npm run test:daemon && npm run test:v2-cli"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.4",
