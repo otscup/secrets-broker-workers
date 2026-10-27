@@ -11,7 +11,9 @@
 // A server-issued token is deliberately NOT a wrapping key: whatever the server
 // can unwrap, the server can read, and that is not zero knowledge.
 
-const ITERATIONS = 600000
+// Workers WebCrypto refuses PBKDF2 above 100,000 iterations; the free plan
+// also lacks CPU for higher counts. Keep the server-side wrap at that ceiling.
+const ITERATIONS = 100000
 const SALT_BYTES = 16
 const IV_BYTES = 12
 const decoder = new TextDecoder()
