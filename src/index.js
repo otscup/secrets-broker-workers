@@ -11,6 +11,7 @@ import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, 
 import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
 import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2ListPlain, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2SetDeviceWrite, vault2PurgeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf, vault2Push } from './vault2.js'
 import { publicKeyFingerprint } from './envelope.js'
+import { generateVapid, vapidAuthorization } from './webpush.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -2589,6 +2590,58 @@ function liveChannels(notifications) {
   return out
 }
 
+async function ensureWebPush(env) {
+  const current = (await loadState(env)).settings?.notifications?.webpush
+  if (current?.publicKey && current?.privateWrapped) return current
+  const pair = await generateVapid()
+  const wrapped = await wrapWithKek(encoder.encode(JSON.stringify(pair.privateJwk)), await kekBytes(env))
+  await updateState(env, (state) => {
+    state.settings ??= { notifications: {} }
+    state.settings.notifications ??= {}
+    state.settings.notifications.webpush ??= {}
+    const webpush = state.settings.notifications.webpush
+    // Another request may have created the key while this one generated it.
+    if (!webpush.publicKey || !webpush.privateWrapped) {
+      webpush.publicKey = pair.publicKey
+      webpush.privateWrapped = wrapped
+    }
+    webpush.subscriptions ??= []
+    return state
+  })
+  return (await loadState(env)).settings.notifications.webpush
+}
+
+async function sendWebPush(env) {
+  const webpush = await ensureWebPush(env)
+  if (!webpush?.publicKey || !webpush?.privateWrapped || !webpush.subscriptions?.length) return { sent: 0 }
+  let privateJwk
+  try {
+    privateJwk = JSON.parse(decoder.decode(await unwrapWithKek(webpush.privateWrapped, await kekBytes(env))))
+  } catch { return { sent: 0 } }
+  const stale = []
+  let sent = 0
+  await Promise.allSettled(webpush.subscriptions.map(async (subscription) => {
+    try {
+      const authorization = await vapidAuthorization(subscription.endpoint, webpush.publicKey, privateJwk)
+      const response = await fetch(subscription.endpoint, {
+        method: 'POST',
+        headers: { authorization, ttl: '600', urgency: 'high' },
+        body: '',
+      })
+      if (response.status === 404 || response.status === 410) stale.push(subscription.endpoint)
+      else if (response.ok) sent += 1
+    } catch {}
+  }))
+  if (stale.length) {
+    await updateState(env, (state) => {
+      const list = state.settings?.notifications?.webpush?.subscriptions ?? []
+      state.settings.notifications.webpush.subscriptions = list.filter((entry) => !stale.includes(entry.endpoint))
+      return state
+    })
+  }
+  return { sent }
+}
+
 async function notifyDenied(env, origin, entry, notifications) {
   const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持调用（http_request）', 'secret.fill': '网页填充' }[entry.action] || entry.action || ''
   const text = `${entry.agent} 尝试${actionLabel}「${entry.name}」但被拦下：${entry.reason}\n在控制台的「被拦下的请求」里可以一键授权：${origin}/#items`
@@ -2616,6 +2669,7 @@ async function notifyDenied(env, origin, entry, notifications) {
       body: JSON.stringify({ title: 'Secrets Broker · 被拦下的请求', content: text }),
     }))
   }
+  tasks.push(sendWebPush(env).catch(() => ({ sent: 0 })))
   await Promise.allSettled(tasks)
 }
 
@@ -2678,6 +2732,7 @@ async function notifyPending(env, origin, entry, ctx) {
       tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }))
     }
   }
+  tasks.push(sendWebPush(env).catch(() => ({ sent: 0 })))
   if (!tasks.length) return
   const run = Promise.allSettled(tasks)
   if (ctx?.waitUntil) ctx.waitUntil(run)
@@ -6828,6 +6883,45 @@ export default {
       await addAudit(env, { event: 'sync.device.delete', name: device.name, device: id })
       return json({ ok: true })
     }
+    if (url.pathname === '/api/push/vapid' && request.method === 'GET') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const webpush = await ensureWebPush(env)
+      return json({ publicKey: webpush.publicKey, subscriptions: webpush.subscriptions?.length ?? 0 })
+    }
+    if (url.pathname === '/api/push/subscribe' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const subscription = body.subscription ?? {}
+      const endpoint = String(subscription.endpoint ?? '')
+      const p256dh = String(subscription.keys?.p256dh ?? '')
+      const auth = String(subscription.keys?.auth ?? '')
+      if (!/^https:\/\//.test(endpoint) || endpoint.length > 2048 || !p256dh || !auth) return fail('invalid subscription', 400)
+      await ensureWebPush(env)
+      await updateState(env, (state) => {
+        const webpush = state.settings.notifications.webpush
+        webpush.subscriptions = (webpush.subscriptions ?? []).filter((entry) => entry.endpoint !== endpoint)
+        webpush.subscriptions.push({ endpoint, keys: { p256dh: p256dh.slice(0, 200), auth: auth.slice(0, 100) }, addedAt: nowIso() })
+        webpush.subscriptions = webpush.subscriptions.slice(-10)
+        return state
+      })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/push/unsubscribe' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const body = await request.json().catch(() => ({}))
+      const endpoint = String(body.endpoint ?? '')
+      await updateState(env, (state) => {
+        const webpush = state.settings?.notifications?.webpush
+        if (webpush?.subscriptions) webpush.subscriptions = webpush.subscriptions.filter((entry) => entry.endpoint !== endpoint)
+        return state
+      })
+      return json({ ok: true })
+    }
+    if (url.pathname === '/api/push/test' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const result = await sendWebPush(env)
+      return json({ ok: true, ...result })
+    }
     if (url.pathname === '/api/settings') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       if (request.method === 'GET') {
@@ -6839,6 +6933,7 @@ export default {
           ntfy: { enabled: n.ntfy?.enabled !== false, url: n.ntfy?.url ?? '', topic: n.ntfy?.topic ?? '', configured: Boolean(n.ntfy?.url && n.ntfy?.topic) },
           gotify: { enabled: n.gotify?.enabled !== false, url: n.gotify?.url ?? '', configured: Boolean(n.gotify?.url && n.gotify?.token) },
           wxpush: { enabled: n.wxpush?.enabled !== false, url: n.wxpush?.url ?? '', format: n.wxpush?.format ?? 'form', configured: Boolean(n.wxpush?.url && n.wxpush?.token) },
+          webpush: { configured: Boolean(n.webpush?.publicKey), subscriptions: n.webpush?.subscriptions?.length ?? 0 },
           templates: notificationTemplates(n),
         }, oidc: {
           issuer: effectiveOidc?.issuer ?? '',

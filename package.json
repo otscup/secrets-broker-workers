@@ -41,6 +41,7 @@
     "test:materialize": "node test-mf-materialize.mjs",
     "test:explain": "node test-mf-explain.mjs",
     "test:notify-channels": "node test-mf-notify-channels.mjs",
+    "test:webpush": "node test-webpush.mjs",
     "test:mcp-oidc": "node test-mf-oidc.mjs",
     "test:r1-r6": "node --import ./test-support/register.mjs test-r1-r6.mjs",
     "test:maxreads": "node test-mf-maxreads.mjs",
