@@ -1470,6 +1470,7 @@ async function enableWebPush() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) throw new Error('此浏览器不支持后台推送')
     const registration = await navigator.serviceWorker.register('/sw.js')
     const permission = await Notification.requestPermission()
+    updateBrowserNotifyStatus()
     if (permission !== 'granted') throw new Error('未获得通知权限')
     const { publicKey } = await api('/api/push/vapid')
     const existing = await registration.pushManager.getSubscription()
