@@ -105,12 +105,14 @@ if (unlock.status !== 200) { console.log('FAIL  could not unlock the old vault: 
   else fail('A1', JSON.stringify({ status, body }).slice(0, 300))
 }
 
-// A2: an empty-but-initialised v2 vault does not take over yet.
+// A2: initialising an empty v2 vault makes it the live source immediately, so a
+// first-run (including an Argon2 legacy account) never falls back to a table its
+// password cannot open.
 {
   const init = await call('/api/v2/init', { method: 'POST', body: { password: MASTER } })
   const { body } = await call('/api/items')
-  const ok = init.status === 200 && names(body).join(',') === OLD_NAME
-  if (ok) pass('A2 initialising an empty v2 vault does not hide the old list')
+  const ok = init.status === 200 && names(body).length === 0
+  if (ok) pass('A2 initialising an empty v2 vault pins it as the source')
   else fail('A2', JSON.stringify({ init, names: names(body) }))
 }
 

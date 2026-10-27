@@ -678,6 +678,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
   <label class="field">Vault 主密码</label><input id="master-password" type="password" autocomplete="current-password">
   <label class="field">解锁有效期</label><select id="ttl"><option value="permanent">永久（可手动锁定）</option><option value="604800">7 天</option><option value="86400">24 小时</option><option value="3600">1 小时</option></select>
   <div class="row" style="margin-top:12px"><button class="primary" id="unlock">解锁</button><button id="lock2">锁定</button></div><div class="status" id="unlock-status"></div>
+  <div class="row" style="margin-top:8px"><button id="init-v2">初始化 Vault 2.0（至少 12 位）</button></div>
 </section>
 
 <section id="dashboard" class="hidden">
@@ -1011,6 +1012,12 @@ function applyTheme(mode) { const next = mode || localStorage.getItem('theme') |
 $('theme-cycle').onclick = () => { const current = localStorage.getItem('theme') || 'auto'; applyTheme(current === 'light' ? 'dark' : current === 'dark' ? 'auto' : 'light') }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if ((localStorage.getItem('theme') || 'auto') === 'auto') applyTheme('auto') })
 applyTheme()
+async function unlockV2(password) {
+  await api('/api/v2/unlock', { method: 'POST', body: JSON.stringify({ password }) })
+  $('master-password').value = ''
+  status('unlock-status', '已解锁', 'ok')
+  show('unlock-card', false); show('dashboard', true); await loadAll()
+}
 $('unlock').onclick = async () => {
   const password = $('master-password').value; if (!password) return
   status('unlock-status', '正在浏览器本地派生密钥…（约 0.3–1 秒）')
@@ -1018,13 +1025,7 @@ $('unlock').onclick = async () => {
     // Vault 2.0 has its own password envelope. If it is active, unlock it
     // directly instead of requiring the legacy NodeWarden KDF metadata.
     const v2 = await api('/api/v2/status').catch(() => null)
-    if (v2?.initialized) {
-      await api('/api/v2/unlock', { method: 'POST', body: JSON.stringify({ password }) })
-      $('master-password').value = ''
-      status('unlock-status', '已解锁', 'ok')
-      show('unlock-card', false); show('dashboard', true); await loadAll()
-      return
-    }
+    if (v2?.initialized) return await unlockV2(password)
     const info = await api('/api/bootstrap'); if (info.kdfType !== 0) throw new Error('这个账户使用 Argon2 KDF（常见于从 NodeWarden/Bitwarden 导入），当前控制台只支持 PBKDF2。请先在 NodeWarden 里把 KDF 改为 PBKDF2 并重新加密，或新建一个 PBKDF2 账户。')
     const masterKey = await pbkdf2(password, String(info.email).toLowerCase(), info.kdfIterations)
     const encKey = await hkdf(masterKey, 'enc', 32), macKey = await hkdf(masterKey, 'mac', 32)
@@ -1033,6 +1034,16 @@ $('unlock').onclick = async () => {
     $('master-password').value = ''; status('unlock-status', '已解锁', 'ok'); show('unlock-card', false); show('dashboard', true); await loadAll()
   } catch (error) { status('unlock-status', error.message, 'error') }
 }
+$('init-v2').onclick = async () => {
+  const password = $('master-password').value
+  if (password.length < 12) return status('unlock-status', '初始化密码至少 12 位', 'error')
+  if (!(await askYes('初始化 Vault 2.0？这会新建一套独立的数据密钥；旧 NodeWarden 条目不会自动迁移。'))) return
+  try {
+    await api('/api/v2/init', { method: 'POST', body: JSON.stringify({ password }) })
+    await unlockV2(password)
+  } catch (error) { status('unlock-status', error.message, 'error') }
+}
+api('/api/v2/status').then((v2) => { if (v2.initialized) $('init-v2').classList.add('hidden') }).catch(() => {})
 async function lock() {
   const password = prompt('锁定后：当前 vault 会话会被清除，所有 Agent 立即无法读取；再次使用需要用该账户主密码重新解锁。\n\n请输入管理密码确认锁定：')
   if (password === null) return

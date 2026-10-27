@@ -28,6 +28,9 @@ export async function vault2Init(env, password) {
       .bind(PASSWORD_KEYRING, PASSWORD_KEYRING, envelope, at, at),
     // The key generation is public: a device compares it with the one it cached to
     // notice a rekey without asking anyone to decrypt anything.
+    // Pin the source on the way in: an empty v2 is still the live store, not a
+    // reason to fall back to the old cipher table.
+    env.VAULT_DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('source', 'v2')"),
     env.VAULT_DB.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('keygen', ?)").bind(fingerprint),
   ])
   return { dek, fingerprint }
