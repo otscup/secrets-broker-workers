@@ -571,8 +571,13 @@ secrets-broker restore --from D:\backups\secrets-broker --force
 
 The device key and agent tokens are DPAPI/Keychain protected, so a backup is
 restorable only by the same OS user on the same machine profile. It is not a
-portable vault export; use the console export when you need one. Schedule it
-with Task Scheduler if you want it automatic.
+portable vault export; use the console export when you need one.
+
+For a daily backup, run `node cli/backup-scheduler.mjs` from Task Scheduler.
+`BROKER_BACKUP_DIR` changes the destination and `BROKER_BACKUP_KEEP` (default
+14) controls how many snapshots are retained. The Windows task
+`SecretsBrokerLocalBackup` runs it at 03:30 and reports failure through its
+last result code.
 
 ### Stop a commit that carries a vault value
 
