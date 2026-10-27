@@ -39,6 +39,7 @@ import { makeDaemon } from './daemon.mjs'
 import { detect, adapters, plan, planLocal, applyPlan, entryFor, localEntryFor, tomlBlock, tomlLocalBlock, dshLocalBlock, ENTRY_NAME, LOCAL_ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
+import { backup, restore, brokerHome } from './backup.mjs'
 
 const DEFAULT_URL = 'https://sb.otscup.com'
 
@@ -46,7 +47,7 @@ export const brokerUrl = () => (process.env.BROKER_URL || DEFAULT_URL).replace(/
 
 // Options that take a value. Their value must be removed before positional
 // lookup, or `materialize --path .env name` reads `.env` as the secret name.
-const VALUE_OPTIONS = new Set(['--id', '--remote', '--remote-token', '--path', '-p', '--key', '-k'])
+const VALUE_OPTIONS = new Set(['--id', '--remote', '--remote-token', '--path', '-p', '--key', '-k', '--out', '--from'])
 function positionals(argv) {
   const rest = []
   for (let i = 0; i < argv.length; i += 1) {
@@ -87,6 +88,10 @@ Usage
                                  re-encrypt the vault under a new key (revokes what an old key could read)
   secrets-broker cache [--clear]
                                  show (or drop) the local ciphertext copy the daemon falls back to
+  secrets-broker backup [--out DIR]
+                                 copy the encrypted local state (device key, cache, tokens)
+  secrets-broker restore --from DIR [--force]
+                                 restore that copy; same OS user only
   secrets-broker scan [--path FILE] [--json]
 secrets-broker guard [--install] [--repo DIR]   block a commit that carries a vault value
                                  list the credentials still sitting in plain files
@@ -180,6 +185,26 @@ async function main() {
       'from: ' + (status.url || 'unknown'),
     ].join('\n') + '\n')
     return 0
+  }
+
+  if (command === 'backup' || command === 'restore') {
+    const flag = (name) => {
+      const index = argv.indexOf(name)
+      return index >= 0 ? String(argv[index + 1] ?? '') : ''
+    }
+    try {
+      if (command === 'backup') {
+        const result = backup({ out: flag('--out') || undefined })
+        process.stdout.write(`backup: ${result.target}\n`)
+      } else {
+        const result = restore({ from: flag('--from'), force: argv.includes('--force') })
+        process.stdout.write(`restored: ${result.target}\n`)
+      }
+      return 0
+    } catch (error) {
+      process.stderr.write(String(error?.message ?? error) + '\n')
+      return 1
+    }
   }
 
   if (command === 'scan') {

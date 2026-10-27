@@ -559,6 +559,21 @@ secrets-broker pull --offline --to ./vault.json
 instead of reading the old copy. `--to` writes decrypted values to disk (mode
 0600) — treat that file as a secret and delete it when done.
 
+### Back up the local state
+
+`backup` copies the encrypted local state directory (device key, ciphertext
+cache, agent token store) so a disk failure does not force a new pairing:
+
+```bash
+secrets-broker backup --out D:\backups\secrets-broker
+secrets-broker restore --from D:\backups\secrets-broker --force
+```
+
+The device key and agent tokens are DPAPI/Keychain protected, so a backup is
+restorable only by the same OS user on the same machine profile. It is not a
+portable vault export; use the console export when you need one. Schedule it
+with Task Scheduler if you want it automatic.
+
 ### Stop a commit that carries a vault value
 
 An agent that reads a key and then writes a test file is one `git add` away from

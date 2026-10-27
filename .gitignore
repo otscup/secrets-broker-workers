@@ -30,6 +30,7 @@ test-*.mjs
 !test-oidc.mjs
 !test-r1-r6.mjs
 !test-cli.mjs
+!test-cli-backup.mjs
 !test-agents.mjs
 !test-envelope.mjs
 !test-v2-schema.mjs

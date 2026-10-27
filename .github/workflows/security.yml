@@ -163,6 +163,8 @@ jobs:
         run: npm run test:ui-item-page
       - name: Local bridge (cli)
         run: npm run test:cli
+      - name: Local encrypted backup/restore (cli)
+        run: npm run test:backup
       - name: Run a command with the key in its environment (cli)
         run: npm run test:exec
       - name: Local vault daemon (cli)
