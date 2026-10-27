@@ -1,3 +1,4 @@
+mod approvals;
 mod deep_link;
 mod local_agents;
 mod server;
@@ -43,6 +44,7 @@ fn force_show(window: &tauri::WebviewWindow) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             server::connect_server,
             server::get_server,
@@ -118,6 +120,7 @@ pub fn run() {
             tray.build(app)?;
 
             app.manage(SidecarState::start(app.handle().clone(), status));
+            approvals::start(app.handle().clone());
             server::restore(app.handle(), setup_url);
             Ok(())
         })

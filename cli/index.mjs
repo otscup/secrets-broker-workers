@@ -36,7 +36,7 @@ import { scan, defaultTargets, formatFindings, mask, suggestName } from './scan.
 import { cacheStatus, clearCache } from './cache.mjs'
 import { installHook, findCommittedSecrets, valuesFrom, formatGuard } from './guard.mjs'
 import { makeDaemon } from './daemon.mjs'
-import { detect, adapters, plan, planLocal, applyPlan, entryFor, tomlBlock, dshLocalBlock, ENTRY_NAME } from './agents.mjs'
+import { detect, adapters, plan, planLocal, applyPlan, entryFor, localEntryFor, tomlBlock, tomlLocalBlock, dshLocalBlock, ENTRY_NAME, LOCAL_ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
 
@@ -377,11 +377,17 @@ async function main() {
         }
         if (!write) {
           process.stdout.write('# ' + planned.name + ' (' + planned.file + ') would get:\n')
-          const preview = planned.kind === 'dsh'
-            ? dshLocalBlock()
-            : planned.kind === 'toml'
-              ? tomlBlock(url)
-              : JSON.stringify({ [ENTRY_NAME]: entryFor(url) }, null, 2)
+          const preview = local
+            ? planned.kind === 'dsh'
+              ? dshLocalBlock(adapter.id)
+              : planned.kind === 'toml'
+                ? tomlLocalBlock(adapter.id)
+                : JSON.stringify({ [LOCAL_ENTRY_NAME]: localEntryFor(adapter.id) }, null, 2)
+            : planned.kind === 'dsh'
+              ? dshLocalBlock(adapter.id)
+              : planned.kind === 'toml'
+                ? tomlBlock(url)
+                : JSON.stringify({ [ENTRY_NAME]: entryFor(url) }, null, 2)
           process.stdout.write(preview + '\n')
           continue
         }

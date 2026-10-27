@@ -26,6 +26,7 @@
     "test:offline": "node test-cli-offline.mjs",
     "test:devkey": "node test-cli-devkey.mjs",
     "test:daemon": "node test-local-daemon.mjs",
+    "test:local-auth": "node test-local-auth.mjs",
     "test:agents": "node test-agents.mjs",
     "test:envelope": "node test-envelope.mjs",
     "test:v2-schema": "node test-v2-schema.mjs",

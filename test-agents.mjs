@@ -14,6 +14,7 @@ const pass = (n) => { results.push({ n, ok: true }); console.log('PASS  ' + n) }
 const fail = (n, d) => { results.push({ n, ok: false, d }); console.log('FAIL  ' + n + ' :: ' + d) }
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-agents-'))
+process.env.BROKER_HOME = path.join(root, 'broker-home')
 const home = path.join(root, 'home')
 const appData = path.join(root, 'appdata')
 const write = (file, text) => {
@@ -132,7 +133,7 @@ try {
 
   // A9 - the CLI shape itself: detect lists ids, connect defaults to a dry run.
   {
-    const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: appData }
+    const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: appData, BROKER_HOME: path.join(root, 'broker-home') }
     const cursorFile = path.join(appData, 'Cursor', 'User', 'mcp.json')
     write(cursorFile, JSON.stringify({ mcpServers: {} }, null, 2) + '\n')
     const detected = spawnSync(process.execPath, ['cli/index.mjs', 'agents', 'detect'], { encoding: 'utf8', env })
@@ -174,7 +175,7 @@ try {
     const planned = planLocal(byId('codex'))
     applyPlan(planned)
     const text = read(file)
-    const hasLocal = text.includes('[mcp_servers.' + LOCAL_ENTRY_NAME + ']') && text.includes('url = "' + LOCAL_URL + '"')
+    const hasLocal = text.includes('[mcp_servers.' + LOCAL_ENTRY_NAME + ']') && /url = "http:\/\/127\.0\.0\.1:4319\/mcp\?agent=codex&token=[a-f0-9]+"/.test(text)
     const hasRemote = text.includes('[mcp_servers.secrets-broker]')
     planned.action === 'update' && hasLocal && hasRemote
       ? pass('A14 local plan adds a separate loopback entry without replacing the remote one')
@@ -191,12 +192,25 @@ try {
       : fail('A15', JSON.stringify({ action: planned.action, blocks }))
   }
 
+  // A15b - an old tokenless local entry is upgraded in place, not duplicated.
+  {
+    const file = path.join(home, '.codex', 'config.toml')
+    write(file, read(file).replace(/url = "http:\/\/127\.0\.0\.1:4319\/mcp\?[^"]*"/, 'url = "' + LOCAL_URL + '"'))
+    const planned = planLocal(byId('codex'))
+    applyPlan(planned)
+    const text = read(file)
+    const blocks = (text.match(/\[mcp_servers\.secrets-broker-local\]/g) ?? []).length
+    planned.action === 'update' && blocks === 1 && /agent=codex&token=/.test(text)
+      ? pass('A15b an old tokenless local entry is upgraded in place')
+      : fail('A15b', JSON.stringify({ action: planned.action, blocks, text: text.slice(-300) }))
+  }
+
   // A16 - the CLI flag the desktop button actually runs writes a JSON local entry.
   {
-    const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: appData }
+    const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: appData, BROKER_HOME: path.join(root, 'broker-home') }
     const run = spawnSync(process.execPath, ['cli/index.mjs', 'agents', 'connect', '--local', '--id', 'cursor', '--apply'], { encoding: 'utf8', env })
     const parsed = JSON.parse(read(path.join(appData, 'Cursor', 'User', 'mcp.json')))
-    const local = parsed.mcpServers?.[LOCAL_ENTRY_NAME]?.url === LOCAL_URL
+    const local = /^http:\/\/127\.0\.0\.1:4319\/mcp\?agent=cursor&token=/.test(parsed.mcpServers?.[LOCAL_ENTRY_NAME]?.url ?? '')
     run.status === 0 && local
       ? pass('A16 the CLI --local flag writes the loopback URL')
       : fail('A16', JSON.stringify({ status: run.status, stdout: run.stdout.slice(0, 160), stderr: run.stderr.slice(0, 160), local }))
@@ -209,7 +223,7 @@ try {
     const planned = planLocal(byId('pi'))
     applyPlan(planned)
     const parsed = JSON.parse(read(file))
-    const local = parsed.mcpServers?.[LOCAL_ENTRY_NAME]?.url === LOCAL_URL
+    const local = /^http:\/\/127\.0\.0\.1:4319\/mcp\?agent=pi&token=/.test(parsed.mcpServers?.[LOCAL_ENTRY_NAME]?.url ?? '')
     planned.action === 'update' && local
       ? pass('A17 Pi gets the loopback MCP entry')
       : fail('A17', JSON.stringify({ action: planned.action, parsed }))
@@ -225,7 +239,7 @@ try {
     const text = read(file)
     const hasInsert = text.includes('- insert:')
     const hasServer = text.includes('serverName: ' + LOCAL_ENTRY_NAME)
-    const hasUrl = text.includes('url: "' + LOCAL_URL + '"')
+    const hasUrl = /url: "http:\/\/127\.0\.0\.1:4319\/mcp\?agent=dsh&token=[a-f0-9]+"/.test(text)
     const repeated = planLocal(byId('dsh'))
     planned.action === 'update' && hasInsert && hasServer && hasUrl && repeated.action === 'skip'
       ? pass('A18 DSH gets one local MCP client row and a second run is a no-op')

@@ -496,15 +496,30 @@ secrets-broker up --port 4319 --every 15
 #   493 item(s), refreshing every 15 min
 ```
 
+The MCP endpoint is per-agent: `agents connect --local` creates that agent's
+token and writes the tokenized URL into its config.
+
+```bash
+secrets-broker agents connect --local --apply
+# POST /mcp?agent=codex&token=...
+```
+
 | Route | What it gives |
 |---|---|
-| `POST /mcp` | The same tools as the stdio server, without a per-agent start cost |
+| `POST /mcp?agent=…&token=…` | The same tools as the stdio server, without a per-agent start cost |
 | `GET /healthz` | Item count, when it was last pulled, and whether the last refresh failed |
+| `GET /local/pending` | Reads waiting for a human decision |
+| `GET /approve/:id` | The local approval page |
+
+A read waits for that agent's policy: `allow` for named items, a 15-minute
+`window`, or `ask` (the default), which opens the approval page. Tokens and
+policies live in `~/.secrets-broker/local-agents.json`.
 
 Two guards, because a loopback port is still reachable by your browser:
 
 - any request carrying an `Origin` header is refused, as is `OPTIONS` — a web
-  page cannot use your browser to read the daemon;
+  page cannot use your browser to read the daemon; the approval page is exempt
+  so its own fetch works;
 - a `Host` header that is not `127.0.0.1`, `localhost` or `::1` is refused, which
   blocks a DNS-rebinding page.
 

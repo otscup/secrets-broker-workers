@@ -16,6 +16,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { localUrl } from './localauth.mjs'
 
 export const MARKER_START = '# >>> secrets-broker'
 export const MARKER_END = '# <<< secrets-broker'
@@ -251,9 +252,9 @@ export function entryFor(brokerUrl) {
   }
 }
 
-/** The desktop sidecar speaks HTTP MCP on loopback; no token to hand out. */
-export function localEntryFor() {
-  return { url: LOCAL_URL }
+/** The desktop sidecar speaks HTTP MCP on loopback; the token scopes the agent. */
+export function localEntryFor(agent = 'default') {
+  return { url: localUrl(agent) }
 }
 
 export function tomlBlock(brokerUrl) {
@@ -270,18 +271,18 @@ export function tomlBlock(brokerUrl) {
   ].join('\n')
 }
 
-export function tomlLocalBlock() {
+export function tomlLocalBlock(agent = 'default') {
   return [
     '# >>> secrets-broker-local',
     '[mcp_servers.' + LOCAL_ENTRY_NAME + ']',
-    'url = "' + LOCAL_URL + '"',
+    'url = "' + localUrl(agent) + '"',
     '# <<< secrets-broker-local',
     '',
   ].join('\n')
 }
 
 /** DSH composes its MCP servers from cordis.patch.yml, not a JSON config. */
-export function dshLocalBlock() {
+export function dshLocalBlock(agent = 'dsh') {
   return [
     '# >>> secrets-broker-local',
     '- insert:',
@@ -290,7 +291,7 @@ export function dshLocalBlock() {
     '      config:',
     '        serverName: ' + LOCAL_ENTRY_NAME,
     '        transport: streamable-http',
-    '        url: "' + LOCAL_URL + '"',
+    '        url: "' + localUrl(agent) + '"',
     '# <<< secrets-broker-local',
     '',
   ].join('\n')
@@ -352,6 +353,42 @@ export function plan(adapter, brokerUrl) {
   return { ...report, action: original ? 'update' : 'create', content }
 }
 
+function jsonWithLocalUrl(text, key, name, url) {
+  const start = text.search(new RegExp('"' + name + '"\\s*:\\s*\\{'))
+  if (start < 0) return null
+  const open = text.indexOf('{', start)
+  let depth = 0
+  let inString = false
+  let escaped = false
+  let end = -1
+  for (let i = open; i < text.length; i += 1) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{') depth += 1
+    else if (ch === '}' && --depth === 0) { end = i; break }
+  }
+  if (end < 0) return null
+  const block = text.slice(open, end + 1)
+  const replaced = block.replace(/("url"\s*:\s*")[^"]*(")/, '$1' + url + '$2')
+  return replaced === block ? null : text.slice(0, open) + replaced + text.slice(end + 1)
+}
+
+function tomlWithLocalUrl(text, table, url) {
+  const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const block = new RegExp('(\\[' + escaped + '\\.' + LOCAL_ENTRY_NAME + '\\][^\\[]*?url\\s*=\\s*")[^"]*(")')
+  return text.replace(block, '$1' + url + '$2')
+}
+
+function dshWithLocalUrl(text, url) {
+  return text.replace(/(serverName:\s*secrets-broker-local[\s\S]*?url:\s*")[^"]*(")/, '$1' + url + '$2')
+}
+
 /**
  * Add a second, explicitly local entry without disturbing an existing remote
  * one. Clients that already know a broker get both; switching is the user's job.
@@ -362,8 +399,16 @@ export function planLocal(adapter) {
   if (report.error) return { ...report, action: 'skip', reason: report.error, content: '' }
   const text = fs.readFileSync(adapter.file, 'utf8')
   if (adapter.kind === 'dsh') {
-    if (report.configured) return { ...report, action: 'skip', reason: 'already configured', content: '' }
-    const block = dshLocalBlock()
+    if (report.configured) {
+      const existing = text.match(/serverName:\s*secrets-broker-local[\s\S]*?url:\s*"([^"]*)"/)?.[1] ?? ''
+      const target = localUrl(adapter.id)
+      if (existing === target) return { ...report, action: 'skip', reason: 'already configured', content: '' }
+      const updated = dshWithLocalUrl(text, target)
+      return updated === text
+        ? { ...report, action: 'skip', reason: 'already configured', content: '' }
+        : { ...report, action: 'update', content: updated }
+    }
+    const block = dshLocalBlock(adapter.id)
     const content = text.trim() === '[]' ? block : text.replace(/\s*$/, '\n\n') + block
     return { ...report, action: text.trim() ? 'update' : 'create', content }
   }
@@ -375,9 +420,16 @@ export function planLocal(adapter) {
       return { ...report, action: 'skip', reason: 'parse: ' + error.message, content: '' }
     }
     if (parsed?.[adapter.key]?.[LOCAL_ENTRY_NAME]) {
-      return { ...report, configured: true, action: 'skip', reason: 'already configured', content: '' }
+      const target = localUrl(adapter.id)
+      if (parsed[adapter.key][LOCAL_ENTRY_NAME]?.url === target) {
+        return { ...report, configured: true, action: 'skip', reason: 'already configured', content: '' }
+      }
+      const updated = jsonWithLocalUrl(text, adapter.key, LOCAL_ENTRY_NAME, target)
+      return updated
+        ? { ...report, action: 'update', content: updated }
+        : { ...report, action: 'skip', reason: 'could not rewrite the local url', content: '' }
     }
-    const entry = localEntryFor()
+    const entry = localEntryFor(adapter.id)
     if (!text.trim()) {
       return { ...report, action: 'create', content: JSON.stringify({ [adapter.key]: { [LOCAL_ENTRY_NAME]: entry } }, null, 2) + '\n' }
     }
@@ -386,9 +438,12 @@ export function planLocal(adapter) {
     return { ...report, action: 'update', content: updated }
   }
   if (new RegExp('^\\s*\\[' + adapter.table.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.' + LOCAL_ENTRY_NAME + '\\]', 'm').test(text)) {
-    return { ...report, configured: true, action: 'skip', reason: 'already configured', content: '' }
+    const updated = tomlWithLocalUrl(text, adapter.table, localUrl(adapter.id))
+    return updated === text
+      ? { ...report, action: 'skip', reason: 'already configured', content: '' }
+      : { ...report, action: 'update', content: updated }
   }
-  const block = tomlLocalBlock()
+  const block = tomlLocalBlock(adapter.id)
   const content = text.trim() ? text.replace(/\s*$/, '\n\n') + block : block
   return { ...report, action: text.trim() ? 'update' : 'create', content }
 }

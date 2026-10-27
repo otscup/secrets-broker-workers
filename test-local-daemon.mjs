@@ -1,8 +1,14 @@
 // The local vault daemon: one process holds the decrypted vault and answers MCP
 // on 127.0.0.1. These assertions drive a real HTTP server, so what is checked is
 // what a client on this machine actually gets.
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { makeDaemon, hostnameOf } from './cli/daemon.mjs'
+import { localUrl } from './cli/localauth.mjs'
 import { request as httpRequest } from 'node:http'
+
+process.env.BROKER_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-daemon-auth-'))
 
 const results = []
 const pass = (n) => { results.push({ n, ok: true }); console.log('PASS  ' + n) }
@@ -23,7 +29,8 @@ const fakePull = async () => {
 
 const daemon = makeDaemon({ pull: fakePull, everyMs: 0 })
 const first = await daemon.refresh()
-const { origin } = await daemon.listen({ port: 0 })
+const { origin, port } = await daemon.listen({ port: 0 })
+const mcpUrl = localUrl('daemon-test').replace(':4319', ':' + port)
 
 // D1: a browser page must never reach this.
 {
@@ -34,8 +41,8 @@ const { origin } = await daemon.listen({ port: 0 })
 // D2: DNS rebinding - a Host that is not loopback is refused. fetch() will not
 // let a caller set Host, so this one goes over a raw socket, which can.
 {
-  const status = await new Promise((resolve, reject) => {
-    const url = new URL(origin + '/healthz')
+  const statusOf = (path) => new Promise((resolve, reject) => {
+    const url = new URL(origin + path)
     const request = httpRequest({ hostname: url.hostname, port: url.port, path: url.pathname, headers: { host: 'evil.example' } }, (response) => {
       response.resume()
       response.on('end', () => resolve(response.statusCode))
@@ -43,7 +50,9 @@ const { origin } = await daemon.listen({ port: 0 })
     request.on('error', reject)
     request.end()
   })
-  status === 403 ? pass('D2 a non-loopback Host is refused') : fail('D2', String(status))
+  const status = await statusOf('/healthz')
+  const approval = await statusOf('/local/pending')
+  status === 403 && approval === 403 ? pass('D2 a non-loopback Host is refused, including approval routes') : fail('D2', JSON.stringify({ status, approval }))
 }
 
 // D3: health says how many items are held, and when they were read.
@@ -53,16 +62,23 @@ const { origin } = await daemon.listen({ port: 0 })
   ok ? pass('D3 /healthz reports the item count and when it was read') : fail('D3', JSON.stringify(body))
 }
 
-// D4: the MCP endpoint answers with the real tool list.
+// D4: the MCP endpoint requires the per-agent token and lists the real tools.
 {
-  const response = await fetch(origin + '/mcp', {
+  const denied = await fetch(origin + '/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/list' }),
+  })
+  const response = await fetch(mcpUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
   })
   const body = await response.json()
   const names = (body.result?.tools ?? []).map((tool) => tool.name)
-  names.includes('list_secrets') && names.includes('get_secret') ? pass('D4 /mcp lists the local tools') : fail('D4', JSON.stringify(names))
+  denied.status === 401 && names.includes('list_secrets') && names.includes('get_secret')
+    ? pass('D4 /mcp requires a token and lists the local tools')
+    : fail('D4', JSON.stringify({ denied: denied.status, names }))
 }
 
 // D5: a failed refresh keeps the last vault and says it may be old.

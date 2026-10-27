@@ -7,6 +7,7 @@
  * that is what stops a web page from using your browser to read the daemon.
  */
 import { createServer } from 'node:http'
+import { authenticate, makeGate } from './localauth.mjs'
 import { createLocalServer } from './vaulttools.mjs'
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1'])
@@ -27,7 +28,7 @@ function mergeVault(base, rows) {
   return [...items.values()]
 }
 
-export function makeDaemon({ pull, everyMs = 15 * 60 * 1000, now = () => Date.now(), log = () => {} } = {}) {
+export function makeDaemon({ pull, everyMs = 15 * 60 * 1000, now = () => Date.now(), log = () => {}, gate = makeGate({ now }) } = {}) {
   if (typeof pull !== 'function') throw new Error('makeDaemon needs a pull function')
   let state = { vault: [], revision: 0, pulledAt: 0, stale: false, error: '' }
   let server = null
@@ -51,17 +52,11 @@ export function makeDaemon({ pull, everyMs = 15 * 60 * 1000, now = () => Date.no
     return state
   }
 
-  // Loopback only, and no browser: a page must not be able to reach this.
-  function refuse(request) {
-    if (request.headers.origin) return 'cross-origin request refused'
-    if (!LOOPBACK.has(hostnameOf(request.headers.host))) return 'not a loopback address'
-    return ''
-  }
-
-  function send(response, status, body) {
+  function send(response, status, body, type = 'application/json; charset=utf-8') {
     const text = typeof body === 'string' ? body : JSON.stringify(body)
     response.writeHead(status, {
-      'content-type': 'application/json; charset=utf-8',
+      'content-type': type,
+      'content-length': Buffer.byteLength(text),
       'cache-control': 'no-store',
     })
     response.end(text)
@@ -79,20 +74,44 @@ export function makeDaemon({ pull, everyMs = 15 * 60 * 1000, now = () => Date.no
   }
 
   async function handle(request, response) {
-    const refused = refuse(request)
-    if (refused) return send(response, 403, { error: refused })
-    if (request.method === 'OPTIONS') return send(response, 403, { error: 'no preflight' })
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    const approvalRoute = url.pathname === '/local/pending' || url.pathname.startsWith('/approve/')
+    if (request.headers.origin && !approvalRoute) return send(response, 403, { error: 'cross-origin request refused' })
+    if (!LOOPBACK.has(hostnameOf(request.headers.host))) return send(response, 403, { error: 'not a loopback address' })
+    if (request.method === 'OPTIONS') return send(response, 403, { error: 'no preflight' })
 
     if (request.method === 'GET' && url.pathname === '/healthz') {
       return send(response, 200, { ok: true, items: state.vault.length, revision: state.revision, pulledAt: state.pulledAt, stale: state.stale, error: state.error })
     }
+    if (request.method === 'GET' && url.pathname === '/local/pending') {
+      return send(response, 200, gate.pending())
+    }
+    if (request.method === 'GET' && url.pathname.startsWith('/approve/')) {
+      const id = decodeURIComponent(url.pathname.slice('/approve/'.length).split('/')[0] ?? '')
+      const html = gate.page(id)
+      return html ? send(response, 200, html, 'text/html; charset=utf-8') : send(response, 404, { error: 'approval not found' })
+    }
+    if (request.method === 'POST' && /^\/approve\/[^/]+\/decision$/.test(url.pathname)) {
+      const id = decodeURIComponent(url.pathname.slice('/approve/'.length).split('/')[0] ?? '')
+      try {
+        return send(response, 200, gate.decide(id, String(url.searchParams.get('decision') ?? '')))
+      } catch (error) {
+        return send(response, 400, { ok: false, error: String(error?.message ?? error) })
+      }
+    }
     if (request.method === 'POST' && url.pathname === '/mcp') {
+      const agent = authenticate(url)
+      if (!agent) return send(response, 401, { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'agent token required; run secrets-broker agents connect --local --apply' } })
       let message
       try {
         message = JSON.parse(await readBody(request))
       } catch (error) {
         return send(response, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: String(error?.message ?? error) } })
+      }
+      const decision = await gate.check(agent, message)
+      if (!decision.ok) {
+        const suffix = decision.approvalUrl ? '; approve at ' + decision.approvalUrl : ''
+        return send(response, 403, { jsonrpc: '2.0', id: message?.id ?? null, error: { code: -32001, message: decision.reason + suffix } })
       }
       const answered = createLocalServer({ vault: state.vault, revision: state.revision }).handle(message)
       return send(response, answered.status ?? 200, answered.body ?? '')
@@ -110,6 +129,7 @@ export function makeDaemon({ pull, everyMs = 15 * 60 * 1000, now = () => Date.no
         server.removeListener('error', reject)
         const address = server.address()
         const origin = 'http://' + host + ':' + address.port
+        gate.setOrigin?.(origin)
         if (everyMs > 0) {
           timer = setInterval(() => { refresh().catch((error) => log('refresh failed: ' + String(error?.message ?? error))) }, everyMs)
           timer.unref?.()
