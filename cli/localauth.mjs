@@ -16,29 +16,68 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { openBrowser } from './approval.mjs'
+import { protectSecret, unprotectSecret } from './store.mjs'
 
 const PORT = 4319
 const WINDOW_MS = 15 * 60 * 1000
-
+const dir = () => process.env.BROKER_HOME || path.join(os.homedir(), '.secrets-broker')
+const legacyFile = () => path.join(dir(), 'local-agents.json')
 export function localFile() {
-  return path.join(process.env.BROKER_HOME || path.join(os.homedir(), '.secrets-broker'), 'local-agents.json')
+  return path.join(dir(), 'local-agents.dpapi')
 }
 
+let cached = null
+let cachedMtime = 0
+
+const object = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : null
+
 function readAll() {
+  const file = localFile()
   try {
-    const value = JSON.parse(fs.readFileSync(localFile(), 'utf8'))
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+    const stat = fs.statSync(file)
+    if (cached && stat.mtimeMs === cachedMtime) return cached
+    const value = object(JSON.parse(unprotectSecret(file)))
+    if (value) {
+      cached = value
+      cachedMtime = stat.mtimeMs
+      return value
+    }
+  } catch {}
+  // Migrate the 0.2.12 plaintext file once; keep it if DPAPI cannot be used.
+  try {
+    const stat = fs.statSync(legacyFile())
+    if (cached && stat.mtimeMs === cachedMtime) return cached
+    const value = object(JSON.parse(fs.readFileSync(legacyFile(), 'utf8')))
+    if (!value) return {}
+    if (protectSecret(file, JSON.stringify(value, null, 2))) {
+      fs.rmSync(legacyFile(), { force: true })
+      const saved = fs.statSync(file)
+      cached = value
+      cachedMtime = saved.mtimeMs
+    }
+    return value
   } catch {
     return {}
   }
 }
 
-// shortcut: the profile ACL is the only protection on this token file; move the
-// tokens into DPAPI if another local account can read this profile.
 function writeAll(all) {
+  const text = JSON.stringify(all, null, 2)
   const file = localFile()
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-  fs.writeFileSync(file, JSON.stringify(all, null, 2), { mode: 0o600 })
+  if (protectSecret(file, text)) {
+    fs.rmSync(legacyFile(), { force: true })
+    cachedMtime = fs.statSync(file).mtimeMs
+  } else {
+    fs.rmSync(file, { force: true })
+    fs.writeFileSync(legacyFile(), text, { mode: 0o600 })
+    cachedMtime = fs.statSync(legacyFile()).mtimeMs
+  }
+  cached = all
+}
+
+export function readAgent(agent) {
+  return readAll()[agent]
 }
 
 function blank() {

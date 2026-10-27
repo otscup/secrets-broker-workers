@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { makeDaemon } from './cli/daemon.mjs'
-import { localUrl, localFile } from './cli/localauth.mjs'
+import { localUrl, readAgent } from './cli/localauth.mjs'
 
 process.env.BROKER_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-local-auth-'))
 process.env.BROKER_NO_BROWSER = '1'
@@ -88,7 +88,7 @@ const mcp = localUrl('pi').replace(':4319', ':' + port)
   await first
   const second = await call(mcp, rpc(8, 'get_secret', { name: 'openai-prod' }))
   const body = await second.json()
-  const policy = JSON.parse(fs.readFileSync(localFile(), 'utf8')).pi.policy
+  const policy = readAgent('pi').policy
   second.status === 200 && body.result?.content?.[0]?.text?.includes('sk-live-1') && policy.mode === 'allow' && policy.items.includes('openai-prod')
     ? pass('L5 Always allow persists for one agent and one item')
     : fail('L5', JSON.stringify({ status: second.status, policy }))
@@ -102,7 +102,7 @@ const mcp = localUrl('pi').replace(':4319', ':' + port)
   if (pending) await fetch(pending.url + '/decision?decision=window', { method: 'POST' })
   await first
   const second = await call(dsh, rpc(10, 'get_secret', { name: 'openai-prod' }))
-  const policy = JSON.parse(fs.readFileSync(localFile(), 'utf8')).dsh.policy
+  const policy = readAgent('dsh').policy
   second.status === 200 && policy.mode === 'window' && policy.until > Date.now()
     ? pass('L6 Allow 15 minutes is stored as an expiring window')
     : fail('L6', JSON.stringify({ status: second.status, policy }))

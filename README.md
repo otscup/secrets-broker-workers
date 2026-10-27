@@ -513,7 +513,8 @@ secrets-broker agents connect --local --apply
 
 A read waits for that agent's policy: `allow` for named items, a 15-minute
 `window`, or `ask` (the default), which opens the approval page. Tokens and
-policies live in `~/.secrets-broker/local-agents.json`.
+policies live in `~/.secrets-broker/local-agents.dpapi` on Windows (DPAPI,
+current user); other platforms keep `local-agents.json` at mode 0600.
 
 Two guards, because a loopback port is still reachable by your browser:
 
