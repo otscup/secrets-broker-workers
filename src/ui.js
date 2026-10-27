@@ -715,7 +715,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
   </section>
 
   <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">来自 NodeWarden D1（只读）。点条目打开详情，可改类型、明文读取、免审批和分享；勾选多条可批量操作。</div><div class="row" style="margin-top:10px"><input id="item-filter" placeholder="搜索名称、分组或网址…"><select id="item-sort" title="排序方式" style="flex:0 0 auto"><option value="name">按名称</option><option value="activity">按最近活动</option><option value="access">按授权数</option><option value="expiry">按到期时间</option></select><button id="items-refresh">刷新</button><button id="items-select">选择</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
-    <div class="card" id="card-vault2"><div class="row" style="justify-content:space-between;align-items:center"><div><h2 style="margin:0">Vault 2.0</h2><div class="hint" style="margin-top:4px">零知识库放在独立数据库里，和上面这一列密文库互不影响。解锁后这里能读出条目名称，锁上就只剩状态。</div></div><span id="v2-badge" class="kind-tag kind-none" style="flex:0 0 auto">读取中…</span></div><div id="v2-status" class="hint" style="margin-top:10px"></div><div class="row" id="v2-unlock-row" style="margin-top:10px"><input id="v2-password" type="password" placeholder="Vault 2.0 主密码（至少 12 位）"><button id="v2-unlock" class="primary">解锁</button><button id="v2-lock">锁定</button><button id="v2-import">从密文库导入</button><button id="v2-refresh">刷新</button></div><div class="hint" style="margin-top:8px">已配对的电脑、在线状态和撤销按钮都在「电脑」标签页。</div><div id="v2-box" class="table-wrap scroll-list hidden" style="margin-top:10px"></div><div id="v2-msg" class="status"></div></div>
+    <div class="card" id="card-vault2"><div class="row" style="justify-content:space-between;align-items:center"><div><h2 style="margin:0">Vault 2.0</h2><div class="hint" style="margin-top:4px">零知识库放在独立数据库里，和上面这一列密文库互不影响。解锁后这里能读出条目名称，锁上就只剩状态。</div></div><span id="v2-badge" class="kind-tag kind-none" style="flex:0 0 auto">读取中…</span></div><div id="v2-status" class="hint" style="margin-top:10px"></div><div class="row" id="v2-unlock-row" style="margin-top:10px"><input id="v2-password" type="password" placeholder="Vault 2.0 主密码（至少 12 位）"><button id="v2-unlock" class="primary">解锁</button><button id="v2-lock">锁定</button><input id="v2-legacy-password" type="password" placeholder="旧主密码（仅导入用）" autocomplete="off"><button id="v2-import">从旧库导入</button><button id="v2-refresh">刷新</button></div><div class="hint" style="margin-top:8px">已配对的电脑、在线状态和撤销按钮都在「电脑」标签页。</div><div id="v2-box" class="table-wrap scroll-list hidden" style="margin-top:10px"></div><div id="v2-msg" class="status"></div></div>
 <div class="card hidden" id="card-fill-policies" aria-hidden="true"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。未分类的凭据默认为拒绝读取。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     <div class="card" id="card-denied"><h2>被拦下的请求</h2><div class="hint">Agent 试图读取但没通过权限检查的条目。这里只是记录，没有放行任何东西；点「授权」才会真正放开。</div><div id="denied-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     
@@ -1018,6 +1018,14 @@ async function unlockV2(password) {
   status('unlock-status', '已解锁', 'ok')
   show('unlock-card', false); show('dashboard', true); await loadAll()
 }
+async function unlockLegacy(password, ttl = 'permanent') {
+  const info = await api('/api/bootstrap')
+  if (info.kdfType !== 0) throw new Error('这个账户使用 Argon2 KDF（常见于从 NodeWarden/Bitwarden 导入），当前控制台只支持 PBKDF2。')
+  const masterKey = await pbkdf2(password, String(info.email).toLowerCase(), info.kdfIterations)
+  const encKey = await hkdf(masterKey, 'enc', 32), macKey = await hkdf(masterKey, 'mac', 32)
+  const userKey = await decryptBw(info.profileKey, encKey, macKey)
+  await api('/api/unlock', { method: 'POST', body: JSON.stringify({ symEncKey: b64(userKey.slice(0, 32)), symMacKey: b64(userKey.slice(32, 64)), ttl }) })
+}
 $('unlock').onclick = async () => {
   const password = $('master-password').value; if (!password) return
   status('unlock-status', '正在浏览器本地派生密钥…（约 0.3–1 秒）')
@@ -1026,11 +1034,7 @@ $('unlock').onclick = async () => {
     // directly instead of requiring the legacy NodeWarden KDF metadata.
     const v2 = await api('/api/v2/status').catch(() => null)
     if (v2?.initialized) return await unlockV2(password)
-    const info = await api('/api/bootstrap'); if (info.kdfType !== 0) throw new Error('这个账户使用 Argon2 KDF（常见于从 NodeWarden/Bitwarden 导入），当前控制台只支持 PBKDF2。请先在 NodeWarden 里把 KDF 改为 PBKDF2 并重新加密，或新建一个 PBKDF2 账户。')
-    const masterKey = await pbkdf2(password, String(info.email).toLowerCase(), info.kdfIterations)
-    const encKey = await hkdf(masterKey, 'enc', 32), macKey = await hkdf(masterKey, 'mac', 32)
-    const userKey = await decryptBw(info.profileKey, encKey, macKey)
-    await api('/api/unlock', { method: 'POST', body: JSON.stringify({ symEncKey: b64(userKey.slice(0, 32)), symMacKey: b64(userKey.slice(32, 64)), ttl: $('ttl').value }) })
+    await unlockLegacy(password, $('ttl').value)
     $('master-password').value = ''; status('unlock-status', '已解锁', 'ok'); show('unlock-card', false); show('dashboard', true); await loadAll()
   } catch (error) { status('unlock-status', error.message, 'error') }
 }
@@ -1176,10 +1180,14 @@ $('v2-lock').onclick = async () => {
   try { await api('/api/v2/lock', { method: 'POST' }); await Promise.all([loadVault2(), loadItems()]) } catch (error) { $('v2-msg').textContent = error.message }
 }
 $('v2-import').onclick = async () => {
-  if (!confirm('把密文库里的条目复制一份到 Vault 2.0？已经存在的会跳过，原来的密文库不会被动。')) return
-  $('v2-msg').textContent = '导入中…'
+  const oldPassword = $('v2-legacy-password').value
+  if (!oldPassword) { $('v2-msg').textContent = '先输入旧密文库的主密码'; return }
+  if (!confirm('用旧主密码解锁一次旧密文库，把条目复制一份到 Vault 2.0？原来的密文库不会被动。')) return
+  $('v2-msg').textContent = '正在解锁旧密文库并导入…'
   try {
+    await unlockLegacy(oldPassword)
     const result = await api('/api/v2/import', { method: 'POST' })
+    $('v2-legacy-password').value = ''
     await Promise.all([loadVault2(), loadItems()])
     $('v2-msg').textContent = '导入 ' + result.imported + ' 条，跳过 ' + result.skipped + ' 条（共 ' + result.total + ' 条）'
   } catch (error) { $('v2-msg').textContent = error.message }
