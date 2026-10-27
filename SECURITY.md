@@ -35,6 +35,22 @@ returns it only through the paths below.
 - `/approve` output is HTML-escaped; OAuth registration has a client cap, field
   length limits, and redirect validation.
 
+## Local gateway (desktop loopback, port 4319)
+
+- The desktop app exposes `/mcp` on `127.0.0.1:4319` only. Each local agent gets a
+  random token and its own policy (`ask`, `allow` items, or a 15-minute window).
+- The token file is DPAPI-encrypted (`local-agents.dpapi`); plaintext
+  `local-agents.json` is migrated once and removed.
+- The token still has to live in the agent MCP config (URL query), because the
+  supported clients configure a URL rather than a custom auth header. **Any
+  process running under the same Windows account can read that config and use
+  that agent's token.** Loopback binding and per-agent tokens limit blast radius
+  between agents; they are not a defense against same-user malware.
+- Keep local policies on `ask` for sensitive items; do not use a long-lived
+  `allow` policy for them.
+- The sidecar must be running and the desktop app open for local access. Stop the
+  app to close 4319.
+
 ## Known limits / next work
 
 - Worker/Bitwarden crypto code needs an independent audit and test vectors.
