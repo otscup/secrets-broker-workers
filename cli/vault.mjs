@@ -1,11 +1,11 @@
 // The local half of v2: pair this machine, then prove the wrapped key opens.
 // The private key never leaves this file, and nothing here asks the server to
 // decrypt.
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { newDeviceKeypair, unwrapDekDevice, dekFingerprint, openItem, sealItem } from '../src/envelope.js'
-import { loadPull, savePull } from './cache.mjs'
+import { loadPull, savePull, clearCache, cacheFile } from './cache.mjs'
 import { protectSecret, unprotectSecret } from './store.mjs'
 
 // BROKER_HOME keeps a second broker (or a test) from touching the real pairing.
@@ -20,6 +20,16 @@ export function deviceFile() {
 export function loadDevice() {
   if (!existsSync(FILE)) return null
   return JSON.parse(readFileSync(FILE, 'utf8'))
+}
+
+// A revoked device is not allowed to keep reading, and its local ciphertext is
+// no longer something we can vouch for. Forget both sides in one step.
+export function forgetDevice() {
+  for (const file of [FILE, KEY_FILE]) {
+    try { rmSync(file, { force: true }) } catch {}
+  }
+  try { clearCache() } catch {}
+  try { rmSync(cacheFile(), { force: true }) } catch {}
 }
 
 function saveDevice(record) {
@@ -89,6 +99,12 @@ export async function pairRequest({ url, name = 'this computer' }) {
   return { base, keypair, code: body.code, pollToken: body.pollToken, url: body.url, fingerprint: body.fingerprint, expiresAt: body.expiresAt }
 }
 
+// The desktop app owns the window and the sidecar; the terminal only has to hand
+// it the short code. The HTTP approval URL still goes to stdout as a fallback.
+export function pairDeepLink({ base, code }) {
+  return 'secrets-broker://pair?url=' + encodeURIComponent(base) + '&code=' + encodeURIComponent(code)
+}
+
 export async function pairPoll({ base, pollToken }) {
   const response = await fetch(base + '/api/v2/pair/poll', {
     method: 'POST',
@@ -156,7 +172,11 @@ export async function pull({ since = 0, offline = false } = {}) {
       try { savePull({ url: record.url, revision: body.revision, rows: body.items ?? [] }) } catch {}
     } catch (error) {
       // A revoked device must hear about it, not quietly read an old copy.
-      if (error?.status === 401 || error?.status === 403) throw error
+      // 403 is usually an edge/WAF refusal, so only 401 erases the pairing.
+      if (error?.status === 401) {
+        forgetDevice()
+        throw error
+      }
       body = fromCopy(String(error?.message ?? error).slice(0, 200))
       if (!body) throw error
     }

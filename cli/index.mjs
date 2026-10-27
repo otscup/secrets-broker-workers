@@ -24,12 +24,12 @@ import { createInterface } from 'node:readline'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readFileSync, writeFileSync } from 'node:fs'
-import { log, handleApprovals } from './approval.mjs'
+import { log, handleApprovals, openBrowser } from './approval.mjs'
 import { createBridge } from './bridge.mjs'
 import { login } from './oauth.mjs'
 import { runMaterialize } from './materialize.mjs'
 import { runSync } from './sync.mjs'
-import { pair, pairRequest, pairWait, unlock, count, loadDevice, pull, push } from './vault.mjs'
+import { pair, pairRequest, pairWait, pairDeepLink, unlock, count, loadDevice, pull, push } from './vault.mjs'
 import { createLocalServer } from './vaulttools.mjs'
 import { buildEnv, runExec } from './exec.mjs'
 import { scan, defaultTargets, formatFindings, mask, suggestName } from './scan.mjs'
@@ -425,6 +425,9 @@ async function main() {
       }
       const request = await pairRequest({ url, name })
       process.stdout.write(`open this page and approve the device:\n  ${request.url}\n\ncode: ${request.code}\nkey fingerprint: ${request.fingerprint}\n\nthe fingerprint above must match the one on that page. waiting for approval…\n`)
+      // The app shows its window and opens the same approval page; without the
+      // app the printed URL is still enough.
+      openBrowser(pairDeepLink(request))
       const paired = await pairWait({ base: request.base, pollToken: request.pollToken, keypair: request.keypair, name })
       process.stdout.write(`paired ${paired.name} (${paired.id})\nvault key: ${paired.fingerprint}\nstored in ${paired.file}\n`)
       return 0

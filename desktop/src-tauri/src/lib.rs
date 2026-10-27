@@ -1,7 +1,9 @@
+mod deep_link;
 mod sidecar;
 
 use sidecar::SidecarState;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 
@@ -38,7 +40,17 @@ fn force_show(window: &tauri::WebviewWindow) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
+            let handle = app.handle().clone();
+            app.deep_link()
+                .on_open_url(move |event| deep_link::handle(&handle, &event.urls()));
+            #[cfg(desktop)]
+            let _ = app.deep_link().register_all();
+            if let Ok(Some(urls)) = app.deep_link().get_current() {
+                deep_link::handle(app.handle(), &urls);
+            }
+
             // Create the window manually so its WebView2 data dir exists first.
             let data = app.path().app_local_data_dir()?.join("webview");
             std::fs::create_dir_all(&data)?;

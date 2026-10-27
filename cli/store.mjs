@@ -48,10 +48,14 @@ export function protectSecret(file, value) {
 }
 
 export function unprotectSecret(file) {
-  if (keychainName() !== 'dpapi') return ''
+  if (keychainName() !== 'dpapi') {
+    process.stderr.write('[secrets-broker] DPAPI unavailable: powershell not found\n')
+    return ''
+  }
   try {
     return dpapi('unprotect', fs.readFileSync(file, 'utf8'))
-  } catch {
+  } catch (error) {
+    process.stderr.write('[secrets-broker] DPAPI unprotect failed: ' + String(error?.message ?? error) + '\n')
     return ''
   }
 }
@@ -81,7 +85,17 @@ const DPAPI_UNPROTECT =
 // Piped stdin does not reach the script on Windows ([Console]::In.ReadToEnd()
 // returned null and Protect threw), so both directions hand over a file.
 const dpapi = (mode, payload) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-dpapi-'))
+  // TEMP can point at a directory this user cannot write (service accounts,
+  // hardened hosts); fall back to the broker's own private directory.
+  let dir
+  try {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-dpapi-'))
+  } catch {
+    const brokerHome = process.env.BROKER_HOME || path.join(os.homedir(), '.secrets-broker')
+    const base = path.join(brokerHome, 'tmp')
+    fs.mkdirSync(base, { recursive: true, mode: 0o700 })
+    dir = fs.mkdtempSync(path.join(base, 'sb-dpapi-'))
+  }
   const input = path.join(dir, 'in.txt')
   const output = path.join(dir, 'out.txt')
   try {

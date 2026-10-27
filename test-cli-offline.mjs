@@ -29,7 +29,7 @@ async function check(name, fn) {
 const dek = await newDek()
 const keypair = await newDeviceKeypair()
 const envelope = await wrapDekDevice(dek, keypair.publicJwk)
-fs.writeFileSync(path.join(home, 'device.json'), JSON.stringify({
+const deviceRecord = JSON.stringify({
   name: 'test-machine',
   url: 'https://offline.invalid',
   token: 'device-token-for-the-test',
@@ -37,16 +37,14 @@ fs.writeFileSync(path.join(home, 'device.json'), JSON.stringify({
   envelope,
   fingerprint: await dekFingerprint(dek),
   pairedAt: new Date().toISOString(),
-}, null, 2))
+}, null, 2)
+const row = { id: 'item-1', kind: 'api', revision: 12, updatedAt: '2026-10-26T12:00:00Z', ciphertext: await sealItem(dek, 'item-1', { name: 'openai', secret: 'sk-offline-123456' }) }
+fs.writeFileSync(path.join(home, 'device.json'), deviceRecord)
 
 const { savePull, loadPull } = await import('./cli/cache.mjs')
 const { pull } = await import('./cli/vault.mjs')
 
-savePull({
-  url: 'https://offline.invalid',
-  revision: 12,
-  rows: [{ id: 'item-1', kind: 'api', revision: 12, updatedAt: '2026-10-26T12:00:00Z', ciphertext: await sealItem(dek, 'item-1', { name: 'openai', secret: 'sk-offline-123456' }) }],
-})
+savePull({ url: 'https://offline.invalid', revision: 12, rows: [row] })
 
 const realFetch = globalThis.fetch
 globalThis.fetch = async () => { throw new Error('getaddrinfo ENOTFOUND offline.invalid') }
@@ -71,7 +69,7 @@ await check('O2 the cached row still opens with the key on this machine', () => 
   assert.ok(!JSON.stringify(loaded.rows).includes('sk-offline-123456'), 'the copy holds ciphertext only')
 })
 
-await check('O3 a revoked device hears the error instead of an old copy', async () => {
+await check('O3 a revoked device hears the error and forgets its local copy', async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 })
   try {
     await pull({ since: 0 })
@@ -81,6 +79,11 @@ await check('O3 a revoked device hears the error instead of an old copy', async 
   } finally {
     globalThis.fetch = realFetch
   }
+  assert.equal(fs.existsSync(path.join(home, 'device.json')), false)
+  assert.equal(fs.existsSync(path.join(home, 'vault.db')), false)
+  // Put the fixture back so the offline checks below still exercise that path.
+  fs.writeFileSync(path.join(home, 'device.json'), deviceRecord)
+  savePull({ url: 'https://offline.invalid', revision: 12, rows: [row] })
 })
 
 let attempts = 0
