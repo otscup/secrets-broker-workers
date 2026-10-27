@@ -5202,11 +5202,31 @@ export default {
     }
     if (url.pathname === '/api/items/import' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
-      const session = await getSession(env)
-      if (!session) return fail('locked', 423)
-      try { await vault2WriteKey(env) } catch (error) { return fail(String(error.message ?? error), error.status ?? 423) }
       const body = await request.json().catch(() => ({}))
       const entries = Array.isArray(body) ? body : Array.isArray(body.items) ? body.items : []
+      const session = await getSession(env)
+      if (!session) {
+        const v2 = await vault2Context(env)
+        if (!v2?.dek) return fail('locked', 423)
+        const created = []
+        const skipped = []
+        for (const entry of entries) {
+          try {
+            const payload = {
+              name: String(entry?.name ?? '').trim() || '(untitled)',
+              username: String(entry?.username ?? ''),
+              password: String(entry?.value ?? entry?.password ?? ''),
+              totp: String(entry?.totp ?? ''),
+              url: String(entry?.url ?? ''),
+              notes: String(entry?.notes ?? ''),
+            }
+            const kind = entry?.kind === 'web' ? 'web' : 'api'
+            created.push((await vault2Create(env, v2.dek, { kind, payload })).id)
+          } catch (error) { skipped.push({ name: entry?.name, error: String(error.message ?? error) }) }
+        }
+        return json({ ok: true, created, skipped, vault: 2 })
+      }
+      try { await vault2WriteKey(env) } catch (error) { return fail(String(error.message ?? error), error.status ?? 423) }
       const created = []
       const skipped = []
       for (const entry of entries) {
