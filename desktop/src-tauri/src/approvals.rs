@@ -47,6 +47,7 @@ pub fn start(app: AppHandle) {
                         .builder()
                         .title("Secrets Broker approval")
                         .body(body)
+                        .sound("Default")
                         .show();
                 }
             }
