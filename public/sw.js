@@ -22,7 +22,7 @@ self.addEventListener('push', (event) => {
       body,
       icon: '/logo.png',
       tag: 'secrets-broker-pending',
-      data: { url: '/' },
+      data: { url: '/#pending' },
     })
   })())
 })
