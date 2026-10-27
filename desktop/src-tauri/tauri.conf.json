@@ -1,0 +1,34 @@
+{
+    "$schema":  "https://schema.tauri.app/config/2",
+    "productName":  "Secrets Broker",
+    "version":  "0.1.0",
+    "identifier":  "com.otscup.secrets-broker",
+    "build":  {
+                  "frontendDist":  "../ui"
+              },
+    "app":  {
+                "windows":  [
+                                {
+                                    "label":  "main",
+                                    "title":  "Secrets Broker",
+                                    "width":  1180,
+                                    "height":  860,
+                                    "minWidth":  900,
+                                    "minHeight":  640,
+                                    "create":  false
+                                }
+                            ],
+                "security":  {
+                                 "csp":  null
+                             }
+            },
+    "bundle":  {
+                   "active":  true,
+                   "targets":  [
+                                   "msi"
+                               ],
+                   "icon":  [
+                                "icons/icon.ico"
+                            ]
+               }
+}

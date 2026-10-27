@@ -1,0 +1,16 @@
+[package]
+name = "secrets-broker-desktop"
+version = "0.1.0"
+description = "Secrets Broker desktop shell"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "secrets_broker_desktop_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

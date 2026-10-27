@@ -8,6 +8,10 @@ wrangler.jsonc
 *.tgz
 *.log
 
+# Tauri generated output; rebuild with `npm run desktop:ui`.
+desktop/ui/
+desktop/src-tauri/target/
+
 # Local operator scripts embed credentials; never commit them.
 inspect-cipher.mjs
 set-secrets.mjs
@@ -43,3 +47,5 @@ test-*.mjs
 !test-local-tools.mjs
 !test-cli-guard.mjs
 !test-cli-devkey.mjs
+
+desktop/src-tauri/gen/
