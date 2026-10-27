@@ -21,7 +21,8 @@ const write = (file, text) => {
   fs.writeFileSync(file, text, 'utf8')
 }
 const read = (file) => fs.readFileSync(file, 'utf8')
-const opts = { home, appData }
+const dshHome = path.join(root, 'dsh-home')
+const opts = { home, appData, dshHome, dshProfile: 'desktop' }
 const byId = (id) => adapters(opts).find((adapter) => adapter.id === id)
 const BROKER = 'https://broker.example'
 
@@ -199,6 +200,36 @@ try {
     run.status === 0 && local
       ? pass('A16 the CLI --local flag writes the loopback URL')
       : fail('A16', JSON.stringify({ status: run.status, stdout: run.stdout.slice(0, 160), stderr: run.stderr.slice(0, 160), local }))
+  }
+
+  // A17 - Pi reads user-level MCP servers from ~/.pi/agent/mcp.json.
+  {
+    const file = path.join(home, '.pi', 'agent', 'mcp.json')
+    write(file, '{}\n')
+    const planned = planLocal(byId('pi'))
+    applyPlan(planned)
+    const parsed = JSON.parse(read(file))
+    const local = parsed.mcpServers?.[LOCAL_ENTRY_NAME]?.url === LOCAL_URL
+    planned.action === 'update' && local
+      ? pass('A17 Pi gets the loopback MCP entry')
+      : fail('A17', JSON.stringify({ action: planned.action, parsed }))
+  }
+
+  // A18 - DSH takes its MCP servers from a profile patch, not a JSON map.
+  {
+    const file = path.join(dshHome, 'profiles', 'desktop', 'cordis.patch.yml')
+    write(file, '[]\n')
+    const adapter = byId('dsh')
+    const planned = planLocal(adapter)
+    applyPlan(planned)
+    const text = read(file)
+    const hasInsert = text.includes('- insert:')
+    const hasServer = text.includes('serverName: ' + LOCAL_ENTRY_NAME)
+    const hasUrl = text.includes('url: "' + LOCAL_URL + '"')
+    const repeated = planLocal(byId('dsh'))
+    planned.action === 'update' && hasInsert && hasServer && hasUrl && repeated.action === 'skip'
+      ? pass('A18 DSH gets one local MCP client row and a second run is a no-op')
+      : fail('A18', JSON.stringify({ action: planned.action, hasInsert, hasServer, hasUrl, repeated: repeated.action }))
   }
 } finally {
   fs.rmSync(root, { recursive: true, force: true })

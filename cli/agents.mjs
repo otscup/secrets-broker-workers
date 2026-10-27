@@ -78,7 +78,12 @@ export function hasComment(text) {
 }
 
 /** Every place worth looking, with the shape of what lives there. */
-export function adapters({ home = os.homedir(), appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming') } = {}) {
+export function adapters({
+  home = os.homedir(),
+  appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
+  dshHome = process.env.DSH_HOME || join(home, '.dsh'),
+  dshProfile = process.env.DSH_PROFILE || 'desktop',
+} = {}) {
   const has = (file) => Boolean(file && fs.existsSync(file))
   return [
     {
@@ -138,6 +143,19 @@ export function adapters({ home = os.homedir(), appData = process.env.APPDATA ||
       file: join(home, '.gemini', 'settings.json'),
       key: 'mcpServers',
     },
+    {
+      id: 'pi',
+      name: 'Pi Agent',
+      kind: 'json',
+      file: join(home, '.pi', 'agent', 'mcp.json'),
+      key: 'mcpServers',
+    },
+    {
+      id: 'dsh',
+      name: 'DeepSeek Harness',
+      kind: 'dsh',
+      file: join(dshHome, 'profiles', dshProfile, 'cordis.patch.yml'),
+    },
   ].map((adapter) => ({ ...adapter, exists: has(adapter.file), looksLike: has(adapter.file) }))
 }
 
@@ -193,6 +211,12 @@ export function inspect(adapter) {
     return report
   }
   if (!text.trim()) return report
+  if (adapter.kind === 'dsh') {
+    const found = new RegExp('^\\s*serverName:\\s*' + LOCAL_ENTRY_NAME + '\\s*$', 'm').test(text)
+    report.configured = found
+    report.entry = found ? LOCAL_ENTRY_NAME : null
+    return report
+  }
   try {
     if (isJson(adapter.kind)) {
       const parsed = parseLoose(text)
@@ -256,6 +280,22 @@ export function tomlLocalBlock() {
   ].join('\n')
 }
 
+/** DSH composes its MCP servers from cordis.patch.yml, not a JSON config. */
+export function dshLocalBlock() {
+  return [
+    '# >>> secrets-broker-local',
+    '- insert:',
+    '    - id: secrets-broker-local',
+    "      name: '@deepseek-ai/dsh-mcp-client'",
+    '      config:',
+    '        serverName: ' + LOCAL_ENTRY_NAME,
+    '        transport: streamable-http',
+    '        url: "' + LOCAL_URL + '"',
+    '# <<< secrets-broker-local',
+    '',
+  ].join('\n')
+}
+
 /**
  * Add the entry to a JSON document by text, not by re-serialising.
  *
@@ -292,6 +332,7 @@ function jsonWithEntry(text, key, name, entry) {
 export function plan(adapter, brokerUrl) {
   const report = inspect(adapter)
   if (!report.present) return { ...report, action: 'skip', reason: 'file not found', content: '' }
+  if (adapter.kind === 'dsh') return { ...report, action: 'skip', reason: 'local entry only; use --local', content: '' }
   if (report.configured) return { ...report, action: 'skip', reason: 'already configured', content: '' }
   if (report.error) return { ...report, action: 'skip', reason: report.error, content: '' }
   const text = fs.readFileSync(adapter.file, 'utf8')
@@ -320,6 +361,12 @@ export function planLocal(adapter) {
   if (!report.present) return { ...report, action: 'skip', reason: 'file not found', content: '' }
   if (report.error) return { ...report, action: 'skip', reason: report.error, content: '' }
   const text = fs.readFileSync(adapter.file, 'utf8')
+  if (adapter.kind === 'dsh') {
+    if (report.configured) return { ...report, action: 'skip', reason: 'already configured', content: '' }
+    const block = dshLocalBlock()
+    const content = text.trim() === '[]' ? block : text.replace(/\s*$/, '\n\n') + block
+    return { ...report, action: text.trim() ? 'update' : 'create', content }
+  }
   if (isJson(adapter.kind)) {
     let parsed
     try {
