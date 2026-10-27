@@ -22,8 +22,8 @@
  */
 import { createInterface } from 'node:readline'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { readFileSync, writeFileSync, realpathSync } from 'node:fs'
 import { log, handleApprovals, openBrowser } from './approval.mjs'
 import { createBridge } from './bridge.mjs'
 import { login } from './oauth.mjs'
@@ -713,7 +713,15 @@ function serve() {
   return new Promise(() => {})
 }
 
-const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+// npm link / pnpm use a junction, so argv[1] and import.meta.url name the same
+// file through different paths; compare the resolved files instead.
+const invokedDirectly = process.argv[1] && (() => {
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+  } catch {
+    return false
+  }
+})()
 if (invokedDirectly) {
   main()
     .then((code) => {
