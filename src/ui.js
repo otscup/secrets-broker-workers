@@ -667,15 +667,15 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 </header>
 
 <section id="login-card" class="card hidden">
-  <h2>管理登录</h2><div class="hint">管理登录密码（不是 Agent token，也不是 Bitwarden 主密码）。</div>
+  <h2>管理登录</h2><div class="hint">管理登录密码（不是 Agent token，也不是 Vault 主密码）。</div>
   <label class="field">管理登录密码</label><input id="admin-password" type="password" autocomplete="current-password">
   <div id="totp-row" class="hidden"><label class="field">两步验证码</label><input id="totp-code" inputmode="numeric" placeholder="6 位验证码"></div>
   <div style="margin-top:12px"><button class="primary" id="login">登录</button></div><div class="status" id="login-status"></div><div id="login-oidc" style="margin-top:10px"></div>
 </section>
 
 <section id="unlock-card" class="card hidden">
-  <h2>解锁 vault</h2><div class="hint">主密码只在本浏览器中做 PBKDF2/HKDF，服务器只收到派生出的会话密钥，不会收到主密码。</div>
-  <label class="field">Bitwarden 主密码</label><input id="master-password" type="password" autocomplete="current-password">
+  <h2>解锁 vault</h2><div class="hint">这是 Vault 主密码：初始化 Vault 时设置的密码，不是 NodeWarden/Bitwarden 登录密码，也不是上面的管理登录密码。主密码只在本机做 PBKDF2/HKDF，服务器只收到派生出的会话密钥。</div>
+  <label class="field">Vault 主密码</label><input id="master-password" type="password" autocomplete="current-password">
   <label class="field">解锁有效期</label><select id="ttl"><option value="permanent">永久（可手动锁定）</option><option value="604800">7 天</option><option value="86400">24 小时</option><option value="3600">1 小时</option></select>
   <div class="row" style="margin-top:12px"><button class="primary" id="unlock">解锁</button><button id="lock2">锁定</button></div><div class="status" id="unlock-status"></div>
 </section>

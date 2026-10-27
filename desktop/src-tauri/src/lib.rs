@@ -8,8 +8,30 @@ use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
 fn show_main(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
+        #[cfg(windows)]
+        force_show(&window);
         let _ = window.unminimize();
         let _ = window.set_focus();
+    }
+}
+
+#[cfg(windows)]
+fn force_show(window: &tauri::WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    };
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW,
+            );
+        }
     }
 }
 
