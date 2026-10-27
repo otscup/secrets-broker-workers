@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { adapters, detect, plan, applyPlan, parseLoose, entryFor, CLI_ENTRY } from './cli/agents.mjs'
+import { adapters, detect, plan, planLocal, applyPlan, parseLoose, entryFor, CLI_ENTRY, LOCAL_ENTRY_NAME, LOCAL_URL } from './cli/agents.mjs'
 
 const results = []
 const pass = (n) => { results.push({ n, ok: true }); console.log('PASS  ' + n) }
@@ -165,6 +165,40 @@ try {
     parsed?.mcpServers?.['secrets-broker']?.env?.BROKER_URL === BROKER && !error
       ? pass('A12 an empty mcpServers object stays strict JSON after the write')
       : fail('A12', error || read(file).slice(0, 200))
+  }
+
+  // A14 - one-click local adds a second entry and leaves the remote one alone.
+  {
+    const file = path.join(home, '.codex', 'config.toml')
+    const planned = planLocal(byId('codex'))
+    applyPlan(planned)
+    const text = read(file)
+    const hasLocal = text.includes('[mcp_servers.' + LOCAL_ENTRY_NAME + ']') && text.includes('url = "' + LOCAL_URL + '"')
+    const hasRemote = text.includes('[mcp_servers.secrets-broker]')
+    planned.action === 'update' && hasLocal && hasRemote
+      ? pass('A14 local plan adds a separate loopback entry without replacing the remote one')
+      : fail('A14', JSON.stringify({ action: planned.action, hasLocal, hasRemote }))
+  }
+
+  // A15 - repeating the local plan is a no-op, so the button can be clicked twice.
+  {
+    const planned = planLocal(byId('codex'))
+    const text = read(path.join(home, '.codex', 'config.toml'))
+    const blocks = (text.match(/\[mcp_servers\.secrets-broker-local\]/g) ?? []).length
+    planned.action === 'skip' && blocks === 1
+      ? pass('A15 a second local click is a no-op')
+      : fail('A15', JSON.stringify({ action: planned.action, blocks }))
+  }
+
+  // A16 - the CLI flag the desktop button actually runs writes a JSON local entry.
+  {
+    const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: appData }
+    const run = spawnSync(process.execPath, ['cli/index.mjs', 'agents', 'connect', '--local', '--id', 'cursor', '--apply'], { encoding: 'utf8', env })
+    const parsed = JSON.parse(read(path.join(appData, 'Cursor', 'User', 'mcp.json')))
+    const local = parsed.mcpServers?.[LOCAL_ENTRY_NAME]?.url === LOCAL_URL
+    run.status === 0 && local
+      ? pass('A16 the CLI --local flag writes the loopback URL')
+      : fail('A16', JSON.stringify({ status: run.status, stdout: run.stdout.slice(0, 160), stderr: run.stderr.slice(0, 160), local }))
   }
 } finally {
   fs.rmSync(root, { recursive: true, force: true })

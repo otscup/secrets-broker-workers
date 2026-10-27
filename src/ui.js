@@ -2116,10 +2116,12 @@ async function loadVault2(withItems = true) {
     const list = await api('/api/v2/devices').catch(() => ({ devices: [] }))
     const devices = (list.devices || [])
     const ready = status.initialized === true
+    const initButton = $('init-v2')
+    if (initButton) initButton.classList.toggle('hidden', ready)
     badge.textContent = ready ? (status.unlocked ? '已解锁' : '已锁定') : '未初始化'
     line.textContent = ready
       ? ('条目 ' + Number(status.items || 0) + ' 条 · revision ' + Number(status.revision || 0) + ' · 已配对设备 ' + devices.length + ' 台' + (status.unlocked && status.keyExpiresAt ? ' · 钥匙有效至 ' + new Date(status.keyExpiresAt).toLocaleTimeString() : ''))
-      : '还没有初始化。输入一个至少 12 位的主密码，点「初始化」会新建一把数据钥匙。'
+      : '还没有初始化。输入一个至少 12 位的主密码，点「初始化」会新建一个空库；旧条目要初始化后用「从旧库导入」。'
     if (devicesLine) {
       const online = devices.filter((device) => !device.revokedAt && vault2DeviceState(device).label === '在线').length
       devicesLine.textContent = devices.length ? (devices.length + ' 台已配对 · ' + online + ' 台在线') : '还没有配对设备。'

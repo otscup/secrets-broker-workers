@@ -63,6 +63,12 @@ check('C4 a second pull replaces the rows instead of piling them up', () => {
   assert.equal(cacheStatus({ file }).rows, 1)
 })
 
+check('C4b an incremental pull keeps the older rows', () => {
+  savePull({ url: 'https://sb.example', revision: 4, rows: ROWS }, { file })
+  savePull({ url: 'https://sb.example', revision: 5, rows: [{ id: 'i3', kind: 'api', revision: 5, ciphertext: 'CIPH3' }], since: 4 }, { file })
+  assert.deepEqual(loadPull({ since: 0 }, { file }).rows.map((row) => row.id), ['i1', 'i2', 'i3'])
+})
+
 check('C5 a deleted row keeps no ciphertext and is carried through', () => {
   savePull({ url: 'https://sb.example', revision: 7, rows: [{ id: 'i4', revision: 7, deletedAt: '2026-10-26T12:00:00Z', ciphertext: '' }] }, { file })
   const row = loadPull({ since: 0 }, { file }).rows[0]

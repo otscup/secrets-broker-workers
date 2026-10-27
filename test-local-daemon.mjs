@@ -86,6 +86,26 @@ const { origin } = await daemon.listen({ port: 0 })
   ok ? pass('D7 the host parser handles ports and IPv6') : fail('D7', 'hostnameOf broke')
 }
 
+// D8: an incremental pull returns only changed rows; it must not replace the
+// full vault with that delta.
+{
+  let call = 0
+  const incremental = makeDaemon({
+    everyMs: 0,
+    pull: async ({ since }) => {
+      call += 1
+      if (call === 1) return { revision: 1, items: [VAULT[0]] }
+      return { revision: 2, items: [{ id: 'c3', kind: 'api', payload: { name: 'after' } }] }
+    },
+  })
+  await incremental.refresh()
+  await incremental.refresh()
+  await incremental.refresh()
+  const ok = incremental.state.vault.length === 2 && incremental.state.vault.some((item) => item.id === 'c3') && incremental.state.vault.some((item) => item.id === 'a1')
+  ok ? pass('D8 incremental refreshes merge, they do not replace the vault') : fail('D8', JSON.stringify(incremental.state))
+  await incremental.close()
+}
+
 await daemon.close()
 const failed = results.filter((r) => !r.ok)
 console.log('\n==== local daemon ' + results.filter((r) => r.ok).length + '/' + results.length + ' passed ====')

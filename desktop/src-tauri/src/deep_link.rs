@@ -11,8 +11,15 @@ pub fn handle(app: &AppHandle, urls: &[Url]) {
             let _ = window.show();
             let _ = window.set_focus();
         }
-        open_browser(&approval);
+        if browser_tab(url) {
+            open_browser(&approval);
+        }
     }
+}
+
+fn browser_tab(url: &Url) -> bool {
+    !url.query_pairs()
+        .any(|(key, value)| key == "noweb" && value == "1")
 }
 
 fn approval_url(url: &Url) -> Option<String> {
@@ -79,6 +86,16 @@ mod tests {
     fn a_link_to_another_scheme_is_ignored() {
         let link = Url::parse("https://evil.example/pair?code=AB12CD").unwrap();
         assert!(approval_url(&link).is_none());
+    }
+
+    #[test]
+    fn the_terminal_can_keep_the_app_from_opening_a_second_tab() {
+        let from_terminal = Url::parse(
+            "secrets-broker://pair?url=https%3A%2F%2Fsb.example%2F&code=AB12CD&noweb=1",
+        )
+        .unwrap();
+        assert!(!browser_tab(&from_terminal));
+        assert!(browser_tab(&Url::parse("secrets-broker://pair?code=AB12CD").unwrap()));
     }
 
     #[test]

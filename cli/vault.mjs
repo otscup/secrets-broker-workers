@@ -100,9 +100,10 @@ export async function pairRequest({ url, name = 'this computer' }) {
 }
 
 // The desktop app owns the window and the sidecar; the terminal only has to hand
-// it the short code. The HTTP approval URL still goes to stdout as a fallback.
+// it the short code. The terminal opens the approval page itself, so the app is
+// told not to open a second browser tab.
 export function pairDeepLink({ base, code }) {
-  return 'secrets-broker://pair?url=' + encodeURIComponent(base) + '&code=' + encodeURIComponent(code)
+  return 'secrets-broker://pair?url=' + encodeURIComponent(base) + '&code=' + encodeURIComponent(code) + '&noweb=1'
 }
 
 export async function pairPoll({ base, pollToken }) {
@@ -169,7 +170,7 @@ export async function pull({ since = 0, offline = false } = {}) {
       }
       body = JSON.parse(text)
       // Keep a copy of the ciphertext, so a restart with no network still answers.
-      try { savePull({ url: record.url, revision: body.revision, rows: body.items ?? [] }) } catch {}
+      try { savePull({ url: record.url, revision: body.revision, rows: body.items ?? [], since }) } catch {}
     } catch (error) {
       // A revoked device must hear about it, not quietly read an old copy.
       // 403 is usually an edge/WAF refusal, so only 401 erases the pairing.

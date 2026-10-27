@@ -18,6 +18,15 @@ export function hostnameOf(hostHeader) {
   return text.split(':')[0]
 }
 
+function mergeVault(base, rows) {
+  const items = new Map((base ?? []).map((item) => [item.id, item]))
+  for (const row of rows ?? []) {
+    if (row.deleted) items.delete(row.id)
+    else items.set(row.id, row)
+  }
+  return [...items.values()]
+}
+
 export function makeDaemon({ pull, everyMs = 15 * 60 * 1000, now = () => Date.now(), log = () => {} } = {}) {
   if (typeof pull !== 'function') throw new Error('makeDaemon needs a pull function')
   let state = { vault: [], revision: 0, pulledAt: 0, stale: false, error: '' }
@@ -26,11 +35,15 @@ export function makeDaemon({ pull, everyMs = 15 * 60 * 1000, now = () => Date.no
 
   async function refresh() {
     try {
-      const pulled = await pull({ since: state.revision })
+      const since = state.revision
+      const pulled = await pull({ since })
       // A pull that came out of the local copy is not fresh, even though it did
       // not throw: say so, or /healthz would claim the vault is current.
       const stale = Boolean(pulled?.stale)
-      state = { vault: pulled?.items ?? [], revision: pulled?.revision ?? state.revision, pulledAt: now(), stale, error: stale ? 'local copy from ' + (pulled.stale.savedAt ?? 'unknown') + ': ' + (pulled.stale.reason ?? '') : '' }
+      // A pull after revision 0 returns only changed rows; replacing the vault
+      // with that delta would empty the daemon on its second refresh.
+      const vault = mergeVault(since > 0 ? state.vault : [], pulled?.items)
+      state = { vault, revision: pulled?.revision ?? state.revision, pulledAt: now(), stale, error: stale ? 'local copy from ' + (pulled.stale.savedAt ?? 'unknown') + ': ' + (pulled.stale.reason ?? '') : '' }
     } catch (error) {
       // Keep answering with what we already decrypted; say that it may be old.
       state = { ...state, stale: true, error: String(error?.message ?? error) }

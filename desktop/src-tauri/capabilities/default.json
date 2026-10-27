@@ -3,5 +3,13 @@
   "identifier": "default",
   "description": "Default capability for the desktop window",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "remote": {
+    "urls": ["https://sb.otscup.com/**"]
+  },
+  "permissions": [
+    "core:default",
+    "allow-connect-server",
+    "allow-get-server",
+    "allow-connect-local-agents"
+  ]
 }

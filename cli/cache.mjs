@@ -33,12 +33,14 @@ export function openCache({ file = cacheFile() } = {}) {
 
 // Replace the cached rows with what the server just sent. Anything it no longer
 // returns is gone from here too, or the cache would resurrect deleted items.
-export function savePull({ url = '', revision = 0, rows = [] } = {}, { file = cacheFile() } = {}) {
+export function savePull({ url = '', revision = 0, rows = [], since = 0 } = {}, { file = cacheFile() } = {}) {
   const db = openCache({ file })
   try {
     db.exec('BEGIN')
-    db.exec('DELETE FROM items')
-    const insert = db.prepare('INSERT INTO items (id, kind, revision, updated_at, deleted_at, ciphertext) VALUES (?, ?, ?, ?, ?, ?)')
+    // A pull with a cursor is a delta; deleting the full copy here would make
+    // the offline cache contain only the newest rows.
+    if (!Number(since)) db.exec('DELETE FROM items')
+    const insert = db.prepare('INSERT INTO items (id, kind, revision, updated_at, deleted_at, ciphertext) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, revision = excluded.revision, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, ciphertext = excluded.ciphertext')
     for (const row of rows) {
       insert.run(String(row.id), row.kind === 'web' ? 'web' : 'api', Number(row.revision ?? 0), row.updatedAt ?? null, row.deletedAt ?? null, String(row.ciphertext ?? ''))
     }

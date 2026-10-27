@@ -21,7 +21,8 @@ try {
   const ok = link.protocol === 'secrets-broker:' &&
     link.host === 'pair' &&
     link.searchParams.get('url') === 'https://sb.example/' &&
-    link.searchParams.get('code') === 'ab 12'
+    link.searchParams.get('code') === 'ab 12' &&
+    link.searchParams.get('noweb') === '1'
   ok ? pass('P1 the deep link keeps the broker URL and code') : fail('P1', link.toString())
 
   writeFileSync(deviceFile(), '{}')

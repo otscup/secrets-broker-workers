@@ -36,7 +36,7 @@ import { scan, defaultTargets, formatFindings, mask, suggestName } from './scan.
 import { cacheStatus, clearCache } from './cache.mjs'
 import { installHook, findCommittedSecrets, valuesFrom, formatGuard } from './guard.mjs'
 import { makeDaemon } from './daemon.mjs'
-import { detect, adapters, plan, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
+import { detect, adapters, plan, planLocal, applyPlan, entryFor, tomlBlock, ENTRY_NAME } from './agents.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
 
@@ -93,8 +93,9 @@ secrets-broker guard [--install] [--repo DIR]   block a commit that carries a va
   secrets-broker put <name> [--stdin]
                                  store one in the vault (still needs approval)
   secrets-broker agents detect   list the MCP clients on this machine
-  secrets-broker agents connect [--id codex] [--apply]
-                                 add this broker to their config (dry run by default)
+  secrets-broker agents connect [--id codex] [--local] [--apply]
+                                 add this broker, or the local sidecar, to their config
+                                 (dry run by default)
 
 Environment
   BROKER_URL          broker base URL (default ${DEFAULT_URL})
@@ -343,6 +344,7 @@ async function main() {
     }
     const only = flag('--id')
     const write = argv.includes('--apply')
+    const local = argv.includes('--local')
     if (sub === 'detect') {
       const found = detect().filter((row) => !only || row.id === only)
       if (!found.length) {
@@ -368,7 +370,7 @@ async function main() {
       }
       let changed = 0
       for (const adapter of targets) {
-        const planned = plan(adapter, url)
+        const planned = local ? planLocal(adapter) : plan(adapter, url)
         if (planned.action === 'skip') {
           if (planned.configured) process.stdout.write(planned.name + ' already points at a broker\n')
           continue
@@ -389,7 +391,7 @@ async function main() {
       else process.stdout.write(changed ? '\n' + changed + ' client(s) updated; restart them to pick up the server.\n' : '\nnothing to change.\n')
       return 0
     }
-    process.stderr.write('usage: secrets-broker agents <detect|connect> [--id codex] [--apply]\n')
+    process.stderr.write('usage: secrets-broker agents <detect|connect> [--id codex] [--local] [--apply]\n')
     return 2
   }
 
@@ -425,11 +427,12 @@ async function main() {
       }
       const request = await pairRequest({ url, name })
       process.stdout.write(`open this page and approve the device:\n  ${request.url}\n\ncode: ${request.code}\nkey fingerprint: ${request.fingerprint}\n\nthe fingerprint above must match the one on that page. waiting for approval…\n`)
-      // The app shows its window and opens the same approval page; without the
-      // app the printed URL is still enough.
+      // Open the approval page in the normal browser, then bring the desktop app
+      // forward. The app is told not to open a second tab.
+      openBrowser(request.url)
       openBrowser(pairDeepLink(request))
       const paired = await pairWait({ base: request.base, pollToken: request.pollToken, keypair: request.keypair, name })
-      process.stdout.write(`paired ${paired.name} (${paired.id})\nvault key: ${paired.fingerprint}\nstored in ${paired.file}\n`)
+      process.stdout.write(`paired ${paired.name} (${paired.id})\nvault key fingerprint: ${paired.fingerprint} (not the master password; already stored on this machine)\nstored in ${paired.file}\n`)
       return 0
     } catch (error) {
       process.stderr.write(String(error.message ?? error) + '\n')

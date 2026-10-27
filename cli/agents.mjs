@@ -20,6 +20,8 @@ import { fileURLToPath } from 'node:url'
 export const MARKER_START = '# >>> secrets-broker'
 export const MARKER_END = '# <<< secrets-broker'
 export const ENTRY_NAME = 'secrets-broker'
+export const LOCAL_ENTRY_NAME = 'secrets-broker-local'
+export const LOCAL_URL = 'http://127.0.0.1:4319/mcp'
 // What the written entry actually runs. The package is still `private`, so
 // `npx -y <name>` answers 404 and an agent pointed at it would fail to start --
 // which is exactly what the first user of `agents connect --apply` hit. Point
@@ -225,6 +227,11 @@ export function entryFor(brokerUrl) {
   }
 }
 
+/** The desktop sidecar speaks HTTP MCP on loopback; no token to hand out. */
+export function localEntryFor() {
+  return { url: LOCAL_URL }
+}
+
 export function tomlBlock(brokerUrl) {
   return [
     MARKER_START,
@@ -239,6 +246,16 @@ export function tomlBlock(brokerUrl) {
   ].join('\n')
 }
 
+export function tomlLocalBlock() {
+  return [
+    '# >>> secrets-broker-local',
+    '[mcp_servers.' + LOCAL_ENTRY_NAME + ']',
+    'url = "' + LOCAL_URL + '"',
+    '# <<< secrets-broker-local',
+    '',
+  ].join('\n')
+}
+
 /**
  * Add the entry to a JSON document by text, not by re-serialising.
  *
@@ -246,7 +263,7 @@ export function tomlBlock(brokerUrl) {
  * "the agent still starts" and a support ticket. So: find the servers object,
  * and splice one member in right after its opening brace.
  */
-function jsonWithEntry(text, key, entry) {
+function jsonWithEntry(text, key, name, entry) {
   const needle = new RegExp('"' + key + '"\\s*:\\s*\\{')
   const match = needle.exec(text)
   if (!match) {
@@ -257,7 +274,7 @@ function jsonWithEntry(text, key, entry) {
     const body = JSON.stringify(entry, null, 2).split('\n').join('\n    ')
     const rest = text.slice(root + 1).replace(/^\s+/, '')
     const separator = rest.startsWith('}') ? '' : ',\n'
-    return text.slice(0, root + 1) + '\n  "' + key + '": {\n    "' + ENTRY_NAME + '": ' + body + '\n  }' + separator + (rest.startsWith('}') ? '\n' : '') + rest
+    return text.slice(0, root + 1) + '\n  "' + key + '": {\n    "' + name + '": ' + body + '\n  }' + separator + (rest.startsWith('}') ? '\n' : '') + rest
   }
   const open = match.index + match[0].length - 1
   const after = text.slice(open + 1)
@@ -268,7 +285,7 @@ function jsonWithEntry(text, key, entry) {
   // and Claude Desktop parses this file strictly, so it would stop starting.
   const empty = after.replace(/^\s+/, '').startsWith('}')
   const separator = (empty ? '' : ',') + (empty ? '\n' + indent.slice(0, Math.max(0, indent.length - 2)) : '')
-  return text.slice(0, open + 1) + '\n' + indent + '"' + ENTRY_NAME + '": ' + body + separator + after
+  return text.slice(0, open + 1) + '\n' + indent + '"' + name + '": ' + body + separator + after
 }
 
 /** Build the change without touching disk. Returns null when nothing to do. */
@@ -285,13 +302,48 @@ export function plan(adapter, brokerUrl) {
       const content = JSON.stringify({ [adapter.key]: { [ENTRY_NAME]: entry } }, null, 2) + '\n'
       return { ...report, action: 'create', content }
     }
-    const updated = jsonWithEntry(original, adapter.key, entry)
+    const updated = jsonWithEntry(original, adapter.key, ENTRY_NAME, entry)
     if (!updated) return { ...report, action: 'skip', reason: 'no "' + adapter.key + '" block to add to', content: '' }
     return { ...report, action: 'update', content: updated }
   }
   const block = tomlBlock(brokerUrl)
   const content = original ? original.replace(/\s*$/, '\n\n') + block : block
   return { ...report, action: original ? 'update' : 'create', content }
+}
+
+/**
+ * Add a second, explicitly local entry without disturbing an existing remote
+ * one. Clients that already know a broker get both; switching is the user's job.
+ */
+export function planLocal(adapter) {
+  const report = inspect(adapter)
+  if (!report.present) return { ...report, action: 'skip', reason: 'file not found', content: '' }
+  if (report.error) return { ...report, action: 'skip', reason: report.error, content: '' }
+  const text = fs.readFileSync(adapter.file, 'utf8')
+  if (isJson(adapter.kind)) {
+    let parsed
+    try {
+      parsed = parseLoose(text.trim() ? text : '{}')
+    } catch (error) {
+      return { ...report, action: 'skip', reason: 'parse: ' + error.message, content: '' }
+    }
+    if (parsed?.[adapter.key]?.[LOCAL_ENTRY_NAME]) {
+      return { ...report, configured: true, action: 'skip', reason: 'already configured', content: '' }
+    }
+    const entry = localEntryFor()
+    if (!text.trim()) {
+      return { ...report, action: 'create', content: JSON.stringify({ [adapter.key]: { [LOCAL_ENTRY_NAME]: entry } }, null, 2) + '\n' }
+    }
+    const updated = jsonWithEntry(text, adapter.key, LOCAL_ENTRY_NAME, entry)
+    if (!updated) return { ...report, action: 'skip', reason: 'no "' + adapter.key + '" block to add to', content: '' }
+    return { ...report, action: 'update', content: updated }
+  }
+  if (new RegExp('^\\s*\\[' + adapter.table.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.' + LOCAL_ENTRY_NAME + '\\]', 'm').test(text)) {
+    return { ...report, configured: true, action: 'skip', reason: 'already configured', content: '' }
+  }
+  const block = tomlLocalBlock()
+  const content = text.trim() ? text.replace(/\s*$/, '\n\n') + block : block
+  return { ...report, action: text.trim() ? 'update' : 'create', content }
 }
 
 export function applyPlan(planResult) {

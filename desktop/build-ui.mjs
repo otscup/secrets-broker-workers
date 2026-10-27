@@ -10,6 +10,8 @@ const out = join(here, 'ui')
 await mkdir(out, { recursive: true })
 await writeFile(join(out, 'index.html'), uiHtml)
 
+await cp(join(here, 'setup.html'), join(out, 'setup.html'))
+
 for (const [from, to] of [
   ['assets/logo.png', 'logo.png'],
   ['assets/favicon.ico', 'favicon.ico'],

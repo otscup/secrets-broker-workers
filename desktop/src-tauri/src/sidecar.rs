@@ -102,7 +102,7 @@ fn is_paired() -> bool {
     device_file().map(|file| file.is_file()).unwrap_or(false)
 }
 
-fn sidecar_dir(app: &AppHandle) -> Option<PathBuf> {
+pub(crate) fn sidecar_dir(app: &AppHandle) -> Option<PathBuf> {
     // Prefer the copies shipped with the app; a machine that also has the
     // checkout must not silently run the developer tree.
     let mut candidates = Vec::new();
@@ -111,7 +111,22 @@ fn sidecar_dir(app: &AppHandle) -> Option<PathBuf> {
         candidates.push(resource.join("sidecar"));
     }
     candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/sidecar"));
-    candidates.into_iter().find(|dir| dir.join("node.exe").is_file())
+    candidates
+        .into_iter()
+        .find(|dir| dir.join("node.exe").is_file())
+        .map(strip_extended)
+}
+
+// resource_dir() returns \\?\C:\..., which Node treats as an invalid script path.
+fn strip_extended(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        PathBuf::from(rest)
+    } else {
+        path
+    }
 }
 
 fn spawn(app: &AppHandle) -> Result<Child, String> {
@@ -189,5 +204,11 @@ mod tests {
             path,
             Some(PathBuf::from("C:/users/me").join(".secrets-broker").join("device.json"))
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn node_gets_a_plain_windows_path() {
+        assert_eq!(strip_extended(r"\\?\C:\sidecar".into()), PathBuf::from(r"C:\sidecar"));
     }
 }

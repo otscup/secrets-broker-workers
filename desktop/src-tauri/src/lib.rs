@@ -1,4 +1,6 @@
 mod deep_link;
+mod local_agents;
+mod server;
 mod sidecar;
 
 use sidecar::SidecarState;
@@ -41,6 +43,11 @@ fn force_show(window: &tauri::WebviewWindow) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
+        .invoke_handler(tauri::generate_handler![
+            server::connect_server,
+            server::get_server,
+            local_agents::connect_local_agents
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             app.deep_link()
@@ -57,19 +64,36 @@ pub fn run() {
             let cfg = app.config().app.windows[0].clone();
             tauri::WebviewWindowBuilder::from_config(app, &cfg)?
                 .data_directory(data)
+                .on_page_load(|window, payload| {
+                    if payload.event() == tauri::webview::PageLoadEvent::Finished {
+                        let _ = window.eval(include_str!("unlock.js"));
+                    }
+                })
                 .build()?;
+            let setup_url = server::setup_url()?;
+            app.manage(server::NavState {
+                setup_url: setup_url.clone(),
+            });
 
             let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
             let status = MenuItem::with_id(app, "status", "状态：未连接", false, None::<&str>)?;
+            let settings = MenuItem::with_id(app, "server", "服务器设置", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出并停止本地服务", true, None::<&str>)?;
             let separator = PredefinedMenuItem::separator(app)?;
-            let menu = Menu::with_items(app, &[&show, &status, &separator, &quit])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show, &status, &settings, &separator, &quit],
+            )?;
 
             let mut tray = TrayIconBuilder::with_id("main")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main(app),
+                    "server" => {
+                        show_main(app);
+                        server::show_setup(app);
+                    }
                     "quit" => {
                         if let Some(state) = app.try_state::<SidecarState>() {
                             state.stop();
@@ -94,6 +118,7 @@ pub fn run() {
             tray.build(app)?;
 
             app.manage(SidecarState::start(app.handle().clone(), status));
+            server::restore(app.handle(), setup_url);
             Ok(())
         })
         .on_window_event(|window, event| {
