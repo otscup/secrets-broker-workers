@@ -720,7 +720,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
     
   </section>
 
-  <section id="view-devices" class="view hidden"><div class="card"><div class="row" style="justify-content:space-between;align-items:center"><div><h2 style="margin:0">电脑</h2><div class="hint" style="margin-top:4px">每台跑过 secrets-broker pair 的机器都在这里。在线状态按最近 5 分钟内的拉取判断；撤销只停止后续拉取，已经拿到的钥匙要重加密才会失效。</div></div><button id="devices-refresh">刷新</button></div><div id="devices-status" class="hint" style="margin-top:10px"></div><div id="v2-devices" class="hidden" style="margin-top:10px"></div><div id="devices-msg" class="status"></div></div><div class="card"><h2>配对新电脑</h2><div class="hint">在另一台机器上运行下面这条命令；它会把批准链接、配对码和公钥指纹打印在终端里，然后等待批准。</div><div class="secret" id="pair-command" style="margin-top:8px">secrets-broker pair --url …</div><div class="hint" style="margin-top:8px">打开终端给出的链接，核对公钥指纹一致后点批准。配对码五分钟后失效；批准后设备会出现在上面的列表里，可在这里切换只读/可写或撤销。</div></div></section>
+  <section id="view-devices" class="view hidden"><div class="card"><div class="row" style="justify-content:space-between;align-items:center"><div><h2 style="margin:0">电脑</h2><div class="hint" style="margin-top:4px">每台跑过 secrets-broker pair 的机器都在这里。在线状态按最近 5 分钟内的拉取判断；撤销只停止后续拉取，已经拿到的钥匙要重加密才会失效。</div></div><button id="devices-refresh">刷新</button></div><div id="devices-status" class="hint" style="margin-top:10px"></div><div id="v2-devices" class="hidden" style="margin-top:10px"></div><div id="devices-msg" class="status"></div></div><div class="card"><h2>配对新电脑</h2><div class="hint">在另一台机器的终端（PowerShell / CMD，不是浏览器控制台）运行下面这条命令；它会把批准链接、配对码和公钥指纹打印在终端里，然后等待批准。没有全局 secrets-broker 命令时，在仓库根目录把它换成 node cli/index.mjs。</div><div class="secret" id="pair-command" style="margin-top:8px">secrets-broker pair --url …</div><div class="hint" style="margin-top:8px">打开终端给出的链接，核对公钥指纹一致后点批准。配对码五分钟后失效；批准后设备会出现在上面的列表里，可在这里切换只读/可写或撤销。</div></div></section>
   <section id="view-agents" class="view hidden">
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:center">
@@ -1015,7 +1015,7 @@ $('unlock').onclick = async () => {
   const password = $('master-password').value; if (!password) return
   status('unlock-status', '正在浏览器本地派生密钥…（约 0.3–1 秒）')
   try {
-    const info = await api('/api/bootstrap'); if (info.kdfType !== 0) throw new Error('暂不支持 Argon2 KDF')
+    const info = await api('/api/bootstrap'); if (info.kdfType !== 0) throw new Error('这个账户使用 Argon2 KDF（常见于从 NodeWarden/Bitwarden 导入），当前控制台只支持 PBKDF2。请先在 NodeWarden 里把 KDF 改为 PBKDF2 并重新加密，或新建一个 PBKDF2 账户。')
     const masterKey = await pbkdf2(password, String(info.email).toLowerCase(), info.kdfIterations)
     const encKey = await hkdf(masterKey, 'enc', 32), macKey = await hkdf(masterKey, 'mac', 32)
     const userKey = await decryptBw(info.profileKey, encKey, macKey)
