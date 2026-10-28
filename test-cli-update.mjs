@@ -35,6 +35,10 @@ const none = await checkForUpdate({ current: '0.2.15', fetchImpl: release(404, {
 assert.equal(none.noReleases, true)
 assert.equal(none.update, false)
 
+const limited = await checkForUpdate({ current: '0.2.15', fetchImpl: release(403, {}) })
+assert.equal(limited.rateLimited, true)
+assert.equal(limited.update, false)
+
 await assert.rejects(() => checkForUpdate({ current: '0.2.15', fetchImpl: release(500, {}) }), /500/)
 await assert.rejects(() => checkForUpdate({ current: '0.2.15', fetchImpl: async () => { throw new Error('offline') } }), /offline/)
 

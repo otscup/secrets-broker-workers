@@ -5,6 +5,7 @@ fn main() {
                 "connect_server",
                 "get_server",
                 "connect_local_agents",
+                "check_update",
             ]),
         ),
     )

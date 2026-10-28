@@ -39,6 +39,9 @@ export async function checkForUpdate({
   if (response.status === 404) {
     return { current: String(current), latest: '', update: false, url: '', download: '', noReleases: true }
   }
+  if (response.status === 403 || response.status === 429) {
+    return { current: String(current), latest: '', update: false, url: '', download: '', rateLimited: true }
+  }
   if (!response.ok) throw new Error(`GitHub releases returned ${response.status}`)
   const release = await response.json()
   const latest = String(release.tag_name || release.name || '').replace(/^v/i, '')

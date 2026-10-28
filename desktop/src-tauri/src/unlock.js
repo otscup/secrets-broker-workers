@@ -145,7 +145,67 @@
     (document.body || document.documentElement).appendChild(button);
   };
 
+  const installUpdateButton = () => {
+    const invoke = window.__TAURI__?.core?.invoke;
+    if (!invoke || document.getElementById('sb-check-update')) return;
+    const button = document.createElement('button');
+    button.id = 'sb-check-update';
+    button.type = 'button';
+    button.textContent = '检查更新';
+    button.style.cssText = 'position:fixed;right:18px;bottom:64px;z-index:2147483646;padding:9px 13px;border:1px solid #cfd8e3;border-radius:999px;background:#fff;color:#344054;font:600 12px/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.16);cursor:pointer';
+    button.onclick = async () => {
+      button.disabled = true;
+      button.textContent = '检查中…';
+      try {
+        const result = await invoke('check_update');
+        const toast = document.createElement('div');
+        toast.setAttribute('role', 'status');
+        toast.style.cssText = 'position:fixed;right:18px;bottom:108px;z-index:2147483647;max-width:360px;padding:12px 14px;border-radius:10px;background:#101828;color:#fff;font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;box-shadow:0 12px 32px rgba(0,0,0,.28);white-space:pre-wrap;user-select:text';
+        if (result.noReleases) {
+          toast.textContent = `当前 ${result.current}；还没有已发布的桌面版本。`;
+        } else if (result.rateLimited) {
+          toast.textContent = `当前 ${result.current}；GitHub 限流，请稍后再试。`;
+        } else if (!result.update) {
+          toast.textContent = `当前 ${result.current}，已是最新版本。`;
+        } else {
+          const link = result.download || result.url;
+          toast.textContent = `发现新版本 ${result.latest}（当前 ${result.current}）。\n${link}`;
+          if (link) {
+            const copy = document.createElement('button');
+            copy.type = 'button';
+            copy.textContent = '复制下载链接';
+            copy.style.cssText = 'margin-top:8px;padding:5px 9px;border:1px solid #475467;border-radius:6px;background:transparent;color:#fff;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;cursor:pointer';
+            copy.onclick = async () => {
+              try {
+                await navigator.clipboard.writeText(link);
+                copy.textContent = '已复制';
+              } catch {
+                copy.textContent = '复制失败';
+              }
+            };
+            toast.appendChild(document.createElement('br'));
+            toast.appendChild(copy);
+          }
+        }
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 15000);
+      } catch (error) {
+        const toast = document.createElement('div');
+        toast.setAttribute('role', 'alert');
+        toast.textContent = String(error);
+        toast.style.cssText = 'position:fixed;right:18px;bottom:108px;z-index:2147483647;max-width:360px;padding:12px 14px;border-radius:10px;background:#b42318;color:#fff;font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;box-shadow:0 12px 32px rgba(0,0,0,.28);white-space:pre-wrap';
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 9000);
+      } finally {
+        button.disabled = false;
+        button.textContent = '检查更新';
+      }
+    };
+    (document.body || document.documentElement).appendChild(button);
+  };
+
   setTimeout(check, 600);
   setInterval(check, 30000);
   setTimeout(installAgentButton, 900);
+  setTimeout(installUpdateButton, 1200);
 })();

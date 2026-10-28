@@ -48,7 +48,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             server::connect_server,
             server::get_server,
-            local_agents::connect_local_agents
+            local_agents::connect_local_agents,
+            local_agents::check_update
         ])
         .setup(|app| {
             let handle = app.handle().clone();

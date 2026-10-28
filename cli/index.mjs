@@ -228,6 +228,8 @@ async function main() {
         process.stdout.write(JSON.stringify(result) + '\n')
       } else if (result.noReleases) {
         process.stdout.write(`current: ${result.current}\nno published releases\n`)
+      } else if (result.rateLimited) {
+        process.stdout.write(`current: ${result.current}\nGitHub rate limit; try again later\n`)
       } else {
         process.stdout.write([
           `current: ${result.current}`,
