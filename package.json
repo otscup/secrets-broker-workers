@@ -35,6 +35,7 @@
     "test:daemon": "node test-local-daemon.mjs",
     "test:local-auth": "node test-local-auth.mjs",
     "test:local-policy": "node test-local-policy.mjs",
+    "test:local": "node test-local-tools.mjs && node test-local-auth.mjs && node test-local-policy.mjs && node test-local-daemon.mjs",
     "test:agents": "node test-agents.mjs",
     "test:envelope": "node test-envelope.mjs",
     "test:v2-schema": "node test-v2-schema.mjs",
