@@ -1,4 +1,4 @@
-﻿name: desktop-release
+name: desktop-release
 
 on:
   workflow_dispatch:
@@ -29,6 +29,9 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run test:release
       - run: npm run test:desktop-pair
+      - run: npm run test:redact
+      - run: npm run test:desktop-setup
+      - run: npm run test:webpush
       - run: npm run desktop:build
       - run: npm run release:check
 

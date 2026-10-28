@@ -1,9 +1,16 @@
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { chromium } from 'playwright'
 
-const executablePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+const executablePath = [
+  process.env.CHROME_PATH,
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+].find((file) => file && existsSync(file))
+if (!executablePath) throw new Error('no Chrome/Edge executable found')
 const browser = await chromium.launch({ headless: true, executablePath })
 try {
   const page = await browser.newPage()
