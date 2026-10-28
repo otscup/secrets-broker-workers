@@ -3299,8 +3299,8 @@ function createItemMenu() {
       show('modal', false); await Promise.all([loadItems(), loadState()]); toast(kind ? '已创建并分类为 ' + kind : '已创建（未分类，Agent 暂时读不到）')
     } catch (error) {
       if (error.status === 423) {
-        show('dashboard', false); show('unlock-card', true)
-        toast('保险库已锁定，请先解锁；已填写内容还在，解锁后请重新点创建')
+        toast('保险库已锁定，请先刷新页面解锁后再创建')
+        status('new-item-status', '保险库已锁定，请先刷新页面解锁后再创建', 'error')
         return
       }
       status('new-item-status', error.message, 'error')
