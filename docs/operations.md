@@ -8,7 +8,7 @@
 secrets-broker status
 ```
 
-输出包含 broker URL、token 存储、本地缓存、最后备份、本地 sidecar（4319）等关键状态；本地 sidecar 没启动时显示 `local service: not running`，不会报错退出。
+输出包含 broker URL、token 存储、本地缓存、最后备份、本地 sidecar（4319）等关键状态；本地 sidecar 没启动时显示 `local service: not running`，不会报错退出。`broker login` 是 CLI 自己的登录态，与桌面端 token 独立；桌面已登录时 CLI 仍可能是 `not logged in`。
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:4319/healthz

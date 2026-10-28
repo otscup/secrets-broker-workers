@@ -58,7 +58,7 @@ check('C2 status reports the store and stays logged out', () => {
   const file = path.join(tmp, 'status.json')
   const r = runCli(['status'], { BROKER_URL: 'https://broker.invalid', BROKER_TOKEN_FILE: file, BROKER_TOKEN_STORE: 'file' })
   assert.match(r.stdout, /broker: https:\/\/broker\.invalid/)
-  assert.match(r.stdout, /status: not logged in/)
+  assert.match(r.stdout, /broker login: not logged in/)
   assert.equal(r.status, 1, 'exit status is 1 when not logged in')
 })
 

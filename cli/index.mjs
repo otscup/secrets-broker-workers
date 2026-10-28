@@ -159,14 +159,14 @@ async function status() {
     store.store === 'file' ? `token file: ${store.file}` : null,
     process.env.BROKER_TOKEN ? 'token source: BROKER_TOKEN (static)' : null,
     record?.expiresAt ? `expires: ${new Date(record.expiresAt).toISOString()}${token ? '' : ' (expired)'}` : 'expires: unknown',
-    token ? 'status: logged in' : 'status: not logged in',
+    token ? 'broker login: logged in' : 'broker login: not logged in',
     cached.rows
       ? `local copy: ${cached.rows} items at revision ${cached.revision}, saved ${age(cached.savedAt)}`
       : 'local copy: none (run `secrets-broker pull` while online)',
     last
       ? last.ok === false
         ? `last backup: FAILED at ${last.at}: ${last.error}`
-        : `last backup: ${last.at} (${last.target})`
+        : `last backup: ${last.at} (${age(last.at)}, ${last.target})`
       : 'last backup: none',
     local ? `local service: ${local.items} items at revision ${local.revision}` : 'local service: not running',
   ].filter(Boolean)
