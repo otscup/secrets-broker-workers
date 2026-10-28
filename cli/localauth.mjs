@@ -129,13 +129,26 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch])
 }
 
+const AUDIT_MAX = 5 * 1024 * 1024
+function audit(event) {
+  try {
+    const file = path.join(dir(), 'audit.jsonl')
+    fs.mkdirSync(dir(), { recursive: true, mode: 0o700 })
+    if (fs.existsSync(file) && fs.statSync(file).size > AUDIT_MAX) fs.renameSync(file, file + '.1')
+    fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...event }) + '\n', { mode: 0o600 })
+  } catch {
+    // Audit is best-effort: never block a read because the log is unavailable.
+  }
+}
+
 /**
  * The approval queue lives in the daemon process. A read waits here while the
  * person decides; the agent sees one normal tool result if allowed, or a JSON-RPC
  * error if denied or timed out.
  */
-export function makeGate({ origin = `http://127.0.0.1:${PORT}`, open = openBrowser, timeoutMs = 120000, now = () => Date.now() } = {}) {
+export function makeGate({ origin = `http://127.0.0.1:${PORT}`, open = openBrowser, timeoutMs = 120000, limit = 30, now = () => Date.now() } = {}) {
   const pending = new Map()
+  const hits = new Map()
   let base = origin
 
   function page(id) {
@@ -178,6 +191,7 @@ for (const button of document.querySelectorAll('button')) {
     if (!['once', 'allow', 'window', 'deny'].includes(decision)) return { ok: false, error: 'unknown decision' }
     if (row.timer) clearTimeout(row.timer)
     pending.delete(id)
+    audit({ agent: row.agent, tool: row.tool, item: row.item, result: decision === 'deny' ? 'denied' : 'allowed', decision })
     if (decision === 'once') {
       row.resolve({ ok: true })
     } else if (decision === 'deny') {
@@ -200,20 +214,44 @@ for (const button of document.querySelectorAll('button')) {
     return { ok: true }
   }
 
+  function rateLimited(agent) {
+    const cutoff = now() - 60_000
+    const recent = (hits.get(agent) ?? []).filter((at) => at > cutoff)
+    if (recent.length >= limit) {
+      hits.set(agent, recent)
+      return true
+    }
+    recent.push(now())
+    hits.set(agent, recent)
+    return false
+  }
+
   async function check(agent, message) {
     const tool = String(message?.params?.name ?? '')
     const item = String(message?.params?.arguments?.name ?? '')
-    if (tool === 'put_secret') return { ok: false, reason: 'a paired device reads; writes go through the remote broker' }
+    if (tool === 'put_secret') {
+      audit({ agent, tool, item, result: 'refused_write' })
+      return { ok: false, reason: 'a paired device reads; writes go through the remote broker' }
+    }
     if (tool !== 'get_secret' && tool !== 'get_credential') return { ok: true }
     const row = readAll()[agent]
-    if (granted(row, item, now())) return { ok: true }
+    if (granted(row, item, now())) {
+      audit({ agent, tool, item, result: 'allowed_by_policy' })
+      return { ok: true }
+    }
+    if (rateLimited(agent)) {
+      audit({ agent, tool, item, result: 'rate_limited' })
+      return { ok: false, reason: 'too many approval requests; wait a minute' }
+    }
 
     const id = crypto.randomUUID()
     const url = `${base}/approve/${encodeURIComponent(id)}`
     let timer = null
+    audit({ agent, tool, item, result: 'pending' })
     const answer = await new Promise((resolve) => {
       timer = setTimeout(() => {
         pending.delete(id)
+        audit({ agent, tool, item, result: 'timeout' })
         resolve({ ok: false, reason: 'approval timed out', approvalUrl: url })
       }, timeoutMs)
       pending.set(id, { id, agent, tool, item, url, createdAt: now(), resolve, timer })

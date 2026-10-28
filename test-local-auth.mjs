@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { makeDaemon } from './cli/daemon.mjs'
-import { localUrl, readAgent, rotateAgent } from './cli/localauth.mjs'
+import { localUrl, readAgent, rotateAgent, makeGate } from './cli/localauth.mjs'
 
 process.env.BROKER_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-local-auth-'))
 process.env.BROKER_NO_BROWSER = '1'
@@ -127,6 +127,27 @@ const mcp = localUrl('pi').replace(':4319', ':' + port)
   denied.status === 401 && allowed.status === 200 && readAgent('pi').policy.mode === 'allow'
     ? pass('L8 rotating one token invalidates the old URL and keeps its policy')
     : fail('L8', JSON.stringify({ denied: denied.status, allowed: allowed.status, policy: readAgent('pi').policy }))
+}
+
+// L9: decisions are recorded without the value itself.
+{
+  const text = fs.readFileSync(path.join(process.env.BROKER_HOME, 'audit.jsonl'), 'utf8')
+  !text.includes('sk-live-1') && text.includes('"agent":"pi"') && text.includes('"result":"allowed"')
+    ? pass('L9 approvals are audited without the secret value')
+    : fail('L9', text.slice(-500))
+}
+
+// L10: a burst of approval requests is rate-limited, not queued forever.
+{
+  const gate = makeGate({ open: () => {}, timeoutMs: 1000, limit: 1 })
+  const first = gate.check('burst', { params: { name: 'get_secret', arguments: { name: 'x' } } })
+  const waiting = gate.pending()[0]
+  const blocked = await gate.check('burst', { params: { name: 'get_secret', arguments: { name: 'x' } } })
+  if (waiting) gate.decide(waiting.id, 'deny')
+  const result = await first
+  blocked.ok === false && /too many/.test(blocked.reason) && result.ok === false
+    ? pass('L10 a burst of approval requests is rate-limited')
+    : fail('L10', JSON.stringify({ blocked, result, waiting: Boolean(waiting) }))
 }
 
 await daemon.close()
