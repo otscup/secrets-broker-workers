@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { makeDaemon } from './cli/daemon.mjs'
-import { localUrl, readAgent } from './cli/localauth.mjs'
+import { localUrl, readAgent, rotateAgent } from './cli/localauth.mjs'
 
 process.env.BROKER_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-local-auth-'))
 process.env.BROKER_NO_BROWSER = '1'
@@ -115,6 +115,18 @@ const mcp = localUrl('pi').replace(':4319', ':' + port)
   response.status === 403 && !JSON.stringify(body).includes('"y"')
     ? pass('L7 put_secret is refused locally')
     : fail('L7', JSON.stringify({ status: response.status, body }))
+}
+
+// L8: rotating one token invalidates the old URL, keeps the policy, and the new URL works.
+{
+  const old = localUrl('pi').replace(':4319', ':' + port)
+  rotateAgent('pi')
+  const fresh = localUrl('pi').replace(':4319', ':' + port)
+  const denied = await call(old, { jsonrpc: '2.0', id: 12, method: 'tools/list' })
+  const allowed = await call(fresh, { jsonrpc: '2.0', id: 13, method: 'tools/list' })
+  denied.status === 401 && allowed.status === 200 && readAgent('pi').policy.mode === 'allow'
+    ? pass('L8 rotating one token invalidates the old URL and keeps its policy')
+    : fail('L8', JSON.stringify({ denied: denied.status, allowed: allowed.status, policy: readAgent('pi').policy }))
 }
 
 await daemon.close()
