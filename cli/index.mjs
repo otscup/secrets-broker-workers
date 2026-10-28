@@ -41,6 +41,7 @@ import { readAgent, rotateAgent, readAudit } from './localauth.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
 import { backup, restore, brokerHome } from './backup.mjs'
+import { lastBackup } from './backup-scheduler.mjs'
 import { checkForUpdate } from './update.mjs'
 
 const DEFAULT_URL = 'https://sb.otscup.com'
@@ -148,6 +149,10 @@ async function status() {
   const record = loadRecord()
   const token = loadToken()
   const cached = cacheStatus()
+  const last = lastBackup()
+  const local = await fetch('http://127.0.0.1:4319/healthz', { signal: AbortSignal.timeout(300) })
+    .then((response) => response.ok ? response.json() : null)
+    .catch(() => null)
   const lines = [
     `broker: ${url}`,
     `token store: ${store.store}${store.store === 'keychain' ? ` (${store.detail})` : ''}`,
@@ -158,6 +163,12 @@ async function status() {
     cached.rows
       ? `local copy: ${cached.rows} items at revision ${cached.revision}, saved ${age(cached.savedAt)}`
       : 'local copy: none (run `secrets-broker pull` while online)',
+    last
+      ? last.ok === false
+        ? `last backup: FAILED at ${last.at}: ${last.error}`
+        : `last backup: ${last.at} (${last.target})`
+      : 'last backup: none',
+    local ? `local service: ${local.items} items at revision ${local.revision}` : 'local service: not running',
   ].filter(Boolean)
   process.stdout.write(lines.join('\n') + '\n')
   return token ? 0 : 1

@@ -8,6 +8,32 @@ import { pathToFileURL } from 'node:url'
 import { backup, brokerHome } from './backup.mjs'
 
 const SENTINEL = 'backup.json'
+const STATUS = 'last-backup.json'
+
+function statusFile(root) {
+  return path.join(root, STATUS)
+}
+
+export function lastBackup(root = process.env.BROKER_BACKUP_DIR || path.join(os.homedir(), 'secrets-broker-backups')) {
+  try {
+    return JSON.parse(fs.readFileSync(statusFile(root), 'utf8'))
+  } catch {
+    const snapshots = fs.existsSync(root)
+      ? fs.readdirSync(root, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(root, entry.name, SENTINEL)))
+        .map((entry) => entry.name)
+        .sort()
+      : []
+    if (!snapshots.length) return null
+    const target = path.join(root, snapshots.at(-1))
+    try {
+      const meta = JSON.parse(fs.readFileSync(path.join(target, SENTINEL), 'utf8'))
+      return { at: meta.createdAt, target, ok: true }
+    } catch {
+      return { at: snapshots.at(-1), target, ok: true }
+    }
+  }
+}
 
 export function prune(root, keep) {
   if (!fs.existsSync(root)) return []
@@ -32,6 +58,8 @@ export function run({
   const target = path.join(root, stamp)
   const result = backup({ home, out: target, now })
   const removed = prune(root, keep)
+  const status = { at: now().toISOString(), ok: true, target: result.target, removed }
+  fs.writeFileSync(statusFile(root), JSON.stringify(status), 'utf8')
   return { target: result.target, removed }
 }
 
@@ -40,6 +68,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     console.log(JSON.stringify(run(), null, 2))
   } catch (error) {
     console.error('[secrets-broker] backup failed: ' + error.message)
+    try {
+      const root = process.env.BROKER_BACKUP_DIR || path.join(os.homedir(), 'secrets-broker-backups')
+      fs.mkdirSync(root, { recursive: true })
+      fs.writeFileSync(statusFile(root), JSON.stringify({ at: new Date().toISOString(), ok: false, error: error.message }), 'utf8')
+    } catch {}
     process.exitCode = 1
   }
 }
