@@ -130,7 +130,7 @@ function escapeHtml(value) {
 }
 
 const AUDIT_MAX = 5 * 1024 * 1024
-function audit(event) {
+export function audit(event) {
   try {
     const file = path.join(dir(), 'audit.jsonl')
     fs.mkdirSync(dir(), { recursive: true, mode: 0o700 })
@@ -242,7 +242,7 @@ for (const button of document.querySelectorAll('button')) {
       audit({ agent, tool, item, result: 'refused_write' })
       return { ok: false, reason: 'a paired device reads; writes go through the remote broker' }
     }
-    if (tool !== 'get_secret' && tool !== 'get_credential') return { ok: true }
+    if (tool !== 'get_secret' && tool !== 'get_credential' && tool !== 'http_request') return { ok: true }
     const row = readAll()[agent]
     if (granted(row, item, now())) {
       audit({ agent, tool, item, result: 'allowed_by_policy' })

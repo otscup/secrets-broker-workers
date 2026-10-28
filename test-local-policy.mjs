@@ -12,6 +12,7 @@ process.env.BROKER_NO_BROWSER = '1'
 let clock = 1_000_000
 const gate = makeGate({ open: () => {}, timeoutMs: 1000, limit: 100, now: () => clock })
 const ask = (agent, item) => gate.check(agent, { params: { name: 'get_secret', arguments: { name: item } } })
+const askUse = (agent, item) => gate.check(agent, { params: { name: 'http_request', arguments: { name: item } } })
 const pending = () => gate.pending()[0]
 const results = []
 const check = (name, ok, detail = '') => {
@@ -83,6 +84,15 @@ try {
     gate.decide(pending().id, 'deny')
     const denied = await other
     check('P5 policies are isolated per agent', asked && !denied.ok)
+  }
+
+  // http_request is a use, not a free read: it waits for the same decision.
+  {
+    const request = askUse('http-use', 'x')
+    const asked = Boolean(pending())
+    gate.decide(pending().id, 'once')
+    const allowed = await request
+    check('P7 http_request goes through local approval', asked && allowed.ok)
   }
 
   // the audit log records decisions but never the item value.

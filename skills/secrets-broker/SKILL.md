@@ -54,17 +54,22 @@ issued. Do not try to use an agent token against a different vault account.
   `{ path, key, value }` exactly once, within ten minutes of approval. Anything
   else answers the same "unknown materialize request", including another agent's
   job. It needs `MCP_ALLOW_READ=1`, because it does return the value.
-- `http_request` — make an HTTPS request with the secret injected server-side
-  (header or bearer prefix). Use this instead of `get_secret` whenever possible;
-  the model never receives the secret.
+- `http_request` — make an HTTPS request with the secret injected at the broker
+  (remote) or at the local sidecar (paired desktop). Use this instead of
+  `get_secret` whenever possible; the model never receives the secret.
   Example: `{ "name": "tavily-api-key", "url": "https://api.tavily.com/search", "method": "POST", "body": "{\"query\":\"...\"}" }`.
+  The local sidecar limits the target to the **HTTPS URL stored on the API item**
+  (host, port and path prefix), refuses private/local hosts and redirects, and
+  still follows that agent's local approval policy. Web-login items cannot be
+  used this way; put the API base URL on the item first.
 
 ## Mandatory workflow
 
 When a task needs a credential:
 
 1. Call `list_secrets` if the exact item name is unknown.
-2. Call `get_secret` with the item name.
+2. Prefer `http_request` for API calls; call `get_secret` only when the task
+   genuinely needs the raw value.
 3. If the result says `pending approval: <url>`:
    - Give the user that URL and ask them to approve in the Secrets Broker UI;
    - Retry `get_secret` after approval;

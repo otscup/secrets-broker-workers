@@ -7,7 +7,7 @@
  * that is what stops a web page from using your browser to read the daemon.
  */
 import { createServer } from 'node:http'
-import { authenticate, makeGate } from './localauth.mjs'
+import { audit, authenticate, makeGate } from './localauth.mjs'
 import { createLocalServer } from './vaulttools.mjs'
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1'])
@@ -113,7 +113,7 @@ export function makeDaemon({ pull, everyMs = 15 * 60 * 1000, now = () => Date.no
         const suffix = decision.approvalUrl ? '; approve at ' + decision.approvalUrl : ''
         return send(response, 403, { jsonrpc: '2.0', id: message?.id ?? null, error: { code: -32001, message: decision.reason + suffix } })
       }
-      const answered = createLocalServer({ vault: state.vault, revision: state.revision }).handle(message)
+      const answered = await createLocalServer({ vault: state.vault, revision: state.revision, audit }).handle(message, { agent })
       return send(response, answered.status ?? 200, answered.body ?? '')
     }
     return send(response, 404, { error: 'not found' })

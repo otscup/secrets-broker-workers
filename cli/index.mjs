@@ -770,7 +770,7 @@ async function serveLocalVault() {
   let chain = Promise.resolve()
   rl.on('line', (line) => {
     if (!line.trim()) return
-    chain = chain.then(() => {
+    chain = chain.then(async () => {
       let message
       try {
         message = JSON.parse(line)
@@ -778,7 +778,7 @@ async function serveLocalVault() {
         log('client sent invalid JSON')
         return
       }
-      const response = server.handle(message)
+      const response = await server.handle(message)
       if (response.body) process.stdout.write(response.body + '\n')
     }).catch((error) => log('line error:', String(error?.message ?? error)))
   })

@@ -524,6 +524,13 @@ A read waits for that agent's policy: `allow` for named items, a 15-minute
 policies live in `~/.secrets-broker/local-agents.dpapi` on Windows (DPAPI,
 current user); other platforms keep `local-agents.json` at mode 0600.
 
+The local daemon also exposes `http_request`. It injects the API item's secret
+inside the daemon and returns only the upstream response, so the agent never
+receives the value. It targets only the **HTTPS URL stored on that API item**
+(host, port and path prefix), refuses private/local targets and redirects, and
+follows the same per-agent approval policy. Put the API base URL on the item;
+web-login items are rejected.
+
 Two guards, because a loopback port is still reachable by your browser:
 
 - any request carrying an `Origin` header is refused, as is `OPTIONS` — a web

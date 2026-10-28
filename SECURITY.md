@@ -48,6 +48,13 @@ returns it only through the paths below.
   between agents; they are not a defense against same-user malware.
 - Keep local policies on `ask` for sensitive items; do not use a long-lived
   `allow` policy for them.
+- Local `http_request` uses the API item's stored HTTPS URL as its target policy
+  (host, port and path prefix), injects the secret inside the daemon, and returns
+  only the upstream response. Private/local targets and redirects are refused;
+  web-login items are not accepted. It still follows the same per-agent local
+  approval policy as a read.
+- `get_secret` remains available on the local gateway. Use the remote Agent or
+  keep local reads disabled/limited when the model must never receive plaintext.
 - The sidecar must be running and the desktop app open for local access. Stop the
   app to close 4319.
 

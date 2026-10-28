@@ -11,6 +11,7 @@
     "mcp-stdio",
     "src/vaultdiff.js",
     "src/envelope.js",
+    "src/redact.js",
     "README.md",
     "LICENSE"
   ],
