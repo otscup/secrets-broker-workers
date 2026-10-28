@@ -93,6 +93,13 @@ export function ensureAgent(agent) {
   return all[agent]
 }
 
+export function rotateAgent(agent) {
+  const all = readAll()
+  all[agent] = { ...(all[agent] ?? blank()), token: crypto.randomBytes(32).toString('hex') }
+  writeAll(all)
+  return all[agent].token
+}
+
 export function localUrl(agent, { port = PORT } = {}) {
   const { token } = ensureAgent(agent)
   return `http://127.0.0.1:${port}/mcp?agent=${encodeURIComponent(agent)}&token=${encodeURIComponent(token)}`

@@ -216,6 +216,20 @@ try {
       : fail('A16', JSON.stringify({ status: run.status, stdout: run.stdout.slice(0, 160), stderr: run.stderr.slice(0, 160), local }))
   }
 
+  // A16b - rotating one agent's token rewrites its config and leaves no old token.
+  {
+    const file = path.join(appData, 'Cursor', 'User', 'mcp.json')
+    const before = read(file)
+    const old = /token=([a-f0-9]+)/.exec(before)?.[1] ?? ''
+    const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: appData, BROKER_HOME: path.join(root, 'broker-home') }
+    const run = spawnSync(process.execPath, ['cli/index.mjs', 'agents', 'rotate', '--id', 'cursor'], { encoding: 'utf8', env })
+    const after = read(file)
+    const next = /token=([a-f0-9]+)/.exec(after)?.[1] ?? ''
+    run.status === 0 && old && next && next !== old && !after.includes(old)
+      ? pass('A16b rotating a local token rewrites the config')
+      : fail('A16b', JSON.stringify({ status: run.status, old: Boolean(old), next: Boolean(next), same: next === old, stdout: run.stdout, stderr: run.stderr }))
+  }
+
   // A17 - Pi reads user-level MCP servers from ~/.pi/agent/mcp.json.
   {
     const file = path.join(home, '.pi', 'agent', 'mcp.json')

@@ -37,6 +37,7 @@ import { cacheStatus, clearCache } from './cache.mjs'
 import { installHook, findCommittedSecrets, valuesFrom, formatGuard } from './guard.mjs'
 import { makeDaemon } from './daemon.mjs'
 import { detect, adapters, plan, planLocal, applyPlan, entryFor, localEntryFor, tomlBlock, tomlLocalBlock, dshLocalBlock, ENTRY_NAME, LOCAL_ENTRY_NAME } from './agents.mjs'
+import { readAgent, rotateAgent } from './localauth.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
 import { backup, restore, brokerHome } from './backup.mjs'
@@ -102,6 +103,8 @@ secrets-broker guard [--install] [--repo DIR]   block a commit that carries a va
                                  store one in the vault (still needs approval)
   secrets-broker agents detect   list the MCP clients on this machine
   secrets-broker agents connect [--id codex] [--local] [--apply]
+  secrets-broker agents rotate --id codex
+                                 replace one local token and update its config
                                  add this broker, or the local sidecar, to their config
                                  (dry run by default)
 
@@ -425,6 +428,31 @@ async function main() {
       process.stdout.write(rows.join('\n') + '\n')
       return 0
     }
+    if (sub === 'rotate') {
+      if (!only) {
+        process.stderr.write('usage: secrets-broker agents rotate --id codex\n')
+        return 2
+      }
+      const old = readAgent(only)?.token
+      if (!old) {
+        process.stderr.write('no local token for ' + only + '; run agents connect --local first\n')
+        return 2
+      }
+      rotateAgent(only)
+      const updated = []
+      for (const adapter of adapters()) {
+        let text = ''
+        try { text = readFileSync(adapter.file, 'utf8') } catch { continue }
+        if (!text.includes(old)) continue
+        const planned = planLocal(adapter)
+        if (planned.action === 'update') {
+          applyPlan(planned)
+          updated.push(planned.name)
+        }
+      }
+      process.stdout.write('rotated local token for ' + only + '; ' + (updated.length ? 'updated ' + updated.join(', ') : 'no config referenced it') + '\n')
+      return 0
+    }
     if (sub === 'connect') {
       const url = brokerUrl()
       const targets = adapters().filter((adapter) => !only || adapter.id === only)
@@ -463,7 +491,7 @@ async function main() {
       else process.stdout.write(changed ? '\n' + changed + ' client(s) updated; restart them to pick up the server.\n' : '\nnothing to change.\n')
       return 0
     }
-    process.stderr.write('usage: secrets-broker agents <detect|connect> [--id codex] [--local] [--apply]\n')
+    process.stderr.write('usage: secrets-broker agents <detect|connect|rotate> [--id codex] [--local] [--apply]\n')
     return 2
   }
 
