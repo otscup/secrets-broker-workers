@@ -45,6 +45,14 @@ const ui = fs.readFileSync('src/ui.js', 'utf8')
   if (asset.status === 200 && exportsMount && /javascript/.test(ct)) pass('G4 island serves as JS module with mountGlobe export')
   else fail('G4', JSON.stringify({ status: asset.status, exportsMount, ct }))
 }
+// G5: the map is opt-in, never started by loadState
+{
+  const optIn = ui.includes('id="globe-open"')
+  const hiddenByDefault = /globeCard\.classList\.toggle\('hidden', !geoOn\)/.test(ui)
+  const noAutoStart = !/if \(!globeBooted\) \{ globeBooted = true; try \{ initGlobe\(\) \}/.test(ui)
+  if (optIn && hiddenByDefault && noAutoStart) pass('G5 globe is closed until the operator opens it')
+  else fail('G5', JSON.stringify({ optIn, hiddenByDefault, noAutoStart }))
+}
 await mf.dispose()
 const passed = results.filter((r) => r.ok).length
 console.log('\n==== globe init ' + passed + '/' + results.length + ' passed ====')

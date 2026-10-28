@@ -6017,7 +6017,7 @@ export default {
       // helper de-duplicates per (agent, kind, threshold) so this cannot spam.
       try { await dispatchReminderBatch(env, state, url.origin, ctx) } catch {}
     const view = publicState(state)
-    return json({ ...view, fillPolicies: { ...view.fillPolicies, executionLayer: Boolean(String(env.FILL_EXECUTION_TOKEN ?? '')) }, reminders, pendingCount: Object.keys(state.pending ?? {}).length })
+    return json({ ...view, geoEnabled: GEO_ENABLED(env), fillPolicies: { ...view.fillPolicies, executionLayer: Boolean(String(env.FILL_EXECUTION_TOKEN ?? '')) }, reminders, pendingCount: Object.keys(state.pending ?? {}).length })
     }
     // Read-only migration report: which agents still rely on legacy paths,
     // what would break, and current capability terms. Never mutates.

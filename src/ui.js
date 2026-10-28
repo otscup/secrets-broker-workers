@@ -605,6 +605,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
    instead of setting that height and pushing the row past the fold. */
 .dash #globe-card{display:flex;flex-direction:column;min-height:0}
 .globe-split{display:flex;align-items:center;gap:var(--sp-3);flex:1 1 auto;min-height:0;margin-top:var(--sp-2)}
+#globe-card.globe-off .globe-split,#globe-card.globe-off #globe-status{display:none}
 .dash #globe-card .globe-split .globe-box{width:196px;height:140px;flex:0 0 auto;min-height:0;margin:0}
 .globe-side{display:flex;flex-direction:column;justify-content:center;align-items:flex-end;gap:4px;min-width:0;flex:1 1 auto;height:140px}
 .seg--vert{flex-direction:column;gap:2px;width:92px;max-width:100%;flex:0 0 auto;background:transparent;padding:0}
@@ -692,10 +693,11 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
       <div class="card"><h2>条目读取排行</h2><div class="hint" style="margin-bottom:6px">按被读取次数排序</div><div id="top-box" class="rank-box"></div></div>
       <div id="ov-actions" class="card ov-actions"></div>
       <div class="card"><h2>Agent 读取占比</h2><div class="hint" style="margin-bottom:6px">按 agent 聚合 · 点击扇区查看</div><div id="donut-box" class="donut-wrap"></div></div>
-      <div class="card" id="globe-card">
+      <div class="card globe-off" id="globe-card">
         <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
           <h2 style="margin:0">Agent Live Globe</h2>
           <span class="hint globe-note" title="IP 估算位置，不代表实际物理位置">IP 估算</span>
+          <button class="small" id="globe-open">打开地图</button>
         </div>
         <div class="globe-split">
           <div id="globe-box" class="globe-box">
@@ -1513,7 +1515,7 @@ async function checkPendingNotifications() {
 }
 function startPendingPolling() { updateBrowserNotifyStatus(); if (pendingTimer) return; checkPendingNotifications(); pendingTimer = setInterval(checkPendingNotifications, 30000) }
 let globeBooted = false
-async function loadState() { try { app.data = await api('/api/state'); renderNoticeBar(); if (!globeBooted) { globeBooted = true; try { initGlobe() } catch {} } renderAgents(); renderPending(); renderGrants(); renderFillPolicies(); renderTransfers(); renderRecent(); renderLogs(); if ((app.items || []).length) renderItems() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
+async function loadState() { try { app.data = await api('/api/state'); const geoOn = app.data.geoEnabled === true; const globeCard = $('globe-card'); if (globeCard) globeCard.classList.toggle('hidden', !geoOn); renderNoticeBar(); renderAgents(); renderPending(); renderGrants(); renderFillPolicies(); renderTransfers(); renderRecent(); renderLogs(); if ((app.items || []).length) renderItems() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
 async function loadItems() { status('item-status', '加载中…'); try { const result = await api('/api/items'); app.items = result.items || []; app.itemsLoaded = true; renderItems(); renderOverviewActions(); status('item-status', '共 ' + app.items.length + ' 个条目'); if (result.completedTransfers?.length) { toast('已自动复制：' + result.completedTransfers.join('、')); await loadState() } } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } else status('item-status', error.message, 'error') } }
 async function loadStats() { try { app.stats = await api('/api/stats?range=' + app.range); renderStats() } catch {} }
 // One operator action changes the logs, the counts and the item rows at once.
@@ -2268,7 +2270,7 @@ function expiryLabel(expiresAt) {
 // ── Agent Live Globe (P3/P4) ────────────────────────────────────────────────
 // Loaded lazily and entirely optional: any failure hides the globe and leaves
 // the rest of the console untouched.
-const globe = { instance: null, loading: false, failed: false, range: '24h', cursor: 0, events: [], timer: null, paused: false, hidden: false, reduceMotion: false, operator: null, broker: null, showArcs: true, showOperator: true }
+const globe = { instance: null, loading: false, failed: false, range: '24h', cursor: 0, events: [], timer: null, paused: false, hidden: true, reduceMotion: false, operator: null, broker: null, showArcs: true, showOperator: true }
 function globeVisible() {
   return !globe.hidden && !document.hidden && !globe.paused
 }
@@ -2541,6 +2543,14 @@ function initGlobe() {
   }
   refreshGlobe(true)
   syncGlobePolling()
+}
+const globeOpen = $('globe-open')
+if (globeOpen) globeOpen.onclick = () => {
+  const card = $('globe-card')
+  if (!card || card.classList.contains('hidden')) return
+  card.classList.remove('globe-off')
+  globe.hidden = false
+  if (!globeBooted) { globeBooted = true; initGlobe() } else syncGlobePolling()
 }
 // Home banner: pending approvals win, otherwise show authorization reminders.
 // A single line scrolls through every outstanding item; clicking expands the
