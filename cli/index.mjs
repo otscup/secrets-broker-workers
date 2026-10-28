@@ -40,6 +40,7 @@ import { detect, adapters, plan, planLocal, applyPlan, entryFor, localEntryFor, 
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
 import { backup, restore, brokerHome } from './backup.mjs'
+import { checkForUpdate } from './update.mjs'
 
 const DEFAULT_URL = 'https://sb.otscup.com'
 
@@ -92,6 +93,8 @@ Usage
                                  copy the encrypted local state (device key, cache, tokens)
   secrets-broker restore --from DIR [--force]
                                  restore that copy; same OS user only
+  secrets-broker update [--repo owner/repo] [--current V] [--json]
+                                 check GitHub for a newer desktop release; never installs
   secrets-broker scan [--path FILE] [--json]
 secrets-broker guard [--install] [--repo DIR]   block a commit that carries a vault value
                                  list the credentials still sitting in plain files
@@ -203,6 +206,40 @@ async function main() {
       return 0
     } catch (error) {
       process.stderr.write(String(error?.message ?? error) + '\n')
+      return 1
+    }
+  }
+
+  if (command === 'update') {
+    const flag = (name) => {
+      const index = argv.indexOf(name)
+      return index >= 0 ? String(argv[index + 1] ?? '') : ''
+    }
+    const current = flag('--current') || (() => {
+      try {
+        return JSON.parse(readFileSync(new URL('../desktop/src-tauri/tauri.conf.json', import.meta.url), 'utf8')).version
+      } catch {
+        return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+      }
+    })()
+    try {
+      const result = await checkForUpdate({ repo: flag('--repo') || undefined, current })
+      if (argv.includes('--json')) {
+        process.stdout.write(JSON.stringify(result) + '\n')
+      } else if (result.noReleases) {
+        process.stdout.write(`current: ${result.current}\nno published releases\n`)
+      } else {
+        process.stdout.write([
+          `current: ${result.current}`,
+          `latest: ${result.latest}`,
+          `update: ${result.update ? 'yes' : 'no'}`,
+          result.url && `release: ${result.url}`,
+          result.download && `download: ${result.download}`,
+        ].filter(Boolean).join('\n') + '\n')
+      }
+      return 0
+    } catch (error) {
+      process.stderr.write(`update check failed: ${String(error?.message ?? error)}\n`)
       return 1
     }
   }

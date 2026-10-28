@@ -587,6 +587,19 @@ For a daily backup, run `node cli/backup-scheduler.mjs` from Task Scheduler.
 `SecretsBrokerLocalBackup` runs it at 03:30 and reports failure through its
 last result code.
 
+### Check for a desktop update
+
+`update` only checks the latest GitHub release; it never downloads or installs:
+
+```bash
+secrets-broker update
+secrets-broker update --json
+```
+
+It compares the desktop version by default. Use `--current` or `--repo` to
+check another release, and set `GITHUB_TOKEN` when the unauthenticated GitHub
+rate limit is too low. A `404` means no release has been published yet.
+
 ### Stop a commit that carries a vault value
 
 An agent that reads a key and then writes a test file is one `git add` away from

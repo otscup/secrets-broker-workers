@@ -29,7 +29,7 @@
 
 1. ✅ 版本号、MSI 构建、桌面/CLI 测试串成一条发布检查（`release:check`）
 2. ✅ CI 在 Windows runner 构建并上传 MSI artifact（`.github/workflows/desktop.yml`）
-3. 自动更新：先做“检查更新 + 下载/提示”，不静默安装
+3. 🟡 自动更新：CLI 检查更新已落地（`secrets-broker update`，有更新/无更新/无 release/网络失败均有测试）；桌面端提示待接，仍不静默安装
 4. 代码签名：需要证书，作为用户决策项；没有证书前明确标注 unsigned
 
 验收（自动）：
