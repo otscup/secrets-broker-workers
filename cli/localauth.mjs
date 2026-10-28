@@ -141,6 +141,15 @@ function audit(event) {
   }
 }
 
+export function readAudit(limit = 20) {
+  try {
+    const text = fs.readFileSync(path.join(dir(), 'audit.jsonl'), 'utf8')
+    return text.trim().split('\n').filter(Boolean).slice(-limit).map((line) => JSON.parse(line))
+  } catch {
+    return []
+  }
+}
+
 /**
  * The approval queue lives in the daemon process. A read waits here while the
  * person decides; the agent sees one normal tool result if allowed, or a JSON-RPC

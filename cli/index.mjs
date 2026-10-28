@@ -37,7 +37,7 @@ import { cacheStatus, clearCache } from './cache.mjs'
 import { installHook, findCommittedSecrets, valuesFrom, formatGuard } from './guard.mjs'
 import { makeDaemon } from './daemon.mjs'
 import { detect, adapters, plan, planLocal, applyPlan, entryFor, localEntryFor, tomlBlock, tomlLocalBlock, dshLocalBlock, ENTRY_NAME, LOCAL_ENTRY_NAME } from './agents.mjs'
-import { readAgent, rotateAgent } from './localauth.mjs'
+import { readAgent, rotateAgent, readAudit } from './localauth.mjs'
 import { KeyExistsError } from './write.mjs'
 import { clearRecord, describe, loadRecord, loadToken } from './store.mjs'
 import { backup, restore, brokerHome } from './backup.mjs'
@@ -94,6 +94,8 @@ Usage
                                  copy the encrypted local state (device key, cache, tokens)
   secrets-broker restore --from DIR [--force]
                                  restore that copy; same OS user only
+  secrets-broker audit [--limit 20]
+                                 show recent local approval decisions; never secret values
   secrets-broker update [--repo owner/repo] [--current V] [--json]
                                  check GitHub for a newer desktop release; never installs
   secrets-broker scan [--path FILE] [--json]
@@ -211,6 +213,24 @@ async function main() {
       process.stderr.write(String(error?.message ?? error) + '\n')
       return 1
     }
+  }
+
+  if (command === 'audit') {
+    const index = argv.indexOf('--limit')
+    const limit = index >= 0 ? Number(argv[index + 1]) || 20 : 20
+    const rows = readAudit(limit)
+    if (!rows.length) {
+      process.stdout.write('no local approvals recorded\n')
+      return 0
+    }
+    process.stdout.write(rows.map((row) => [
+      row.at,
+      row.agent,
+      row.tool,
+      row.item || '-',
+      row.result || row.decision || 'unknown',
+    ].join('  ')).join('\n') + '\n')
+    return 0
   }
 
   if (command === 'update') {
