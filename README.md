@@ -585,7 +585,8 @@ For a daily backup, run `node cli/backup-scheduler.mjs` from Task Scheduler.
 `BROKER_BACKUP_DIR` changes the destination and `BROKER_BACKUP_KEEP` (default
 14) controls how many snapshots are retained. The Windows task
 `SecretsBrokerLocalBackup` runs it at 03:30 and reports failure through its
-last result code.
+last result code. See [docs/operations.md](docs/operations.md) for backup
+location, restore and troubleshooting.
 
 ### Check for a desktop update
 

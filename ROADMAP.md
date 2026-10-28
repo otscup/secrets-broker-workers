@@ -1,23 +1,23 @@
-# Secrets Broker 长期路线图
+﻿# Secrets Broker 长期路线图
 
 目标：把当前可用的本地优先秘密代理，推进到“长期可维护、可恢复、可发布”的状态。
 原则：每一阶段都必须有自动测试或自动检查；不要求用户手工点点点验证；生产变更先小步、可回滚。
 
 ## 当前基线
 
-- Cloudflare Worker + Vault 2.0（23 条真实数据）
-- 桌面端 0.2.14：服务器地址、登录、本地 sidecar、Pi/DSH/Codex 一键接入
-- 本地 MCP `127.0.0.1:4319/mcp`，per-agent token，审批网关
+- Cloudflare Worker + Vault 2.0（25 条真实数据）
+- 桌面端 0.2.22：服务器地址、登录、本地 sidecar、Pi/DSH/Codex 一键接入、12 小时解锁
+- 本地 MCP `127.0.0.1:4319/mcp`，per-agent token，审批网关，DPAPI 本地 token
 - Web Push：VAPID、service worker、page-closed 通知、点击打开批准页
-- 本地 DPAPI/Keychain 加密；备份/恢复 CLI 已落地
+- 本地 DPAPI/Keychain 加密；备份/恢复 CLI、每日计划任务、`status` 健康信息已落地
 
 ## 阶段 1：可靠性与可恢复性（进行中）
 
 1. ✅ `backup` / `restore` CLI，仅同 OS 用户可恢复
 2. ✅ 每日自动备份 + 保留最近 N 份 + 失败可观测（Windows 计划任务 `SecretsBrokerLocalBackup`，每天 03:30）
 3. ✅ 隔离目录恢复演练（自动测试）
-4. 恢复演练结果写入日志；备份目录不含明文
-5. 文档：备份位置、保留策略、恢复命令、故障排查
+4. ✅ 备份结果写入 `last-backup.json`，`secrets-broker status` 可见
+5. 🟡 文档：备份位置、保留策略、恢复命令、故障排查
 
 验收（自动）：
 - `npm run test:backup`
@@ -29,34 +29,28 @@
 
 1. ✅ 版本号、MSI 构建、桌面/CLI 测试串成一条发布检查（`release:check`）
 2. ✅ CI 在 Windows runner 构建并上传 MSI artifact（`.github/workflows/desktop.yml`）
-3. 🟡 自动更新：CLI 检查更新已落地（`secrets-broker update`，有更新/无更新/无 release/网络失败均有测试）；桌面端提示待接，仍不静默安装
+3. ✅ 自动更新检查、桌面提示、打开下载页；不静默安装
 4. 代码签名：需要证书，作为用户决策项；没有证书前明确标注 unsigned
 
 验收（自动）：
 - 一条命令完成 build + 测试 + MSI 产物校验
 - CI artifact 可下载，安装包版本与源码版本一致
-- 更新检查的单元测试覆盖“有更新/无更新/网络失败”（`npm run test:update`）
+- 更新检查的单元测试覆盖“有更新/无更新/无 release/网络失败”（`npm run test:update`）
 
 ## 阶段 3：安全加固
 
-1. 本地 agent token 轮换命令（不改共享设备密钥）
-2. 本地审批接口限流、审计日志（agent、操作、结果、时间）
-3. 策略：once / 15m / always 的自动测试矩阵
-4. Web Push 订阅失效清理、VAPID 轮换流程
-5. 明确同用户威胁模型：不防同用户恶意进程，防其他用户/网络
-
-验收（自动）：
-- token 轮换后旧 token 401、新 token 200
-- 限流触发 429；审计日志字段完整
-- 审批策略矩阵测试通过
-- 订阅清理不误删有效订阅
+1. ✅ 本地 agent token 轮换命令（不改共享设备密钥）
+2. ✅ 本地审批接口限流、审计日志（agent、操作、结果、时间）
+3. ✅ 策略：once / 15m / always 的自动测试矩阵
+4. 🟡 Web Push 订阅失效清理、VAPID 轮换流程
+5. 🟡 明确同用户威胁模型：不防同用户恶意进程，防其他用户/网络
 
 ## 阶段 4：运维与可观测性
 
-1. `/healthz`、`/api/push/*`、部署版本、最后备份时间
-2. 结构化日志：不记录明文 secret/token
-3. 备份失败、推送失败、sidecar 启动失败可定位
-4. 定期恢复演练（自动，使用临时目录）
+1. ✅ `secrets-broker status` 显示本地 sidecar、最后备份；`/healthz` 仍由 sidecar 提供
+2. 🟡 结构化日志：不记录明文 secret/token（已有静态检查，行为测试未覆盖）
+3. 🟡 备份失败已写入状态；推送失败、sidecar 启动失败仍主要靠用户可见错误
+4. ✅ 定期恢复演练（自动，使用临时目录）
 
 验收（自动）：
 - 健康检查覆盖关键子系统
