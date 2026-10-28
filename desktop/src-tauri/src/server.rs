@@ -75,7 +75,7 @@ fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("server.json"))
 }
 
-fn read_saved(app: &AppHandle) -> Option<String> {
+pub(crate) fn read_saved(app: &AppHandle) -> Option<String> {
     let text = fs::read_to_string(config_path(app).ok()?).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     normalize(value.get("url")?.as_str()?).ok()

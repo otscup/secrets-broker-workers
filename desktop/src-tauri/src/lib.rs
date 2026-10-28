@@ -1,5 +1,6 @@
 mod approvals;
 mod deep_link;
+mod diagnostics;
 mod local_agents;
 mod server;
 mod sidecar;
@@ -50,6 +51,7 @@ pub fn run() {
             server::get_server,
             local_agents::connect_local_agents,
             local_agents::check_update,
+            diagnostics::get_diagnostics,
             deep_link::open_update_page
         ])
         .setup(|app| {

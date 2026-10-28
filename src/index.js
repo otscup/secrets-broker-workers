@@ -12,6 +12,7 @@ import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
 import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2ListPlain, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2SetDeviceWrite, vault2PurgeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf, vault2Push } from './vault2.js'
 import { publicKeyFingerprint } from './envelope.js'
 import { generateVapid, vapidAuthorization } from './webpush.js'
+import { scrubSecret } from './redact.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -7952,15 +7953,7 @@ const TOOL_META = {
             // Defense-in-depth only: strip the exact injected value and common
             // echo forms. This is NOT a guarantee against arbitrary encoding,
             // transforms or partial echoes - see SECURITY.md.
-            const scrub = (input) => {
-              if (typeof input !== 'string' || !material.value) return input
-              let out = input
-              out = out.split(material.value).join('[REDACTED]')
-              out = out.split(authPrefix + material.value).join('[REDACTED]')
-              out = out.split(encodeURIComponent(material.value)).join('[REDACTED]')
-              out = out.split(Buffer.from(material.value).toString('base64')).join('[REDACTED]')
-              return out
-            }
+            const scrub = (input) => scrubSecret(input, material.value, authPrefix)
             const responseBody = scrub(rawBody)
             await addAudit(env, { event: 'secret.use', agent: resolved.name, name: secretName, via: 'http_request', method, host: normHost, path: target.pathname.slice(0, 200), status: response.status })
             // A completed upstream call counts as a successful use regardless of

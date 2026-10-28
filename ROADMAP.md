@@ -1,4 +1,4 @@
-﻿# Secrets Broker 长期路线图
+# Secrets Broker 长期路线图
 
 目标：把当前可用的本地优先秘密代理，推进到“长期可维护、可恢复、可发布”的状态。
 原则：每一阶段都必须有自动测试或自动检查；不要求用户手工点点点验证；生产变更先小步、可回滚。
@@ -6,7 +6,7 @@
 ## 当前基线
 
 - Cloudflare Worker + Vault 2.0（25 条真实数据）
-- 桌面端 0.2.22：服务器地址、登录、本地 sidecar、Pi/DSH/Codex 一键接入、12 小时解锁
+- 桌面端 0.2.23：服务器地址、登录、本地 sidecar、Pi/DSH/Codex 一键接入、12 小时解锁、诊断页
 - 本地 MCP `127.0.0.1:4319/mcp`，per-agent token，审批网关，DPAPI 本地 token
 - Web Push：VAPID、service worker、page-closed 通知、点击打开批准页
 - 本地 DPAPI/Keychain 加密；备份/恢复 CLI、每日计划任务、`status` 健康信息已落地
@@ -42,13 +42,13 @@
 1. ✅ 本地 agent token 轮换命令（不改共享设备密钥）
 2. ✅ 本地审批接口限流、审计日志（agent、操作、结果、时间）
 3. ✅ 策略：once / 15m / always 的自动测试矩阵
-4. 🟡 Web Push 订阅失效清理、VAPID 轮换流程
-5. 🟡 明确同用户威胁模型：不防同用户恶意进程，防其他用户/网络
+4. ✅ Web Push 订阅失效清理、VAPID 轮换流程（`docs/security-operations.md`）
+5. ✅ 明确同用户威胁模型：不防同用户恶意进程，防其他用户/网络
 
 ## 阶段 4：运维与可观测性
 
 1. ✅ `secrets-broker status` 显示本地 sidecar、最后备份；`/healthz` 仍由 sidecar 提供
-2. 🟡 结构化日志：不记录明文 secret/token（已有静态检查，行为测试未覆盖）
+2. ✅ 结构化日志：`src/redact.js` 统一脱敏，静态/单元测试覆盖 JSON、header、URL、base64 回显
 3. 🟡 备份失败已写入状态；推送失败、sidecar 启动失败仍主要靠用户可见错误
 4. ✅ 定期恢复演练（自动，使用临时目录）
 
@@ -59,10 +59,10 @@
 
 ## 阶段 5：体验与诊断
 
-1. 桌面端诊断页：服务器连通、sidecar、本地 agent、备份状态
-2. 首次使用引导（服务器 URL、登录、选择 agent）
-3. 错误信息可操作，不暴露内部堆栈
-4. UI smoke 测试覆盖关键路径
+1. ✅ 桌面端诊断页：服务器连通、sidecar、本地 agent、备份状态
+2. ✅ 首次使用引导（服务器 URL、登录、选择 agent）
+3. ✅ 错误信息可操作，不暴露内部堆栈
+4. ✅ UI smoke 测试覆盖关键路径（`npm run test:desktop-setup`）
 
 验收（自动）：
 - Playwright/CDP smoke 测试通过

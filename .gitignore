@@ -52,6 +52,8 @@ test-*.mjs
 !test-local-tools.mjs
 !test-cli-guard.mjs
 !test-cli-devkey.mjs
+!test-redact.mjs
+!test-desktop-setup-ui.mjs
 
 desktop/src-tauri/gen/
 desktop/src-tauri/resources/sidecar/

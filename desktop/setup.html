@@ -19,6 +19,10 @@
   button:disabled { opacity: .6; cursor: wait; }
   .hint { font-size: 13px; color: #778394; }
   #msg { min-height: 24px; margin: 12px 0 0; color: #b42318; }
+  .diag { margin-top: 22px; padding-top: 18px; border-top: 1px solid #dde3ea; }
+  .diag button { margin-top: 8px; background: #eef2f7; color: #1b2430; }
+  .diag pre { max-height: 220px; overflow: auto; padding: 12px; border-radius: 10px; background: #f6f8fb; font-size: 12px; white-space: pre-wrap; }
+  details { margin-top: 18px; color: #5b6878; font-size: 13px; line-height: 1.6; }
   @media (prefers-color-scheme: dark) {
     body { background: #11161d; color: #e8edf4; }
     .card { background: #1a212b; border-color: #2c3644; box-shadow: none; }
@@ -38,7 +42,15 @@
     <div class="hint" style="margin-top:8px">必须使用 https；本机调试可以用 http://127.0.0.1:8787。只填根地址，不要带路径。</div>
     <button id="connect" type="submit">连接并打开控制台</button>
   </form>
+  <details>
+    <summary>第一次使用</summary>
+    <p>连接后先在网页登录；桌面端会常驻托盘并启动本地 sidecar。需要接入本地 agent 时，在网页的「本地 Agent」里一键连接；解锁密码默认记住 12 小时。</p>
+  </details>
   <p id="msg"></p>
+  <div class="diag">
+    <button id="diag" type="button">查看诊断信息</button>
+    <pre id="diagOut" hidden></pre>
+  </div>
   <p class="hint">想改地址：关闭窗口后从托盘菜单打开「服务器设置」。</p>
 </main>
 <script>
@@ -47,12 +59,27 @@
   const input = document.getElementById('url')
   const button = document.getElementById('connect')
   const msg = document.getElementById('msg')
+  const diag = document.getElementById('diag')
+  const diagOut = document.getElementById('diagOut')
 
   if (!invoke) {
     msg.textContent = '桌面接口没有加载，请重新安装或从托盘重新打开。'
     button.disabled = true
   } else {
     invoke('get_server').then((saved) => { if (saved) input.value = saved }).catch(() => {})
+    diag.addEventListener('click', async () => {
+      diag.disabled = true
+      try {
+        const info = await invoke('get_diagnostics')
+        diagOut.textContent = JSON.stringify(info, null, 2)
+        diagOut.hidden = false
+      } catch (error) {
+        diagOut.textContent = '诊断读取失败：' + String(error)
+        diagOut.hidden = false
+      } finally {
+        diag.disabled = false
+      }
+    })
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
       button.disabled = true

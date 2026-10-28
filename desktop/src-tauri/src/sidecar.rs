@@ -160,30 +160,27 @@ fn spawn(app: &AppHandle) -> Result<Child, String> {
     command.spawn().map_err(|error| error.to_string())
 }
 
-fn health_label() -> &'static str {
+pub(crate) fn local_health() -> Option<serde_json::Value> {
     let address = SocketAddr::from(([127, 0, 0, 1], 4319));
-    let mut stream = match TcpStream::connect_timeout(&address, Duration::from_millis(400)) {
-        Ok(stream) => stream,
-        Err(_) => return "未解锁",
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(600)));
-    if stream
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(400)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_millis(600))).ok()?;
+    stream
         .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
-        .is_err()
-    {
-        return "未解锁";
-    }
+        .ok()?;
     let mut response = String::new();
-    if stream.read_to_string(&mut response).is_err() {
-        return "未解锁";
-    }
+    stream.read_to_string(&mut response).ok()?;
     if !response.starts_with("HTTP/1.1 200") && !response.starts_with("HTTP/1.0 200") {
-        return "未解锁";
+        return None;
     }
-    if response.contains("\"stale\":true") {
-        "本地副本已过期"
-    } else {
-        "已解锁"
+    let body = response.split("\r\n\r\n").nth(1)?;
+    serde_json::from_str(body).ok()
+}
+
+fn health_label() -> &'static str {
+    match local_health() {
+        Some(value) if value.get("stale").and_then(|stale| stale.as_bool()) == Some(true) => "本地副本已过期",
+        Some(_) => "已解锁",
+        None => "未解锁",
     }
 }
 

@@ -128,8 +128,10 @@ const textOf = (r) => r.body?.result?.content?.[0]?.text ?? ''
 // present in the executed http_request path. (Full behavioural proof would
 // need a reachable upstream; see docs for the known limitation.)
 {
-  const file = await import('node:fs').then((fs) => fs.readFileSync('src/index.js', 'utf8'))
-  const hasScrub = file.includes('const scrub = (input)') && file.includes('[REDACTED]') && file.includes('split(material.value).join')
+  const fs = await import('node:fs')
+  const file = fs.readFileSync('src/index.js', 'utf8')
+  const redact = fs.readFileSync('src/redact.js', 'utf8')
+  const hasScrub = file.includes('scrubSecret(input, material.value') && redact.includes('[REDACTED]') && redact.includes('split(authPrefix + value).join')
   if (hasScrub) pass('P6 response scrub present for echoed secret material')
   else fail('P6', 'scrub missing')
 }
