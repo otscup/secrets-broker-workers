@@ -58,5 +58,6 @@ Invoke-RestMethod https://sb.otscup.com/api/push/vapid
 ## 发布检查
 
 - `npm run release:check` 必须通过。
+- Release 资产附带 `SHA256SUMS.txt`；下载后用 `Get-FileHash -Algorithm SHA256` 对照。
 - 0.2.23 起安装包仍未签名；发布说明必须保留“unsigned”提示。
 - 本地 4319 的 token 文件权限依赖用户目录 ACL；不要把 `.secrets-broker` 放进同步盘。

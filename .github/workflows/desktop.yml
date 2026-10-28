@@ -35,12 +35,27 @@ jobs:
       - run: npm run desktop:build
       - run: npm run release:check
 
+      - name: Write SHA-256 sums
+        shell: pwsh
+        run: |
+          $assetDir = "desktop/src-tauri/target/release"
+          $files = @(
+            Get-ChildItem "$assetDir/bundle/msi/*.msi" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            Get-Item "$assetDir/secrets-broker-desktop.exe"
+          )
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -Algorithm SHA256 $file.FullName).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $lines | Set-Content -Encoding ascii SHA256SUMS.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: secrets-broker-desktop-${{ github.run_number }}
           path: |
             desktop/src-tauri/target/release/bundle/msi/*.msi
             desktop/src-tauri/target/release/secrets-broker-desktop.exe
+            SHA256SUMS.txt
           if-no-files-found: error
 
       - name: Publish GitHub release
@@ -53,5 +68,6 @@ jobs:
           files: |
             desktop/src-tauri/target/release/bundle/msi/*.msi
             desktop/src-tauri/target/release/secrets-broker-desktop.exe
+            SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
