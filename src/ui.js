@@ -655,6 +655,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 @media(max-width:720px){.ov-controls{flex:1 1 100%;flex-wrap:wrap;justify-content:flex-start}.ov-controls .seg{flex:1 1 100%}.ov-search{flex:1 1 100%;max-width:none}}
 @media(max-width:720px){.kpis{gap:10px}.kpi{min-height:86px;padding:12px 14px}.kpi .value{font-size:28px;line-height:32px}.kpi .label{font-size:12px}.kpi .sub{font-size:11px}.kpi-spark{height:16px;margin:4px 0}}
 </style></head><body><div class="wrap">
+<div id="db-down" class="notice-bar hidden" data-level="critical"><span class="notice-dot"></span><span class="notice-text"></span></div>
 <header><img id="site-logo" src="/logo.png" alt="" style="width:30px;height:30px;border-radius:8px;object-fit:cover;cursor:pointer"><h1 id="site-title" style="cursor:pointer">Secrets Broker</h1><span class="badge">Cloudflare Workers</span>
 <div class="hdr-actions">
 <button id="theme-cycle" class="theme-cycle" title="切换主题：浅色 / 深色 / 跟随系统">☀️</button>
@@ -884,6 +885,17 @@ async function hmac(keyBytes, data) { const key = await crypto.subtle.importKey(
 async function pbkdf2(password, salt, iterations) { const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']); return new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: enc.encode(salt), iterations }, key, 256)) }
 async function hkdf(prk, info, length) { const key = await crypto.subtle.importKey('raw', prk, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); const infoBytes = enc.encode(info); const out = new Uint8Array(length); let prev = new Uint8Array(0), offset = 0, counter = 1; while (offset < length) { const input = new Uint8Array(prev.length + infoBytes.length + 1); input.set(prev); input.set(infoBytes, prev.length); input[input.length - 1] = counter; prev = new Uint8Array(await crypto.subtle.sign('HMAC', key, input)); const n = Math.min(prev.length, length - offset); out.set(prev.slice(0, n), offset); offset += n; counter++ } return out }
 async function decryptBw(text, encKey, macKey) { const dot = text.indexOf('.'); const type = Number(text.slice(0, dot)); const parts = text.slice(dot + 1).split('|'); const iv = unb64(parts[0]), ct = unb64(parts[1]); if (type === 2) { const expected = await hmac(macKey, cat(iv, ct)); const mac = unb64(parts[2]); if (!expected.every((b, i) => b === mac[i])) throw new Error('MAC 校验失败') } const key = await crypto.subtle.importKey('raw', encKey, { name: 'AES-CBC' }, false, ['decrypt']); return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, key, ct)) }
+function setDbDown(message) {
+  const el = document.getElementById('db-down')
+  if (!el) return
+  const text = el.querySelector('.notice-text')
+  if (text) text.textContent = '数据库暂时不可用，条目与保管库的读写已降级；页面其他功能仍可使用。' + (message ? ' ' + message : '')
+  el.classList.remove('hidden')
+}
+function clearDbDown() {
+  const el = document.getElementById('db-down')
+  if (el) el.classList.add('hidden')
+}
 // A bare "unauthorized" is useless: it means either the cookie expired or the
 // page was loaded from a different host than it posts to, and the fix differs.
 // Name which one, and what to do about it.
@@ -898,8 +910,11 @@ async function api(path, options = {}) {
     const error = new Error(message)
     error.status = response.status
     error.data = body
+    if (response.status >= 500) setDbDown(message)
     throw error
   }
+  const route = path.split('?')[0]
+  if (route === '/api/items' || route === '/api/v2/status') clearDbDown()
   return body
 }
 let app = { me: null, data: { agents: [], policies: {}, grants: [], pending: [], audit: [] }, items: [], itemsLoaded: false, stats: null, range: '24h', token: '' }
