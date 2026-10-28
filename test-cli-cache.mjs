@@ -83,6 +83,15 @@ check('C6 a missing file reads as empty instead of throwing', () => {
   assert.equal(empty.revision, 0)
 })
 
+check('C6b a zero-filled cache is quarantined and recreated', () => {
+  fs.writeFileSync(file, Buffer.alloc(20480))
+  savePull({ url: 'https://sb.example', revision: 12, rows: ROWS }, { file })
+  const loaded = loadPull({ since: 0 }, { file })
+  assert.equal(loaded.rows.length, 2)
+  const kept = fs.readdirSync(tmp).filter((name) => name.startsWith('vault.db.corrupt-'))
+  assert.equal(kept.length, 1)
+})
+
 check('C7 clear drops the rows and the revision', () => {
   savePull({ url: 'https://sb.example', revision: 9, rows: ROWS }, { file })
   clearCache({ file })

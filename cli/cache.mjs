@@ -2,7 +2,7 @@
 // Only ciphertext is stored: the rows are exactly what the server handed over,
 // and the key that opens them lives in the device record, not in this file.
 import { DatabaseSync } from 'node:sqlite'
-import { mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -26,9 +26,21 @@ CREATE TABLE IF NOT EXISTS items (
 
 export function openCache({ file = cacheFile() } = {}) {
   if (file !== ':memory:') mkdirSync(path.dirname(file), { recursive: true })
-  const db = new DatabaseSync(file)
-  db.exec(SCHEMA)
-  return db
+  let db
+  try {
+    db = new DatabaseSync(file)
+    db.exec(SCHEMA)
+    return db
+  } catch (error) {
+    try { db?.close() } catch {}
+    // A power loss can leave a zero-filled page. It is only a ciphertext copy,
+    // so keep it aside and start clean; the next pull rebuilds it.
+    if (error?.code !== 'ERR_SQLITE_ERROR' || !/not a database/i.test(error?.message ?? '')) throw error
+    if (file !== ':memory:' && existsSync(file)) renameSync(file, file + '.corrupt-' + Date.now())
+    db = new DatabaseSync(file)
+    db.exec(SCHEMA)
+    return db
+  }
 }
 
 // Replace the cached rows with what the server just sent. Anything it no longer
