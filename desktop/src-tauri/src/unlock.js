@@ -41,6 +41,11 @@
           <div style="margin-top:8px;color:#667085;font-size:13px;line-height:1.6">输入 Vault 主密码。${initialized ? '密码只在本机派生，服务器只收到会话密钥。' : '第一次使用会创建 Vault 2.0，密码至少 12 位。'}</div>
           <label for="sb-app-unlock-password" style="display:block;margin-top:20px;font-size:13px;font-weight:600">Vault 主密码</label>
           <input id="sb-app-unlock-password" type="password" autocomplete="current-password" autofocus style="width:100%;box-sizing:border-box;margin-top:8px;padding:12px 13px;border:1px solid #d0d5dd;border-radius:10px;font-size:15px;outline:none">
+          <label for="sb-app-unlock-ttl" style="display:block;margin-top:14px;font-size:13px;font-weight:600">解锁有效期</label>
+          <select id="sb-app-unlock-ttl" style="width:100%;box-sizing:border-box;margin-top:8px;padding:10px 12px;border:1px solid #d0d5dd;border-radius:10px;font-size:14px;background:#fff">
+            <option value="3600000">1 小时</option>
+            <option value="43200000" selected>12 小时</option>
+          </select>
           <div id="sb-app-unlock-error" style="min-height:20px;margin-top:10px;color:#d92d20;font-size:12px;line-height:1.5"></div>
           <div style="display:flex;gap:10px;margin-top:8px">
             <button id="sb-app-unlock-submit" type="submit" style="flex:1;padding:11px 14px;border:0;border-radius:10px;background:#2563eb;color:#fff;font-size:14px;font-weight:600;cursor:pointer">${initialized ? '解锁' : '初始化并解锁'}</button>
@@ -66,6 +71,7 @@
         error.textContent = '请输入 Vault 主密码';
         return;
       }
+      const ttlMs = Number(document.getElementById('sb-app-unlock-ttl').value) || 12 * 3600 * 1000;
       if (!initialized && password.length < 12) {
         error.textContent = '首次设置的主密码至少 12 位';
         return;
@@ -75,7 +81,7 @@
       error.textContent = '';
       try {
         if (!initialized) await api('/api/v2/init', { method: 'POST', body: JSON.stringify({ password }) });
-        await api('/api/v2/unlock', { method: 'POST', body: JSON.stringify({ password }) });
+        await api('/api/v2/unlock', { method: 'POST', body: JSON.stringify({ password, ttlMs }) });
         location.reload();
       } catch (failure) {
         error.textContent = failure.message || String(failure);
