@@ -42,10 +42,13 @@ jobs:
 
       - name: Publish GitHub release
         if: startsWith(github.ref, 'refs/tags/desktop-v')
-        shell: pwsh
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Secrets Broker ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/secrets-broker-desktop.exe
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $tag = $env:GITHUB_REF_NAME
-          $msi = Get-ChildItem "desktop/src-tauri/target/release/bundle/msi/*.msi" | Select-Object -First 1
-          gh release create $tag $msi.FullName "desktop/src-tauri/target/release/secrets-broker-desktop.exe" --title "Secrets Broker $tag" --generate-notes
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
