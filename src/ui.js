@@ -886,7 +886,7 @@ async function decryptBw(text, encKey, macKey) { const dot = text.indexOf('.'); 
 // page was loaded from a different host than it posts to, and the fix differs.
 // Name which one, and what to do about it.
 async function api(path, options = {}) {
-  const response = await fetch(path, { credentials: 'same-origin', ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } })
+  const response = await fetch(path, { cache: 'no-store', credentials: 'same-origin', ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } })
   const body = await response.json().catch(() => ({}))
   if (!response.ok) {
     let message = body.error || ('HTTP ' + response.status)
