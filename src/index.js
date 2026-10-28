@@ -16,7 +16,7 @@ import { generateVapid, vapidAuthorization } from './webpush.js'
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 const SESSION_COOKIE = 'broker_admin'
-const jsonBase = (data, status = 200, headers = {}) => Response.json(data, { status, headers })
+const jsonBase = (data, status = 200, headers = {}) => Response.json(data, { status, headers: { 'cache-control': 'no-store', ...headers } })
 const json = jsonBase
 const securityHeaders = {
   'x-content-type-options': 'nosniff',

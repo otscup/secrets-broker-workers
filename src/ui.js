@@ -3273,12 +3273,15 @@ function renderLogs() {
       '</div></div>'
   }).join('') + '</div></div>' : '<div class="hint">' + (all.length ? '没有符合筛选条件的日志' : '暂无日志') + '</div>'
 }
-function createItemMenu() {
-  if (app.me && app.me.unlocked === false) {
-    show('dashboard', false); show('unlock-card', true)
-    toast('保险库已锁定，请先解锁再新增')
-    return
-  }
+async function createItemMenu() {
+  try {
+    const v2 = await api('/api/v2/status')
+    if (v2.initialized && !v2.unlocked) {
+      show('dashboard', false); show('unlock-card', true)
+      toast('保险库已锁定，请先解锁再新增')
+      return
+    }
+  } catch {}
   openModal('新增密钥条目', '<label class="field">名称</label><input id="new-item-name" placeholder="例如 tavily-api-key"><label class="field">用户名（可选）</label><input id="new-item-username" placeholder="登录用户名"><label class="field">密钥值</label><input id="new-item-value" placeholder="要保存的密钥"><label class="field">TOTP Secret（可选）</label><input id="new-item-totp" placeholder="Base32 TOTP secret"><label class="field">网址（可选）</label><input id="new-item-url" placeholder="https://example.com"><label class="field">分组（可选）</label><input id="new-item-group" placeholder="例如 blog/prod"><label class="field">备注（可选）</label><input id="new-item-notes"><label class="field">类型</label><select id="new-item-kind"><option value="">未分类（暂不可读）</option><option value="api">api（API Key，可授权 Agent 读取）</option><option value="web">web（网站登录，只能填充）</option></select><div id="new-item-web" class="hidden"><label class="field">允许填充的 origin（每行一个）</label><textarea id="new-item-origins" rows="2" style="width:100%" placeholder="https://example.com"></textarea></div><label class="chk" style="margin-top:8px"><input type="checkbox" id="new-item-noapproval"> 免审批</label><div class="row" style="margin-top:12px"><button class="primary" id="new-item-save">创建</button></div><div class="status" id="new-item-status"></div>')
   // The web fields only mean something for a website login.
   $('new-item-kind').onchange = () => $('new-item-web').classList.toggle('hidden', $('new-item-kind').value !== 'web')
