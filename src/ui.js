@@ -1496,7 +1496,7 @@ async function checkPendingNotifications() {
     }
     knownPending = ids; pendingInitialized = true
     if (app.data) {
-      // Re-render only what moved: rebuilding the log list every 15s would throw
+      // Re-render only what moved: rebuilding the log list every 30s would throw
       // away the operator's scroll position while they read it.
       const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
       const logsMoved = !same((data.audit || []).slice(0, 1), (app.data.audit || []).slice(0, 1)) || (data.audit || []).length !== (app.data.audit || []).length
@@ -1507,10 +1507,9 @@ async function checkPendingNotifications() {
       if (logsMoved) { renderRecent(); renderLogs() }
       if (!grantsSelecting) renderGrants()
     }
-    await loadStats()
   } catch {}
 }
-function startPendingPolling() { updateBrowserNotifyStatus(); if (pendingTimer) return; checkPendingNotifications(); pendingTimer = setInterval(checkPendingNotifications, 15000) }
+function startPendingPolling() { updateBrowserNotifyStatus(); if (pendingTimer) return; checkPendingNotifications(); pendingTimer = setInterval(checkPendingNotifications, 30000) }
 let globeBooted = false
 async function loadState() { try { app.data = await api('/api/state'); renderNoticeBar(); if (!globeBooted) { globeBooted = true; try { initGlobe() } catch {} } renderAgents(); renderPending(); renderGrants(); renderFillPolicies(); renderTransfers(); renderRecent(); renderLogs(); if ((app.items || []).length) renderItems() } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } } }
 async function loadItems() { status('item-status', '加载中…'); try { const result = await api('/api/items'); app.items = result.items || []; app.itemsLoaded = true; renderItems(); renderOverviewActions(); status('item-status', '共 ' + app.items.length + ' 个条目'); if (result.completedTransfers?.length) { toast('已自动复制：' + result.completedTransfers.join('、')); await loadState() } } catch (error) { if (error.status === 423) { show('dashboard', false); show('unlock-card', true) } else status('item-status', error.message, 'error') } }
@@ -2290,7 +2289,7 @@ async function fetchGlobeEvents(reset) {
 function renderGlobeStatus(count) {
   const box = $('globe-status')
   if (!box) return
-  box.textContent = count ? '共 ' + count + ' 条真实访问记录 · 每 5 秒增量更新' : '暂无真实访问记录'
+  box.textContent = count ? '共 ' + count + ' 条真实访问记录 · 每 30 秒增量更新' : '暂无真实访问记录'
 }
 async function ensureGlobe() {
   if (globe.instance || globe.loading || globe.failed || globe.hidden) return globe.instance
@@ -2351,8 +2350,8 @@ function syncGlobePolling() {
   stopGlobePolling()
   if (!globeVisible() || globe.failed) return
   refreshGlobe(false)
-  // 5s incremental polling, paused whenever the page or globe is hidden.
-  globe.timer = setInterval(() => { if (globeVisible()) refreshGlobe(false) }, 5000)
+  // 30s incremental polling; the globe is a monitoring view, not a ticker.
+  globe.timer = setInterval(() => { if (globeVisible()) refreshGlobe(false) }, 30000)
 }
 function toggleGlobeFullscreen() {
   const box = $('globe-box')

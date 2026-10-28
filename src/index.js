@@ -270,7 +270,8 @@ export class BrokerState extends DurableObject {
       const fresh = sinceSeq > 0 ? inWindow.filter((entry) => Number(entry.seq ?? 0) > sinceSeq) : inWindow
       const page = fresh.slice(0, limit)
       const cursor = page.length ? Number(page[page.length - 1].seq ?? 0) : sinceSeq
-      return json({ ok: true, events: page, cursor, hasMore: fresh.length > page.length, total: inWindow.length })
+      const operator = (await this.ctx.storage.get('geoOperator')) ?? null
+      return json({ ok: true, events: page, cursor, hasMore: fresh.length > page.length, total: inWindow.length, operator })
     }
     // Fill authorization ledger. Kept in a separate storage key so the main
     // state shape is untouched, and every mutation runs inside a transaction.
@@ -6003,11 +6004,7 @@ export default {
       const limit = Number(url.searchParams.get('limit') || 200)
       const response = await stateStub(env).fetch('https://state/geo/query', { method: 'POST', body: JSON.stringify({ windowMs, sinceSeq, limit }) })
       const payload = await response.json()
-      let operator = null
-      try {
-        const opRes = await stateStub(env).fetch('https://state/geo/operator')
-        operator = (await opRes.json()).operator ?? null
-      } catch {}
+      const operator = payload.operator ?? null
       return json({ ok: true, enabled: true, range, operator, events: payload.events ?? [], cursor: payload.cursor ?? 0, hasMore: payload.hasMore === true, total: payload.total ?? 0 })
     }
     if (url.pathname === '/api/state') {

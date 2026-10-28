@@ -86,15 +86,20 @@
     setTimeout(() => input.focus(), 0);
   };
 
+  let settled = false;
   const check = async () => {
-    if (busy || dismissed || document.getElementById('sb-app-unlock')) return;
+    if (busy || dismissed || settled || document.getElementById('sb-app-unlock')) return;
     let me;
     try {
       me = await api('/api/me');
     } catch {
-      return; // login page: leave the normal login alone
+      settled = true; // login page: leave the normal login alone
+      return;
     }
-    if (!me || me.unlocked) return;
+    if (!me || me.unlocked) {
+      settled = true;
+      return;
+    }
     let vault = null;
     try {
       vault = await api('/api/v2/status');
@@ -141,6 +146,6 @@
   };
 
   setTimeout(check, 600);
-  setInterval(check, 3000);
+  setInterval(check, 30000);
   setTimeout(installAgentButton, 900);
 })();
