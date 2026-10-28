@@ -174,6 +174,7 @@ button.primary{background:#1f6feb;color:#fff;border-color:#1f6feb}
 </style>
 <h2>Secrets Broker approval</h2>
 <p><b>${escapeHtml(row.agent)}</b> wants to run <code>${escapeHtml(row.tool)}</code> for <code>${escapeHtml(row.item || '(no item)')}</code>.</p>
+${row.target ? `<p>Target: <code>${escapeHtml(row.target)}</code></p>` : ''}
 <p>This is a local loopback request. Approval applies only to this machine.</p>
 <div>
 <button class="primary" data-d="once">Allow once</button>
@@ -238,6 +239,7 @@ for (const button of document.querySelectorAll('button')) {
   async function check(agent, message) {
     const tool = String(message?.params?.name ?? '')
     const item = String(message?.params?.arguments?.name ?? '')
+    const target = String(message?.params?.arguments?.url ?? '')
     if (tool === 'put_secret') {
       audit({ agent, tool, item, result: 'refused_write' })
       return { ok: false, reason: 'a paired device reads; writes go through the remote broker' }
@@ -263,7 +265,7 @@ for (const button of document.querySelectorAll('button')) {
         audit({ agent, tool, item, result: 'timeout' })
         resolve({ ok: false, reason: 'approval timed out', approvalUrl: url })
       }, timeoutMs)
-      pending.set(id, { id, agent, tool, item, url, createdAt: now(), resolve, timer })
+      pending.set(id, { id, agent, tool, item, target, url, createdAt: now(), resolve, timer })
       try {
         open(url)
       } catch {
@@ -275,7 +277,7 @@ for (const button of document.querySelectorAll('button')) {
 
   return {
     setOrigin(value) { base = value },
-    pending: () => [...pending.values()].map(({ id, agent, tool, item, url, createdAt }) => ({ id, agent, tool, item, url, createdAt })),
+    pending: () => [...pending.values()].map(({ id, agent, tool, item, target, url, createdAt }) => ({ id, agent, tool, item, target, url, createdAt })),
     page,
     decide,
     check,
