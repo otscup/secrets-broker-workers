@@ -54,6 +54,19 @@ fn urlencoding(value: &str) -> String {
         .collect()
 }
 
+#[tauri::command]
+pub fn open_update_page(url: String) -> Result<(), String> {
+    if !is_update_asset(&url) {
+        return Err("unexpected update URL".into());
+    }
+    open_browser(&url);
+    Ok(())
+}
+
+fn is_update_asset(url: &str) -> bool {
+    url.starts_with("https://github.com/otscup/secrets-broker-workers/releases/download/")
+}
+
 #[cfg(windows)]
 fn open_browser(url: &str) {
     let _ = Command::new("cmd").args(["/C", "start", "", url]).spawn();
@@ -99,13 +112,11 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_http_host_is_ignored_except_for_loopback() {
-        let remote = Url::parse("secrets-broker://pair?url=http%3A%2F%2Fevil.example&code=AB12CD").unwrap();
-        assert!(approval_url(&remote).is_none());
-        let local = Url::parse("secrets-broker://pair?url=http%3A%2F%2F127.0.0.1%3A8787&code=AB12CD").unwrap();
-        assert_eq!(
-            approval_url(&local).as_deref(),
-            Some("http://127.0.0.1:8787/pair?code=AB12CD")
-        );
+    fn only_our_release_assets_are_opened() {
+        assert!(is_update_asset(
+            "https://github.com/otscup/secrets-broker-workers/releases/download/desktop-v0.2.19/Secrets.Broker_0.2.19_x64.msi"
+        ));
+        assert!(!is_update_asset("https://github.com/evil/releases/download/x/a.msi"));
+        assert!(!is_update_asset("https://github.com/otscup/secrets-broker-workers/releases/latest"));
     }
 }

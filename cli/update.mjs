@@ -2,6 +2,37 @@
 // caller gets the release URL so a human can choose when to update.
 const REPO = 'otscup/secrets-broker-workers'
 
+function versionFromTag(tag) {
+  return String(tag || '').trim().replace(/^desktop-v?/i, '').replace(/^v/i, '')
+}
+
+async function latestFromHtml(fetchImpl, repo) {
+  try {
+    const response = await fetchImpl(`https://github.com/${repo}/releases/latest`, {
+      headers: { 'User-Agent': 'secrets-broker-update-check' },
+      redirect: 'follow',
+    })
+    if (!response.ok) return null
+    const html = await response.text()
+    const tag = (response.url || '').match(/\/releases\/tag\/([^/?#]+)/)?.[1]
+      || html.match(/\/releases\/tag\/([^"/?#]+)/)?.[1]
+    if (!tag) return null
+    const assets = await fetchImpl(`https://github.com/${repo}/releases/expanded_assets/${encodeURIComponent(tag)}`, {
+      headers: { 'User-Agent': 'secrets-broker-update-check' },
+    })
+    const assetHtml = assets.ok ? await assets.text() : html
+    const rawDownload = assetHtml.match(/href="([^"]+\/releases\/download\/[^"]+\.msi)"/i)?.[1] || ''
+    const download = rawDownload.startsWith('http') ? rawDownload : rawDownload ? 'https://github.com' + rawDownload : ''
+    return {
+      latest: versionFromTag(decodeURIComponent(tag)),
+      url: `https://github.com/${repo}/releases/tag/${tag}`,
+      download: download.replace(/&amp;/g, '&'),
+    }
+  } catch {
+    return null
+  }
+}
+
 export function compareVersions(a, b) {
   const parse = (value) => {
     const clean = String(value || '').trim().replace(/^v/i, '')
@@ -40,11 +71,19 @@ export async function checkForUpdate({
     return { current: String(current), latest: '', update: false, url: '', download: '', noReleases: true }
   }
   if (response.status === 403 || response.status === 429) {
-    return { current: String(current), latest: '', update: false, url: '', download: '', rateLimited: true }
+    const fallback = await latestFromHtml(fetchImpl, repo)
+    if (!fallback) return { current: String(current), latest: '', update: false, url: '', download: '', rateLimited: true }
+    return {
+      current: String(current),
+      latest: fallback.latest,
+      update: compareVersions(fallback.latest, current) > 0,
+      url: fallback.url,
+      download: fallback.download,
+    }
   }
   if (!response.ok) throw new Error(`GitHub releases returned ${response.status}`)
   const release = await response.json()
-  const latest = String(release.tag_name || release.name || '').replace(/^v/i, '')
+  const latest = versionFromTag(release.tag_name || release.name || '')
   if (!latest) throw new Error('latest release has no tag_name')
   return {
     current: String(current),

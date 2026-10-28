@@ -170,17 +170,17 @@
         } else {
           const link = result.download || result.url;
           toast.textContent = `发现新版本 ${result.latest}（当前 ${result.current}）。\n${link}`;
-          if (link) {
+          if (result.download) {
             const copy = document.createElement('button');
             copy.type = 'button';
-            copy.textContent = '复制下载链接';
+            copy.textContent = '下载安装包';
             copy.style.cssText = 'margin-top:8px;padding:5px 9px;border:1px solid #475467;border-radius:6px;background:transparent;color:#fff;font:12px -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;cursor:pointer';
             copy.onclick = async () => {
               try {
-                await navigator.clipboard.writeText(link);
-                copy.textContent = '已复制';
+                await invoke('open_update_page', { url: result.download });
+                copy.textContent = '已打开下载';
               } catch {
-                copy.textContent = '复制失败';
+                copy.textContent = '打开失败';
               }
             };
             toast.appendChild(document.createElement('br'));

@@ -10,6 +10,8 @@
     "core:default",
     "allow-connect-server",
     "allow-get-server",
-    "allow-connect-local-agents"
+    "allow-connect-local-agents",
+    "allow-check-update",
+    "allow-open-update-page"
   ]
 }

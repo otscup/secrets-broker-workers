@@ -49,7 +49,8 @@ pub fn run() {
             server::connect_server,
             server::get_server,
             local_agents::connect_local_agents,
-            local_agents::check_update
+            local_agents::check_update,
+            deep_link::open_update_page
         ])
         .setup(|app| {
             let handle = app.handle().clone();

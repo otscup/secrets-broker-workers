@@ -16,7 +16,7 @@ const release = (status, body) => async () => ({
 const newer = await checkForUpdate({
   current: '0.2.14',
   fetchImpl: release(200, {
-    tag_name: 'v0.2.15',
+    tag_name: 'desktop-v0.2.15',
     html_url: 'https://example.test/release',
     assets: [{ name: 'Secrets Broker_0.2.15_x64_en-US.msi', browser_download_url: 'https://example.test/a.msi' }],
   }),
@@ -34,6 +34,21 @@ assert.equal(current.update, false)
 const none = await checkForUpdate({ current: '0.2.15', fetchImpl: release(404, {}) })
 assert.equal(none.noReleases, true)
 assert.equal(none.update, false)
+
+const fallback = await checkForUpdate({
+  current: '0.2.17',
+  fetchImpl: async (url) => url.includes('api.github.com')
+    ? { status: 403, ok: false }
+    : {
+        status: 200,
+        ok: true,
+        url: 'https://github.com/otscup/secrets-broker-workers/releases/tag/desktop-v0.2.18',
+        text: async () => '<a href="https://github.com/otscup/secrets-broker-workers/releases/download/desktop-v0.2.18/Secrets.Broker_0.2.18_x64.msi">MSI</a>',
+      },
+})
+assert.equal(fallback.update, true)
+assert.equal(fallback.latest, '0.2.18')
+assert.match(fallback.download, /desktop-v0\.2\.18\/.*\.msi$/)
 
 const limited = await checkForUpdate({ current: '0.2.15', fetchImpl: release(403, {}) })
 assert.equal(limited.rateLimited, true)
