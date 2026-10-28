@@ -676,7 +676,7 @@ html[data-theme="dark"] .page .row>button.danger{background:color-mix(in srgb,va
 <section id="unlock-card" class="card hidden">
   <h2>解锁 vault</h2><div class="hint">这是 Vault 主密码：初始化 Vault 时设置的密码，不是 NodeWarden/Bitwarden 登录密码，也不是上面的管理登录密码。主密码只在本机做 PBKDF2/HKDF，服务器只收到派生出的会话密钥。</div>
   <label class="field">Vault 主密码</label><input id="master-password" type="password" autocomplete="current-password">
-  <label class="field">解锁有效期</label><select id="ttl"><option value="permanent">永久（可手动锁定）</option><option value="604800">7 天</option><option value="86400">24 小时</option><option value="3600">1 小时</option></select>
+  <label class="field">解锁有效期</label><select id="ttl"><option value="permanent">12 小时（最长）</option><option value="3600">1 小时</option></select>
   <div class="row" style="margin-top:12px"><button class="primary" id="unlock">解锁</button><button id="lock2">锁定</button></div><div class="status" id="unlock-status"></div>
   <div class="row" style="margin-top:8px"><button id="init-v2">初始化 Vault 2.0（至少 12 位）</button></div>
 </section>
@@ -1013,7 +1013,8 @@ $('theme-cycle').onclick = () => { const current = localStorage.getItem('theme')
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { if ((localStorage.getItem('theme') || 'auto') === 'auto') applyTheme('auto') })
 applyTheme()
 async function unlockV2(password) {
-  await api('/api/v2/unlock', { method: 'POST', body: JSON.stringify({ password }) })
+  const ttlMs = $('ttl')?.value === '3600' ? 60 * 60 * 1000 : 12 * 60 * 60 * 1000
+  await api('/api/v2/unlock', { method: 'POST', body: JSON.stringify({ password, ttlMs }) })
   if (app.me) app.me.unlocked = true
   $('master-password').value = ''
   status('unlock-status', '已解锁', 'ok')
