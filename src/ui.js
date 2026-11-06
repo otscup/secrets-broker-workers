@@ -4022,6 +4022,19 @@ function markAllNoticesRead() {
   for (const item of noticeItems()) if (!read.includes(item.id)) read.push(item.id)
   saveNoticeReadIds(read)
 }
+// A reminder is keyed by what it is about: a secret reminder names an item, a
+// connection reminder names an agent, and an agent reminder names the agent.
+// The old key was always item.agent, which made two expiring secrets collide on
+// the empty agent slot they now carry.
+function reminderKey(item) {
+  const isSecret = Boolean(item.kind && item.kind.indexOf('secret-') === 0)
+  return 'reminder:' + item.kind + ':' + (isSecret ? (item.name || '') : (item.agent || ''))
+}
+function reminderText(item) {
+  if (item.kind && item.kind.indexOf('secret-') === 0) return '密钥 ' + (item.name || '') + '：' + (item.message || '')
+  if (item.kind === 'connection-pending') return (item.agent || 'Agent') + '：' + (item.message || '')
+  return (item.agent || '') + '：' + (item.message || '')
+}
 function noticeItems() {
   const data = app.data || {}
   // Approvals and reminders share the banner, and neither is allowed to hide
@@ -4048,10 +4061,10 @@ function noticeItems() {
     entry,
   }))
   const reminders = (data.reminders || []).map((item) => ({
-    id: 'reminder:' + item.kind + ':' + (item.agent || ''),
+    id: reminderKey(item),
     tone: item.severity === 'critical' ? 'bad' : (item.severity === 'warning' ? 'warn' : 'plain'),
     level: item.severity === 'critical' ? 'critical' : (item.severity === 'warning' ? 'warning' : 'notice'),
-    text: (item.kind && item.kind.indexOf('secret-') === 0 ? '密钥 ' : '') + (item.agent || '') + '：' + (item.message || ''),
+    text: reminderText(item),
     kind: item.kind,
     entry: item,
   }))
@@ -4325,7 +4338,7 @@ function openNoticeModal() {
   // Ignored reminders disappear from this sheet too; the server keeps computing
   // them, so they can never be lost, only muted on this account's device.
   const all = (app.data && app.data.reminders) || []
-  const reminders = all.filter((item) => !read.includes('reminder:' + item.kind + ':' + (item.agent || '')))
+  const reminders = all.filter((item) => !read.includes(reminderKey(item)))
   if (!reminders.length) {
     openModal('通知提醒', '<div class="hint">' + (all.length ? '这些提醒都已标为已读。新的提醒出现时会重新显示。' : '暂无提醒。') + '</div>')
     return
@@ -4333,14 +4346,20 @@ function openNoticeModal() {
   const reminderBlock = reminders.map((item) => {
     const tone = item.severity === 'critical' ? 'bad' : (item.severity === 'warning' ? 'warn' : 'plain')
     const isSecret = Boolean(item.kind && item.kind.indexOf('secret-') === 0)
-    const noticeId = 'reminder:' + item.kind + ':' + (item.agent || '')
+    const isConnection = item.kind === 'connection-pending'
+    // An item is not an Agent: secret rows show the item name and keep the
+    // notice key on it, so two secrets never collide on one "agent" slot.
+    const label = isSecret ? (item.name || item.agent || '') : (item.agent || '')
+    const noticeId = reminderKey(item)
+    const sub = item.kind === 'idle' ? '很久没有读取记录'
+      : (isConnection ? '有人正在等待你批准这次连接' : '到期后会拒绝，需要重新授权')
     return '<div class="ios-row ios-row--stack" data-notice-row="' + esc(noticeId) + '"><div class="ios-main"><div class="ios-title">'
-      + '<span class="ios-name">' + esc((isSecret ? '密钥 ' : '') + (item.agent || '')) + '</span>'
+      + '<span class="ios-name">' + esc((isSecret ? '密钥 ' : (isConnection ? '连接请求 ' : '')) + label) + '</span>'
       + '<span class="ios-pill ' + tone + '">' + esc(item.message || '') + '</span>'
       + '<button type="button" class="ios-chip notice-dismiss" data-notice-dismiss-row="' + esc(noticeId) + '" aria-label="忽略这条提示" title="忽略这条提示（只隐藏提示，不改审批状态）">忽略</button></div>'
-      + '<div class="ios-sub">' + esc(item.kind === 'idle' ? '很久没有读取记录' : '到期后会拒绝，需要重新授权') + '</div>'
+      + '<div class="ios-sub">' + esc(sub) + '</div>'
       + '<div class="ios-actions">'
-      + (item.expiresAt && !isSecret ? '<button class="ios-chip" data-notice-extend="' + esc(item.agent || '') + '">延期</button>' : '')
+      + (item.expiresAt && !isSecret && !isConnection ? '<button class="ios-chip" data-notice-extend="' + esc(item.agent || '') + '">延期</button>' : '')
       + (item.name ? '<button class="ios-chip" data-notice-open="' + esc(item.name) + '">查看凭据</button>' : '')
       + '</div></div></div>'
   }).join('')
@@ -4361,9 +4380,17 @@ function openNoticeModal() {
     button.onclick = () => { show('modal', false); openItemMenu(button.dataset.noticeOpen) }
   })
 }
-// Last read opportunity per agent, derived from the audit trail the server
-// already returns. This is "last recorded read", never a live-presence claim.
+// Last recorded read per agent. The server answers this from D1 over the whole
+// trail (state.lastReads); the audit slice the console also receives is only
+// the newest 20-500 rows, so deriving from it called an active Agent "never
+// read" as soon as other events pushed its reads out of the window. A null map
+// means the server could not scan D1, and only then does the slice stand in.
 function lastActivityFor(agentName) {
+  const reads = app.data && app.data.lastReads
+  if (reads) {
+    const value = reads[agentName]
+    return value ? (Date.parse(value) || 0) : 0
+  }
   const audit = (app.data && app.data.audit) || []
   let latest = 0
   for (const entry of audit) {

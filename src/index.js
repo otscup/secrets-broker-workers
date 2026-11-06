@@ -2041,6 +2041,10 @@ const CONNECTION_MAX_TTL_MS = 30 * 86400 * 1000
 const CONNECTION_DENY_TTL_MS = 24 * 3600 * 1000
 const CONNECTION_RETENTION_MS = 24 * 3600 * 1000
 const CONNECTION_TTL_PRESETS = { '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3 }
+// A real lazy sweep rewrites the whole state document; the console polls every
+// 30s, so runs are spaced out. Expired rows never authorise anything in the
+// meantime (connectionLive re-checks the clock per request).
+const SWEEP_MIN_INTERVAL_MS = 60 * 1000
 // A decided item request deletes its pending row, which leaves no evidence that
 // the operator already answered. Keep the answer briefly so a waiting client can
 // tell "approved" from "denied", and a denial is returned instead of turning the
@@ -2183,15 +2187,24 @@ function grantSweepNeeded(state, now = Date.now()) {
 // Expired grants ride along in the same pass instead of needing their own
 // timer. Audits are written after the state write, so the trace outlives the
 // deleted record.
-async function sweepExpiredState(env) {
-  const snapshot = await loadState(env)
+async function sweepExpiredState(env, provided = null) {
+  const snapshot = provided ?? await loadState(env)
   if (!connectionSweepNeeded(snapshot) && !grantSweepNeeded(snapshot)) return []
+  // Throttled: a real sweep is a full state write plus audit rows, and
+  // /api/state polls every 30s. One pass per minute is enough; correctness does
+  // not depend on it because a row outside its window never authorises a call
+  // (connectionLive checks the clock on every request).
+  const sweptAt = millisOf(snapshot.lastSweepAt)
+  if (Number.isFinite(sweptAt) && sweptAt > Date.now() - SWEEP_MIN_INTERVAL_MS) return []
   const expiredConnections = []
   const expiredGrants = []
   await updateState(env, (state) => {
     const now = Date.now()
     expiredConnections.push(...sweepConnections(state, now))
     expiredGrants.push(...sweepExpiredGrants(state, now))
+    // Recorded only when a pass actually ran, so "nothing due" polls stay
+    // read-only.
+    state.lastSweepAt = nowIso()
     return state
   })
   for (const entry of expiredConnections) {
@@ -3401,6 +3414,11 @@ function publicState(state, options = {}) {
     }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))),
     transfers: (state.transfers ?? []).map((entry) => ({ id: entry.id, agent: entry.agent, name: entry.name, sourceAccount: entry.sourceAccount, targetAccount: entry.targetAccount, folder: entry.folder, createdAt: entry.createdAt, error: entry.error ?? '' })),
     audit: options.audit ?? (state.audit ?? []),
+    // Last successful read per Agent, as computed over the whole D1 trail
+    // rather than the 20-500 row slice the console otherwise receives. Null
+    // means "no read ever recorded", which the UI shows differently from
+    // "read N days ago". Metadata only: agent names and timestamps.
+    lastReads: options.lastReads ?? null,
     syncDevices: syncDeviceList(state),
   }
   return options.masked === true ? maskStateView(view) : view
@@ -4105,6 +4123,53 @@ async function notifyPending(env, origin, entry, ctx) {
 // returned so the banner can explain why it is showing one and not the other.
 const REMINDER_WINDOWS = [5, 3, 1]
 const IDLE_DAYS = 7
+// Whole-trail answer to "when did this Agent last read a value". The audit slice
+// the console receives holds a few hundred rows, so "never" and "not in the
+// last 500 events" looked identical there. The scan is cached in the Durable
+// Object for a few minutes: a GROUP BY over a growing table must not run on
+// every 30-second console poll.
+const LAST_READ_SCAN_MS = 10 * 60 * 1000
+
+function millisOf(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : NaN
+  if (typeof value === 'string' && value) return Date.parse(value)
+  return NaN
+}
+
+async function lastReadByAgent(env, state) {
+  const cached = state?.lastReadScan
+  const cachedAt = millisOf(cached?.computedAt)
+  if (cached?.agents && Number.isFinite(cachedAt) && cachedAt > Date.now() - LAST_READ_SCAN_MS) {
+    const fresh = new Map()
+    for (const [agent, time] of Object.entries(cached.agents)) {
+      const parsed = millisOf(time)
+      if (Number.isFinite(parsed)) fresh.set(agent, parsed)
+    }
+    return fresh
+  }
+  if (!env?.VAULT_DB) return null
+  const agents = {}
+  try {
+    // json_extract because the Agent lives in the detail payload; subject is the
+    // item name and must never be mistaken for an Agent.
+    const rows = ((await env.VAULT_DB.prepare(
+      "SELECT json_extract(detail, '$.agent') AS agent, MAX(at) AS last FROM audit_v2 WHERE event = 'secret.read' GROUP BY json_extract(detail, '$.agent')"
+    ).all()).results) ?? []
+    for (const row of rows) {
+      const agent = String(row.agent ?? '')
+      const time = millisOf(row.last ?? row.at)
+      if (!agent || !Number.isFinite(time)) continue
+      agents[agent] = new Date(time).toISOString()
+    }
+  } catch (error) {
+    // No D1 (or an older schema): fall back to the slice instead of claiming
+    // every Agent has never read.
+    console.warn('last-read scan failed: ' + String(error?.message ?? error))
+    return null
+  }
+  await mutateState(env, [{ path: ['lastReadScan'], value: { computedAt: Date.now(), agents } }]).catch(() => {})
+  return new Map(Object.entries(agents).map(([agent, time]) => [agent, Date.parse(time)]))
+}
 
 // Severity follows the operator's rule: anything below 3 days is red, the
 // remaining window (up to 5 days) is the orange warning band.
@@ -4113,27 +4178,31 @@ function reminderSeverity(daysLeft) {
   return 'warning'
 }
 
-function buildReminders(state, now = Date.now(), audit = state.audit ?? []) {
+function buildReminders(state, now = Date.now(), audit = state.audit ?? [], lastReads = null) {
   const reminders = []
-  const lastActivity = new Map()
-  for (const entry of audit) {
-    if (!entry.agent) continue
-    const time = Date.parse(entry.time)
-    if (!Number.isFinite(time)) continue
-    if (!lastActivity.has(entry.agent) || time > lastActivity.get(entry.agent)) lastActivity.set(entry.agent, time)
+  const lastActivity = new Map(lastReads ?? [])
+  if (!lastReads) {
+    // Fallback only: the caller could not reach D1, so the slice is all we have.
+    for (const entry of audit) {
+      if (!entry.agent) continue
+      const time = Date.parse(entry.time)
+      if (!Number.isFinite(time)) continue
+      if (!lastActivity.has(entry.agent) || time > lastActivity.get(entry.agent)) lastActivity.set(entry.agent, time)
+    }
   }
   const seen = new Set()
   const consider = (name, oauth, expiresAt) => {
     if (seen.has(name)) return
     seen.add(name)
-    if (typeof expiresAt === 'number') {
-      const msLeft = expiresAt - now
+    const expiryMs = typeof expiresAt === 'string' ? Date.parse(expiresAt) : expiresAt
+    if (typeof expiryMs === 'number' && Number.isFinite(expiryMs)) {
+      const msLeft = expiryMs - now
       if (msLeft <= 0) {
-        reminders.push({ kind: 'expired', agent: name, oauth, severity: 'critical', daysLeft: 0, expiresAt, message: '授权已过期' })
+        reminders.push({ kind: 'expired', agent: name, oauth, severity: 'critical', daysLeft: 0, expiresAt: expiryMs, message: '授权已过期' })
       } else {
         const daysLeft = Math.ceil(msLeft / 86400e3)
         if (daysLeft <= 5) {
-          reminders.push({ kind: 'expiring', agent: name, oauth, severity: reminderSeverity(daysLeft), daysLeft, expiresAt, message: daysLeft <= 1 ? '授权将在 1 天内过期' : '授权将在 ' + daysLeft + ' 天内过期' })
+          reminders.push({ kind: 'expiring', agent: name, oauth, severity: reminderSeverity(daysLeft), daysLeft, expiresAt: expiryMs, message: daysLeft <= 1 ? '授权将在 1 天内过期' : '授权将在 ' + daysLeft + ' 天内过期' })
         }
       }
     }
@@ -4147,28 +4216,49 @@ function buildReminders(state, now = Date.now(), audit = state.audit ?? []) {
   const oauthExpiry = new Map()
   for (const token of Object.values(state.oauthTokens ?? {})) {
     if (!token.agent) continue
-    if (token.expiresAt && token.expiresAt < now) continue
+    // Older records stored the expiry as an ISO string; comparing that to a
+    // number was silently false, so a long-expired token still looked live.
+    const expiresAt = millisOf(token.expiresAt)
+    if (Number.isFinite(expiresAt) && expiresAt <= now) continue
     const current = oauthExpiry.get(token.agent)
-    if (current === undefined || (typeof token.expiresAt === 'number' && token.expiresAt < current)) oauthExpiry.set(token.agent, typeof token.expiresAt === 'number' ? token.expiresAt : null)
+    if (current === undefined || (Number.isFinite(expiresAt) && expiresAt < current)) oauthExpiry.set(token.agent, Number.isFinite(expiresAt) ? expiresAt : null)
   }
   for (const [agent, exp] of oauthExpiry.entries()) consider(agent, true, exp)
   // A secret with an expiry of its own. It uses the same severity bands, so
   // the home page and the notification channels show it without any new
-  // plumbing.
+  // plumbing. `agent` stays empty: an item name is not an Agent, and filling
+  // that field made the UI render "agent <item name>" and try to extend it.
   for (const [name, entry] of Object.entries(state.secretExpiry ?? {})) {
     if (!entry || typeof entry.expiresAt !== 'number') continue
     const msLeft = entry.expiresAt - now
     if (msLeft <= 0) {
-      reminders.push({ kind: 'secret-expired', agent: name, name, oauth: false, severity: 'critical', daysLeft: 0, expiresAt: entry.expiresAt, message: '密钥已过期' })
+      reminders.push({ kind: 'secret-expired', agent: '', name, oauth: false, severity: 'critical', daysLeft: 0, expiresAt: entry.expiresAt, message: '密钥已过期' })
       continue
     }
     const daysLeft = Math.ceil(msLeft / 86400e3)
     if (daysLeft <= 5) {
-      reminders.push({ kind: 'secret-expiring', agent: name, name, oauth: false, severity: reminderSeverity(daysLeft), daysLeft, expiresAt: entry.expiresAt, message: daysLeft <= 1 ? '密钥今天到期' : '密钥即将到期' })
+      reminders.push({ kind: 'secret-expiring', agent: '', name, oauth: false, severity: reminderSeverity(daysLeft), daysLeft, expiresAt: entry.expiresAt, message: daysLeft <= 1 ? '密钥今天到期' : '密钥即将到期' })
     }
   }
+  // A connection waiting on the operator used to show only in the approval
+  // banner. If that banner was dismissed, nothing on the reminders list said
+  // someone was still waiting.
+  const pendingAgents = new Set()
+  for (const record of Object.values(state.connections ?? {})) {
+    if (record?.state !== 'pending') continue
+    const expiresAt = millisOf(record.expiresAt)
+    if (Number.isFinite(expiresAt) && expiresAt <= now) continue
+    const agent = String(record.agent ?? '')
+    if (pendingAgents.has(agent)) continue
+    pendingAgents.add(agent)
+    reminders.push({
+      kind: 'connection-pending', agent: String(record.agent ?? ''), name: null, oauth: String(record.agent ?? '').startsWith('oauth:'),
+      severity: 'warning', daysLeft: null, expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
+      message: '有新的连接请求待批准',
+    })
+  }
   const order = { critical: 0, warning: 1, notice: 2 }
-  reminders.sort((a, b) => (order[a.severity] - order[b.severity]) || String(a.agent).localeCompare(String(b.agent)))
+  reminders.sort((a, b) => (order[a.severity] - order[b.severity]) || String(a.name || a.agent).localeCompare(String(b.name || b.agent)))
   return reminders
 }
 
@@ -4196,8 +4286,8 @@ function reminderSentKey(r) {
 
 // Send once per (agent, kind, threshold) so a 5-day reminder does not repeat on
 // every page load. State lives under state.reminderSent.
-async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now(), audit = null) {
-  const reminders = buildReminders(state, now, audit ?? (await recentAuditEntries(env, state, LEGACY_AUDIT_LIMIT)))
+async function dispatchReminderBatch(env, state, origin, ctx, now = Date.now(), audit = null, lastReads = null) {
+  const reminders = buildReminders(state, now, audit ?? (await recentAuditEntries(env, state, LEGACY_AUDIT_LIMIT)), lastReads ?? (await lastReadByAgent(env, state)))
   if (!reminders.length) return { sent: 0, reminders: 0 }
   const sentMap = state.reminderSent ?? {}
   const TTL = 20 * 3600e3
@@ -7830,14 +7920,20 @@ export default {
       const state = await loadState(env)
       await migrateLegacyAudit(env, state)
       const audit = await recentAuditEntries(env, state, LEGACY_AUDIT_LIMIT)
-      const reminders = buildReminders(state, Date.now(), audit)
+      // Whole-trail scan, cached: the embedded slice below is capped at 20 rows
+      // and cannot answer "did this Agent ever read".
+      const lastReads = await lastReadByAgent(env, state)
+      const reminders = buildReminders(state, Date.now(), audit, lastReads)
       // Fire the notification batch opportunistically on admin page loads; the
       // helper de-duplicates per (agent, kind, threshold) so this cannot spam.
-      try { await dispatchReminderBatch(env, state, url.origin, ctx, Date.now(), audit) } catch {}
+      try { await dispatchReminderBatch(env, state, url.origin, ctx, Date.now(), audit, lastReads) } catch {}
     // Locked sessions can still load this view: approvals are decided by id, and
     // the names they carry are masked server-side until the vault is unlocked.
     const masked = await shouldMaskConsole(env)
-    const view = publicState(state, { masked, audit: audit.slice(0, CONSOLE_STATE_AUDIT_LIMIT) })
+    const lastReadsView = lastReads
+      ? Object.fromEntries([...lastReads.entries()].map(([agent, time]) => [agent, new Date(time).toISOString()]))
+      : null
+    const view = publicState(state, { masked, audit: audit.slice(0, CONSOLE_STATE_AUDIT_LIMIT), lastReads: lastReadsView })
     const connections = connectionView(state, { masked })
     return json({ ...view, connections: { pending: connections.pending, recent: connections.recent }, pendingConnectionCount: connections.count, geoEnabled: GEO_ENABLED(env), fillPolicies: { ...view.fillPolicies, executionLayer: Boolean(String(env.FILL_EXECUTION_TOKEN ?? '')) }, reminders, pendingCount: Object.keys(state.pending ?? {}).length })
     }
