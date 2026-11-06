@@ -65,6 +65,7 @@
     "test:approval-grant-scope": "node --import ./test-support/register.mjs test-approval-grant-scope.mjs",
     "test:connection-admission": "node --import ./test-support/register.mjs test-connection-admission.mjs",
     "test:pending-approval": "node --import ./test-support/register.mjs test-pending-approval.mjs",
+    "test:oauth-write-scope": "node --import ./test-support/register.mjs test-oauth-write-scope.mjs",
     "test:connection-notify": "node --import ./test-support/register.mjs test-connection-notify.mjs",
     "test:overview-stats": "node --import ./test-support/register.mjs test-overview-stats.mjs",
     "test:secret-read-by-id": "node --import ./test-support/register.mjs test-secret-read-by-id.mjs",

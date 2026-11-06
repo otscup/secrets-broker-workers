@@ -322,6 +322,9 @@ jobs:
       - name: Item approval wait, deny and replay (no runtime)
         shell: bash
         run: npm run test:pending-approval 2>&1 | tee "$RUNNER_TEMP/ci-logs/pending-approval.log"
+      - name: OAuth consent write scope, duration and admission (no runtime)
+        shell: bash
+        run: npm run test:oauth-write-scope 2>&1 | tee "$RUNNER_TEMP/ci-logs/oauth-write-scope.log"
       - name: Overview stats and detail panels (no runtime)
         shell: bash
         run: npm run test:overview-stats 2>&1 | tee "$RUNNER_TEMP/ci-logs/overview-stats.log"

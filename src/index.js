@@ -2358,65 +2358,28 @@ async function decideConnectionRequest(env, { id, decision, payload = {}, via = 
   return { status: 200, body: { ok: true, connection: connectionRecordView(await loadState(env), approved) } }
 }
 
-// Materialises the approved scope into the same authority the per-item
-// approval would have created: a read capability per item, plus a standing
-// write ticket when the operator ticked write. A live capability is never
-// overwritten (one approval must not reset counters another approval set).
-// Returns how many of each were actually created for the audit row.
+// The admission itself is the authority: coverage is judged when the read or
+// write actually happens (connectionAllowsItem + plaintextAllowed/writeAllowed),
+// not by minting one capability and one ticket per item. The old batch write
+// missed any item created after the approval, and it put a copy of every item
+// into the single Durable Object state object.
+// Returns how many items the approval covers, for the audit row.
 function grantConnectionScope(state, record) {
   const account = String(record.account ?? '').trim()
   if (!isWellFormedAccountId(account)) return { reads: 0, writes: 0 }
-  const itemIds = record.scope?.all === true
-    ? Object.values(state.itemIds ?? {})
-    : (record.scope?.itemIds ?? [])
-  const expiresMs = record.expiresAt ? Date.parse(record.expiresAt) : null
-  const grantExpiresAt = expiresMs ?? 0
   const agentName = String(record.agent ?? '')
-  let reads = 0
-  let writes = 0
-  state.capabilities ??= {}
-  state.grants ??= {}
   if (record.writeAllowed === true) {
-    state.writeTickets ??= {}
-    // The write flag is the outer gate in put_secret; a scope-limited ticket
-    // still decides which items it applies to.
+    // The write flag is the outer gate in put_secret; the admission decides
+    // which items it applies to.
     const agent = state.agents?.[agentName]
     if (agent) agent.write = true
     const profile = state.oauthAgentProfiles?.[agentName]
     if (profile) profile.write = true
   }
-  for (const itemId of itemIds) {
-    const itemName = itemNameOf(state, itemId)
-    if (!itemId || !itemName) continue
-    const key = capabilityKey(agentName, itemId, 'secret.read')
-    const existing = state.capabilities[key]
-    const live = existing && !existing.revokedAt && !existing.exhaustedAt
-      && (existing.expiresAt == null || Number(existing.expiresAt) > Date.now())
-    if (!live) {
-      state.capabilities[key] = {
-        id: key, subjectId: agentName, accountId: account, itemId, itemName,
-        action: 'secret.read', mode: 'temporary', createdAt: nowIso(),
-        createdBy: 'connection:' + (record.id ?? ''), expiresAt: expiresMs,
-        maxUses: null, usedCount: 0, revokedAt: null, revokedBy: null,
-        approvalId: record.id ?? null, policyVersion: 1,
-        regrantedFrom: existing ? (existing.revokedAt ? 'revoked' : (existing.exhaustedAt ? 'exhausted' : 'expired')) : null,
-      }
-      state.grants[grantKey(agentName, itemName)] = {
-        agent: agentName, name: itemName, action: 'secret.read', mode: 'connection',
-        createdAt: nowIso(), expiresAt: grantExpiresAt, reads: 0, maxReads: null,
-        revokedAt: null, account,
-      }
-      reads += 1
-    }
-    if (record.writeAllowed === true) {
-      state.writeTickets[grantKey(agentName, itemName)] = {
-        agent: agentName, name: itemName, account, createdAt: nowIso(),
-        expiresAt: grantExpiresAt, mode: expiresMs ? 'connection' : 'always', singleUse: false,
-      }
-      writes += 1
-    }
-  }
-  return { reads, writes }
+  const itemIds = record.scope?.all === true
+    ? Object.values(state.itemIds ?? {})
+    : (record.scope?.itemIds ?? [])
+  return { reads: itemIds.length, writes: record.writeAllowed === true ? itemIds.length : 0 }
 }
 
 function connectionDecision(record, now = Date.now()) {
@@ -2436,10 +2399,17 @@ async function connectionAdmission(env, { state, agentName, account, request, or
   if (state.connectionPolicy?.required === false) return { ok: true, record: null, disabled: true }
   const accountKey = String(account ?? '').trim().toLowerCase()
   const source = await connectionSourceOf(request)
-  const sameSource = (record) => record
-    && record.agent === agentName
-    && String(record.account ?? '').trim().toLowerCase() === accountKey
-    && String(record.source?.ipHash ?? '') === source.ipHash
+  const sameSource = (record) => {
+    if (!record) return false
+    if (record.agent !== agentName) return false
+    if (String(record.account ?? '').trim().toLowerCase() !== accountKey) return false
+    // An OAuth client is identified by agent + account. The address it happens
+    // to use on the next call is not part of the operator's answer: a mobile
+    // network or a changed NAT would otherwise turn one consent into a second
+    // approval prompt. Token agents still bind to their source.
+    if (String(agentName).startsWith('oauth:')) return true
+    return String(record.source?.ipHash ?? '') === source.ipHash
+  }
   // A row outside its window is history, not an admission: it must not block a
   // fresh request from the same source. Only a live pending/approved/denied row
   // decides this call.
@@ -5480,6 +5450,14 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     await addAudit(env, { event: 'connection.access-deny', agent: agentName, name, itemId, action, reasonCode: 'connection-plaintext-denied' })
     return { status: 'forbidden', code: 'connection-plaintext-denied', reason: 'connection-plaintext-denied', reasonCode: 'connection-plaintext-denied', error: connectionMessage('connection-plaintext-denied') }
   }
+  // The approved admission is the operator's answer for this agent in this
+  // range: plaintext allowed means reads succeed, and the range is re-checked
+  // per call so an item created after the approval is covered too. No ticket is
+  // consumed, because there is no per-item capability to spend.
+  const admittedRead = action === 'secret.read'
+    && Boolean(connection) && connection.state === 'approved'
+    && connection.plaintextAllowed === true
+    && connectionAllowsItem(connection, itemId)
   const decision = authorizeSecretAction(state, { agent, agentName, itemId, itemName: name, action, target, accountId: session.email })
   await shadowAudit(env, state, action, agentName, name, itemId, decision.ok, decision.legacy)
 
@@ -5504,7 +5482,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     // what pressing 批准 would do — the only difference is who answered.
     const autoRuleLive = autoRuleActive(state, agentName)
     const inScope = Boolean(itemId) && agentInScope(agent, state.itemGroups, name)
-    if (!decision.grantEligible && !decision.legacy && !autoRuleLive && !createRequest) {
+    if (!admittedRead && !decision.grantEligible && !decision.legacy && !autoRuleLive && !createRequest) {
       const why = !itemId ? '当前账户里没有名为「' + name + '」的条目（名字必须与面板完全一致，空格也算）'
         : !inScope ? '该条目不在 Agent 的可申请范围内；请管理员在「Agent 权限矩阵」里把它加入该 Agent 的可申请范围（先勾选范围，再批准一次）'
         : '在可申请范围内，但缺少这条授权'
@@ -5532,7 +5510,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   //                approval or an admin pre-grant mints).
   const legacyGrant = action === 'secret.read' ? activeGrant(state, agentName, name) : null
   const noApprovalSatisfies = action === 'secret.read' && policy?.noApproval === true
-  if (!noApprovalSatisfies && (!decision.capability || needsTargetApproval) && !legacyGrant) {
+  if (!admittedRead && !noApprovalSatisfies && (!decision.capability || needsTargetApproval) && !legacyGrant) {
     // The operator already answered this exact request and said no. Return that
     // answer instead of queueing the same question again: a client that waited
     // for the decision replays the call, and without this it would look like the
@@ -5605,7 +5583,7 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
     ? plaintextReadAllowed(state, itemId, {
       agent: agentName,
       noApproval: policy?.noApproval === true,
-      granted: (decision.capability || legacyGrant) ? { subject: agentName, accountId: session.email } : null,
+      granted: (decision.capability || legacyGrant || admittedRead) ? { subject: agentName, accountId: session.email } : null,
     })
     : { ok: true }
   if (!readGuard.ok) {
@@ -5721,10 +5699,10 @@ function oauthMetadata(origin) {
     token_endpoint: `${origin}/oauth/token`,
     registration_endpoint: `${origin}/oauth/register`,
     response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code'],
+    grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
-    scopes_supported: ['secrets.read'],
+    scopes_supported: ['secrets.read', 'secrets.write'],
   }
 }
 
@@ -5815,11 +5793,19 @@ function oauthConsentPage(origin, params, client, catalog = { items: [], groups:
       '<input type="checkbox" name="remember_app" value="1" checked></label></div>' +
       '<p class="hint">这个名称由客户端自己填写，不能当作身份证明。若不是你刚才在自己的 Agent 里点开授权，直接点「拒绝」。取消勾选则下次还会再问一次。</p>'
     : '<p class="hint">这个应用已经在本站确认过：<code>' + escape(client?.clientName || client?.clientId || '') + '</code>。</p>'
+  // The write switch only appears when the client actually asked for
+  // secrets.write: a token must never carry authority the client did not
+  // request, and an operator cannot widen a request by ticking a box.
+  const requestedScope = String(params.get('scope') ?? 'secrets.read')
+  const wantsWrite = requestedScope.split(/[\s,]+/).includes('secrets.write')
+  const writeRow = wantsWrite
+    ? '<label class="row"><input type="checkbox" name="grant_write" value="1"><span>同时允许写入（新增或修改条目）</span></label>'
+    : ''
   return '<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>MCP 授权 · Secrets Broker</title><style>' + consolePageCss() + '</style>' + consoleThemeBoot() + '</head><body><div class="wrap wrap--wide">' +
     '<div class="brand"><img src="/logo.png" alt=""><div><h1>MCP 授权</h1><p class="sub">客户端 <code>' + escape(client?.clientName ?? params.get('client_id')) + '</code> 请求访问你的密钥库</p></div></div>' +
     '<form method="post" action="/oauth/authorize">' + field('client_id') + field('redirect_uri') + field('state') + field('code_challenge') + field('code_challenge_method') +
     firstVisit + field('scope') +
-    '<p class="hint">Scope: ' + escape(params.get('scope') ?? 'secrets.read') + ' · 勾选只给它申请和读取的资格，值本身还要看同类里的明文开关。不勾则暂时不给任何条目。</p>' +
+    '<p class="hint">Scope: ' + escape(requestedScope) + ' · 勾选只给它申请和读取的资格，值本身还要看同类里的明文开关。不勾则暂时不给任何条目。</p>' +
     '<div class="group-head">可申请条目</div>' + boxes('grant_items', catalog.items) +
     '<div class="group-head">可申请分组</div>' + boxes('grant_groups', catalog.groups) +
     '<div class="group">' +
@@ -5831,10 +5817,11 @@ function oauthConsentPage(origin, params, client, catalog = { items: [], groups:
     // Off by default, and short: granting scope must not silently open the
     // plaintext door for a month. The operator opts in and picks the window.
     '<label class="row"><input type="checkbox" name="grant_plaintext" value="1"><span>同时允许读取明文值</span></label>' +
-    '<label class="row"><span class="row__label">明文有效期</span>' +
+    writeRow +
+    '<label class="row"><span class="row__label">授权有效期</span>' +
     '<select name="grant_hours"><option value="1">1 小时</option><option value="24" selected>24 小时</option><option value="168">7 天</option><option value="720">30 天</option></select></label>' +
     '</div>' +
-    '<p class="hint">不勾选明文时，Agent 只能看到条目名称并提交审批申请，读不到值。web 类型的网站登录无论是否勾选都不会给明文。</p>' +
+    '<p class="hint">不勾选明文时，Agent 只能看到条目名称并提交审批申请，读不到值。web 类型的网站登录无论是否勾选都不会给明文。写入同样只在勾选后生效，且仅限上面选中的条目。</p>' +
     '<div class="btn-row"><button class="primary" name="decision" value="allow">允许</button><button class="secondary" name="decision" value="deny">拒绝</button></div></form></div></body></html>'
 }
 
@@ -9325,7 +9312,7 @@ export default {
       })
     }
     if (url.pathname === '/.well-known/oauth-protected-resource' || url.pathname === '/.well-known/oauth-protected-resource/mcp') {
-      return json({ resource: `${url.origin}/mcp`, authorization_servers: [url.origin], scopes_supported: ['secrets.read'] })
+      return json({ resource: `${url.origin}/mcp`, authorization_servers: [url.origin], scopes_supported: ['secrets.read', 'secrets.write'] })
     }
     if (url.pathname === '/.well-known/oauth-authorization-server' || url.pathname === '/.well-known/oauth-authorization-server/mcp') {
       return json(oauthMetadata(url.origin))
@@ -9364,7 +9351,7 @@ export default {
       // consent page, which mints the only token-issuing code. Recorded so a
       // registration nobody recognises is visible rather than silent.
       await addAudit(env, { event: 'oauth.client-register', clientId, clientName: body.client_name ?? '', source: 'registration' })
-      return json({ client_id: clientId, client_name: body.client_name ?? 'MCP client', redirect_uris: redirectUris, token_endpoint_auth_method: 'none', grant_types: ['authorization_code'], response_types: ['code'] }, 201)
+      return json({ client_id: clientId, client_name: body.client_name ?? 'MCP client', redirect_uris: redirectUris, token_endpoint_auth_method: 'none', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'] }, 201)
     }
     if (url.pathname === '/oauth/authorize') {
       const state = await loadState(env)
@@ -9478,6 +9465,16 @@ export default {
         const grantGroups = params.getAll('grant_groups').map((value) => String(value)).filter(Boolean)
         const grantAll = params.get('grant_all') === '1'
         const grantPlaintext = params.get('grant_plaintext') === '1'
+        // Write authority needs both halves: the client asked for secrets.write
+        // in its scope, and the operator ticked grant_write. Without the tick
+        // the scope is trimmed back, so the token never advertises a power the
+        // operator did not hand over.
+        const requestedScope = String(params.get('scope') ?? 'secrets.read')
+        const scopeList = requestedScope.split(/[\s,]+/).filter(Boolean)
+        const grantWrite = params.get('grant_write') === '1' && scopeList.includes('secrets.write')
+        const effectiveScope = (scopeList.includes('secrets.write') && !grantWrite
+          ? scopeList.filter((value) => value !== 'secrets.write')
+          : scopeList).join(' ') || 'secrets.read'
         const grantHours = Math.max(1, Math.min(720, Number(params.get('grant_hours')) || 24))
         const rememberApp = params.get('remember_app') === '1'
         if (rememberApp && !client.trustedAt) {
@@ -9485,10 +9482,10 @@ export default {
           await addAudit(env, { event: 'oauth.client-trust', clientId, clientName: client.clientName ?? '' })
         }
         await updateState(env, (next) => {
-          next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', scope: String(params.get('scope') ?? 'secrets.read'), account, createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000, grantItems, grantGroups, grantAll, grantPlaintext, grantHours }
+          next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', scope: effectiveScope, account, createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000, grantItems, grantGroups, grantAll, grantPlaintext, grantWrite, grantHours }
           return next
         })
-        await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId, items: grantItems.length, groups: grantGroups.length, all: grantAll, plaintext: grantPlaintext, hours: grantPlaintext ? grantHours : 0, source: 'console' })
+        await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId, items: grantItems.length, groups: grantGroups.length, all: grantAll, plaintext: grantPlaintext, write: grantWrite, scope: effectiveScope, hours: grantPlaintext ? grantHours : 0, source: 'console' })
         const target = new URL(redirectUri); target.searchParams.set('code', code); if (params.get('state')) target.searchParams.set('state', params.get('state'))
         return Response.redirect(target.toString(), 302)
       }
@@ -9496,13 +9493,65 @@ export default {
     }
     if (url.pathname === '/oauth/token' && request.method === 'POST') {
       const form = new URLSearchParams(await request.text())
-      if (form.get('grant_type') !== 'authorization_code') return json({ error: 'unsupported_grant_type' }, 400)
+      const grantType = String(form.get('grant_type') ?? '')
+      if (grantType !== 'authorization_code' && grantType !== 'refresh_token') return json({ error: 'unsupported_grant_type' }, 400)
       const code = String(form.get('code') ?? '')
       const state = await loadState(env)
       // A code exchange needs no credential to reach, so cap failed attempts per
       // address using the same 15-minute window as the login throttle.
       const tokenKey = `${clientIp(request)}\u0000oauth-token`
       if (rateLimited(state, tokenKey, 40)) return json({ error: 'temporarily_unavailable', error_description: 'too many token requests' }, 429)
+      // A grant longer than a day gets a refresh token so the operator's chosen
+      // window is actually usable; renewing still stops at grantExpiresAt, so a
+      // refresh never outlives the consent.
+      if (grantType === 'refresh_token') {
+        const presented = String(form.get('refresh_token') ?? '')
+        const matchesClient = (record) => (record
+          ? String(form.get('client_id') ?? record.clientId) === String(record.clientId)
+          : false)
+        const refreshHash = presented ? await sha256Base64(presented) : ''
+        const record = refreshHash ? state.oauthRefreshTokens?.[refreshHash] : null
+        const denyRefresh = async (description) => {
+          await recordLoginFailure(env, tokenKey).catch(() => {})
+          await addAudit(env, { event: 'oauth.token-deny', agent: 'oauth:' + String(record?.clientId ?? form.get('client_id') ?? ''), reason: description }).catch(() => {})
+          return json({ error: 'invalid_grant', error_description: description }, 400)
+        }
+        if (!presented) return denyRefresh('refresh_token missing')
+        if (!record || Number(record.expiresAt) <= Date.now()) return denyRefresh('refresh token missing or expired')
+        if (!matchesClient(record)) return denyRefresh('client_id mismatch')
+        const remaining = Number(record.grantExpiresAt ?? 0) - Date.now()
+        if (remaining <= 0) return denyRefresh('authorisation expired')
+        const accessToken = randomToken() + randomToken()
+        const hash = await sha256Base64(accessToken)
+        const expiresAt = Date.now() + Math.min(remaining, 24 * 3600e3)
+        const rotated = randomToken() + randomToken()
+        const rotatedHash = await sha256Base64(rotated)
+        let renewed = false
+        await updateState(env, (next) => {
+          renewed = false
+          if (!next.oauthRefreshTokens?.[refreshHash]) return next
+          delete next.oauthRefreshTokens[refreshHash]
+          renewed = true
+          next.oauthTokens ??= {}
+          next.oauthTokens[hash] = {
+            hash, agent: record.agent, clientId: record.clientId, account: record.account,
+            scope: record.scope, grantHours: record.grantHours, grantExpiresAt: record.grantExpiresAt,
+            createdAt: nowIso(), expiresAt,
+          }
+          next.oauthRefreshTokens[rotatedHash] = { ...record, hash: rotatedHash, createdAt: nowIso() }
+          for (const [key, value] of Object.entries(next.oauthRefreshTokens)) {
+            if (key !== rotatedHash && Number(value?.expiresAt ?? 0) <= Date.now()) delete next.oauthRefreshTokens[key]
+          }
+          return next
+        })
+        if (!renewed) return denyRefresh('refresh token already used')
+        await addAudit(env, { event: 'oauth.token-refresh', agent: record.agent, clientId: record.clientId })
+        return json({
+          access_token: accessToken, token_type: 'Bearer',
+          expires_in: Math.round((expiresAt - Date.now()) / 1000),
+          refresh_token: rotated, scope: record.scope,
+        })
+      }
       const entry = state.oauthCodes[code]
       // Every rejection is audited so a failed client exchange is diagnosable
       // instead of looking like the authorization silently did nothing.
@@ -9525,7 +9574,17 @@ export default {
       const accessToken = randomToken() + randomToken()
       const hash = await sha256Base64(accessToken)
       const agentName = 'oauth:' + entry.clientId
-      const expiresAt = Date.now() + 24 * 3600 * 1000
+      // The operator's grant_hours is the lifetime of the authorisation, not
+      // just a label on the plaintext window. Access tokens stay capped at 24h
+      // (short-lived bearer credentials), and a longer grant also gets a
+      // refresh token so the client does not have to walk the consent page
+      // again every day.
+      const grantMs = (Number(entry.grantHours) || 24) * 3600e3
+      const grantExpiresAt = Date.now() + grantMs
+      const accessMs = Math.min(grantMs, 24 * 3600e3)
+      const expiresAt = Date.now() + accessMs
+      const refreshToken = grantMs > 24 * 3600e3 ? randomToken() + randomToken() : ''
+      const refreshHash = refreshToken ? await sha256Base64(refreshToken) : ''
       const session = await getSession(env)
       const account = entry.account || session?.email || await vaultEmail(env, env.NODEWARDEN_DB, state)
       // `state.itemIds` is an append-only name->id cache: it keeps names from
@@ -9543,6 +9602,12 @@ export default {
       // Set only by the mutation that actually removes the code. A CAS retry
       // re-runs the mutation, so each attempt starts by assuming it lost.
       let consumed = false
+      // The admission carries a source for display, but its identity is agent +
+      // account (see connectionAdmission): a later call from another address is
+      // still the same consent, not a new connection to approve.
+      const source = await connectionSourceOf(request)
+      let lastAdmissionId = ''
+      let lastAdmissionScope = []
       await updateState(env, (next) => {
         // The read above cannot be atomic with this write, so re-check the code
         // here: two concurrent exchanges must not both mint a token.
@@ -9552,10 +9617,23 @@ export default {
         // The code was present in the snapshot this write commits, so the
         // exchange won the race and must return the token it just minted.
         consumed = true
-        next.oauthTokens[hash] = { hash, agent: agentName, clientId: entry.clientId, account, createdAt: nowIso(), expiresAt }
+        next.oauthTokens[hash] = { hash, agent: agentName, clientId: entry.clientId, account, scope: entry.scope, grantHours: Number(entry.grantHours) || 24, grantExpiresAt, createdAt: nowIso(), expiresAt }
+        if (refreshHash) {
+          next.oauthRefreshTokens ??= {}
+          next.oauthRefreshTokens[refreshHash] = {
+            hash: refreshHash, agent: agentName, clientId: entry.clientId, account,
+            scope: entry.scope, grantHours: Number(entry.grantHours) || 24, grantExpiresAt,
+            createdAt: nowIso(), expiresAt: grantExpiresAt,
+          }
+        }
         next.oauthAgentProfiles ??= {}
         const profile = next.oauthAgentProfiles[agentName] ??= { alias: next.oauthClients?.[entry.clientId]?.clientName ?? '', note: entry.clientId, allow: [], groups: [], allowAll: false, write: false, legacy: false }
         if (!profile.note) profile.note = entry.clientId
+        // Write authority is the conjunction of the operator's tick and the
+        // token's scope. Both were decided at the consent page; anything else
+        // (a client that asked but was not ticked, or a code carrying the
+        // trimmed scope) stays read-only.
+        profile.write = entry.grantWrite === true && String(entry.scope ?? '').split(/[\s,]+/).includes('secrets.write')
         // The consent choices become this Agent's scope, so the read it was
         // connected for works on the first call instead of failing with
         // "not allowed to read this item" and sending the operator back to the
@@ -9566,15 +9644,14 @@ export default {
         if (Array.isArray(entry.grantGroups) && entry.grantGroups.length) profile.groups = [...new Set([...(profile.groups ?? []), ...entry.grantGroups])]
         // Scope alone only permits a request; it does not clear the read guard.
         // The plaintext policy is written only when the operator ticked it, and
-        // for the window they picked. The capability is always minted so the
-        // Agent can read once approved — a scope grant is not a month-long
-        // authority by accident.
+        // for the window they picked. No per-item capability is minted: the
+        // admission written below is judged at read time, so items created after
+        // this consent are covered as well.
         next.plaintextReadPolicies ??= {}
         const wanted = new Set()
         for (const name of entry.grantItems ?? []) if (liveIds.has(name)) wanted.add(name)
         if (entry.grantAll === true) for (const name of liveIds.keys()) wanted.add(name)
         const livedMs = (Number(entry.grantHours) || 24) * 3600e3
-        next.capabilities ??= {}
         for (const name of wanted) {
           const itemId = liveIds.get(name)
           if (!itemId) continue
@@ -9584,31 +9661,54 @@ export default {
           if (entry.grantPlaintext === true) {
             next.plaintextReadPolicies[itemId] = { itemId, accountId: account, expiresAt: Date.now() + livedMs, updatedAt: nowIso() }
           }
-          // Without the plaintext tick the operator granted scope, not a read:
-          // the Agent may ask for this item, and the answer comes from the
-          // approval page. Minting the capability anyway is what made "I never
-          // allowed plaintext" and "everything was readable" both true.
-          if (entry.grantPlaintext !== true) continue
-          const ckey = capabilityKey(agentName, itemId, 'secret.read')
-          if (!next.capabilities[ckey]?.revokedAt) {
-            next.capabilities[ckey] = {
-              id: ckey, subjectId: agentName, accountId: account, itemId, itemName: name, action: 'secret.read',
-              mode: 'preapproved', createdAt: nowIso(), createdBy: 'oauth-consent:' + account,
-              // The operator's own answer to "may this Agent read the value".
-              // Without the tick a grant only lets the Agent ask: reading
-              // still goes through the approval page.
-              plaintext: entry.grantPlaintext === true,
-              expiresAt: Date.now() + (entry.grantPlaintext === true ? livedMs : 24 * 3600e3),
-              maxUses: null, usedCount: 0,
-              revokedAt: null, revokedBy: null, approvalId: null, policyVersion: 1,
-            }
-          }
         }
+        // Consent is the admission: the operator just answered "connection,
+        // range, plaintext, write, duration" on one page. Writing it here means
+        // the first MCP call is already admitted instead of asking for a second
+        // connection approval. One record per agent + account: a re-consent
+        // replaces the previous answer rather than stacking a second live grant.
+        const accountKey = String(account ?? '').trim().toLowerCase()
+        next.connections ??= {}
+        for (const [id, record] of Object.entries(next.connections)) {
+          if (record?.agent === agentName && String(record.account ?? '').trim().toLowerCase() === accountKey) delete next.connections[id]
+        }
+        const scopedIds = entry.grantAll === true ? [] : [...wanted].map((name) => liveIds.get(name)).filter(Boolean)
+        const admissionId = crypto.randomUUID()
+        next.connections[admissionId] = {
+          id: admissionId, agent: agentName, account: accountKey, oauth: true,
+          source, origin: String(url.origin ?? ''),
+          createdAt: nowIso(), expiresAt: new Date(Date.now() + grantMs).toISOString(),
+          state: 'approved',
+          requestedScope: { all: entry.grantAll === true, itemIds: scopedIds },
+          requestedPlaintext: entry.grantPlaintext === true,
+          scope: { all: entry.grantAll === true, itemIds: scopedIds },
+          plaintextAllowed: entry.grantPlaintext === true,
+          writeAllowed: entry.grantWrite === true,
+          ttlMs: grantMs,
+          decidedAt: nowIso(), decidedBy: 'oauth-consent:' + accountKey, reasonCode: null,
+          grantExpiresAt,
+        }
+        lastAdmissionId = admissionId
+        lastAdmissionScope = scopedIds
         return next
       })
       if (!consumed) return reject('code already used')
+      await addAudit(env, {
+        event: 'connection.approve', agent: agentName, requestId: lastAdmissionId,
+        account: String(account ?? '').trim().toLowerCase(), all: entry.grantAll === true,
+        itemIds: lastAdmissionScope, itemCount: lastAdmissionScope.length,
+        plaintextAllowed: entry.grantPlaintext === true, writeAllowed: entry.grantWrite === true,
+        grantedReads: lastAdmissionScope.length,
+        grantedWrites: entry.grantWrite === true ? lastAdmissionScope.length : 0,
+        ttlMs: grantMs, expiresAt: new Date(Date.now() + grantMs).toISOString(), via: 'oauth-consent',
+      })
       await addAudit(env, { event: 'oauth.token-issue', agent: agentName, clientId: entry.clientId, items: (entry.grantItems ?? []).length, groups: (entry.grantGroups ?? []).length, all: entry.grantAll === true })
-      return json({ access_token: accessToken, token_type: 'Bearer', expires_in: 86400, scope: entry.scope })
+      return json({
+        access_token: accessToken, token_type: 'Bearer',
+        expires_in: Math.round(accessMs / 1000),
+        scope: entry.scope,
+        ...(refreshToken ? { refresh_token: refreshToken } : {}),
+      })
     }
     // ── Sync (stage 1: read-only) ──────────────────────────────────────────
     // A sibling broker asks for the encrypted rows so the operator's browser or
@@ -9819,7 +9919,13 @@ const TOOL_META = {
             // agent may not touch can only be wasted.
             if (!agentInScope(resolved.agent, resolved.state.itemGroups, itemName, fields.group)) return result(text('agent not allowed to write this item: it is outside the agent scope', true))
             const ticket = resolved.state.writeTickets?.[ticketKey] ?? null
-            const ticketLive = writeTicketLive(ticket, session.email)
+            // The approved admission covers writes in its range, so a new item
+            // under "all" works without a ticket that could never have been
+            // minted for it.
+            const admittedWrite = Boolean(admission.record) && admission.record.state === 'approved'
+              && admission.record.writeAllowed === true
+              && connectionAllowsItem(admission.record, resolved.state.itemIds?.[itemName])
+            const ticketLive = admittedWrite || writeTicketLive(ticket, session.email)
             if (!ticketLive) {
               // A refusal the operator already made must not be re-asked: the
               // client replays after the decision and would otherwise see a
@@ -9860,7 +9966,7 @@ const TOOL_META = {
             })
             if (existing) await updateCipher(env, env.NODEWARDEN_DB, session, itemName, fields)
             else await createCipher(env, env.NODEWARDEN_DB, session, { name: itemName, ...fields })
-            await addAudit(env, { event: 'secret.write', agent: resolved.name, name: itemName, action: 'secret.write', source: ticket?.singleUse === false ? 'authorisation' : 'approval', mode: ticket?.mode ?? 'once' })
+            await addAudit(env, { event: 'secret.write', agent: resolved.name, name: itemName, action: 'secret.write', source: admittedWrite ? 'admission' : (ticket?.singleUse === false ? 'authorisation' : 'approval'), mode: admittedWrite ? 'connection' : (ticket?.mode ?? 'once') })
             return result(text({ status: 'written', name: itemName, updated: Boolean(existing) }))
           }
           if (name === 'explain_access') {

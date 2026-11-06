@@ -117,7 +117,18 @@ do {
 - `request_access` 在 `outside_scope` / `not-in-scope` / `no-grant` 时返回 `next_step`（人话的补救动作）与 `docs`。只渲染 `code` 的第三方客户端也能据此提示管理员去「Agents → 权限矩阵」加入可申请范围。
 - 控制台新增 `rotateReminderDays`（默认 180）与 `expiryBlocksReads`（默认 `false`）。后者只有显式打开才会让到期条目的 `secret.read` 被拒绝，默认只提醒、不改变任何授权判定。
 
-## 6. `/api/lock` 会清除本会话所有 Vault 2.0 密钥槽（0.7.3 起，行为收紧，有意为之）
+## 6. OAuth 同意页：写入、时长与准入（对客户端可见的变化）
+
+同意页现在一次决定「连接 + 可读范围 + 是否明文 + 是否写入 + 有效期」。对直接对接 OAuth 的客户端有以下可见变化：
+
+- **可申请写入**：`/.well-known/oauth-protected-resource` 与授权服务器的 `scopes_supported` 增加 `secrets.write`。只有客户端在 `scope` 里申请 **且** 管理员在同意页勾选「同时允许写入」时，token 才带 `secrets.write`；否则服务端会把该 scope 裁掉，`put_secret` 返回 `this agent is not allowed to write`。
+- **有效期真的生效**：`grant_hours` 同时约束 admission 与 token。access token 仍按 24 小时封顶（`expires_in: 86400`）；`grant_hours > 24` 时额外返回 `refresh_token`，可用 `grant_type=refresh_token` 换新 access token（刷新会轮换 refresh token，旧值立即失效，且总时长不会超过同意时选定的窗口）。
+- **同意即准入**：换取 token 时直接写入一条 `approved` 的连接准入记录（按 `agent + 账号` 识别，不再用 IP）。首个 MCP 调用不会再弹第二次「连接审批」。同一 agent 再次授权会替换旧记录，而不是叠加。
+- **按调用判定范围**：批准后不再逐条目预写 capability / 写入票，读和写在发生时按准入记录判定，因此授权之后新增的条目（`scope.all`）也能直接用；此前"批了全部但新条目仍要逐次申请"的问题即由此消除。
+
+对自己的脚本：读取 `state.capabilities` / `state.writeTickets` 来判断"某条目是否已授权"的做法不再成立，请改看 `/api/connections` 或 `connection` 准入记录，或直接调用工具观察 `not_found` / 拒绝文案。
+
+## 7. `/api/lock` 会清除本会话所有 Vault 2.0 密钥槽（0.7.3 起，行为收紧，有意为之）
 
 调用 `/api/lock` 现在会删除该会话的全部 v2 密钥槽（含 `plainOk` 明文确认位），以及控制台 helper 使用的 account 镜像槽。锁定后同一个 cookie 再请求 `/api/v2/items?plain=1` 返回 **423**，`/api/me` 的 `unlocked` 为 `false`，刷新页面也保持未解锁；要继续使用必须重新输入主密码解锁。
 
