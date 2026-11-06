@@ -629,9 +629,10 @@ async function main() {
 
   // 19: one approval must cover the chosen scope. A connection approval used to
   // only admit the device; every later read/write still asked, which is what
-  // "I already granted this and it asks again" described. Approving with a
-  // scope now mints the same read capability a per-item approval would, and
-  // ticking write leaves a standing write ticket for the same items.
+  // "I already granted this and it asks again" described. The admission itself
+  // is now the authority and is judged at read/write time, so nothing is
+  // pre-minted per item (an item added later is covered too) — the behavioural
+  // assertions below are what matters, not the absence of capability rows.
   {
     const env = await freshEnv()
     // The grandfathered helper agent has blanket read. Remove it so the only
@@ -649,14 +650,11 @@ async function main() {
     ok('一次批准同时记录写入许可',
       approved.status === 200 && approved.body.connection.writeAllowed === true, JSON.stringify(approved.body))
     const state = await readState(env)
-    const capKey = HARNESS.AGENT + '\u0000' + HARNESS.ITEM_ID + '\u0000secret.read'
-    ok('批准生成了该条目的读取能力、授权行与写入位',
-      Boolean(state.capabilities?.[capKey])
-      && Boolean(state.grants?.[HARNESS.AGENT + '\u0000' + HARNESS.ITEM])
-      && state.agents[HARNESS.AGENT].write === true,
+    ok('批准只翻写入位，不再批量铸能力或写入票',
+      state.agents[HARNESS.AGENT].write === true
+      && Object.keys(state.capabilities ?? {}).length === 0
+      && Object.keys(state.writeTickets ?? {}).length === 0,
       JSON.stringify({ caps: Object.keys(state.capabilities ?? {}), grants: Object.keys(state.grants ?? {}) }))
-    ok('批准生成了该条目的写入票',
-      Boolean(state.writeTickets?.[HARNESS.AGENT + '\u0000' + HARNESS.ITEM]))
     const second = await getSecret(env)
     ok('范围内再次读取不再要求审批', second.status === 200, String(second.status))
     const after = await readState(env)
