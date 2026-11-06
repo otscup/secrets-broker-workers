@@ -122,28 +122,27 @@ if (skip) {
   record('C2 cancelling posts the request id to the broker', Boolean(cancel) && id === 'r1', JSON.stringify({ cancel, id }))
 }
 
-// C3: the store tab lists stored keys with a delete control, no name retyping.
+// C3: deletion moved to the settings page, so the popup's add tab points there
+// and offers no delete control of its own (the old list is gone).
 const addChip = findButton(overlay, '添加')
-if (!addChip) record('C3 the store tab lists stored keys with a delete control', false, 'no 添加 tab')
+if (!addChip) record('C3 the add tab points deletion at settings', false, 'no 添加 tab')
 else {
   addChip.onclick()
   await sleep(300)
   const kill = findDelete(overlay)
-  const label = findLabelled(overlay, 'tavily-api-key', 'SPAN')
-  record('C3 the store tab lists stored keys with a delete control', Boolean(kill) && Boolean(label), JSON.stringify({ kill: Boolean(kill), label: Boolean(label) }))
+  const hint = findLabelled(overlay, '设置 → 密钥授权', 'DIV')
+  record('C3 the add tab points deletion at settings', Boolean(hint) && !kill, JSON.stringify({ kill: Boolean(kill), hint: Boolean(hint) }))
 }
 
-// C4: deleting from the list posts the item name that was clicked.
+// C4: a popup click must never post /items/delete; that request only comes
+// from the settings table now.
 if (doc.body.children.includes(overlay)) {
+  const before = calls.length
   const kill = findDelete(overlay)
-  if (kill) {
-    const before = calls.length
-    kill.onclick()
-    await sleep(200)
-    const del = calls.slice(before).find((c) => c.method === 'POST' && c.path.includes('/items/delete'))
-    const name = del ? JSON.parse(del.body).name : null
-    record('C4 deleting posts the clicked item name', Boolean(del) && name === 'tavily-api-key', JSON.stringify({ del, name }))
-  } else record('C4 deleting posts the clicked item name', false, 'no delete button')
+  if (kill) kill.onclick()
+  await sleep(200)
+  const del = calls.slice(before).find((c) => c.method === 'POST' && c.path.includes('/items/delete'))
+  record('C4 the popup never posts a delete request', !kill && !del, JSON.stringify({ kill: Boolean(kill), del }))
 }
 
 // C5: a tab click while a load is running still switches the tab. Each load

@@ -532,14 +532,57 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
 
     function startPopup(ctx) {
       // One short label per audit event, so the activity list reads as sentences
-      // instead of dotted identifiers.
-      const eventLabel = (event) => ({
-        'secret.read': '读取', 'secret.read-deny': '拒读', 'secret.write': '写入', 'secret.write-deny': '拒写',
+      // instead of dotted identifiers. Direct entries cover every event the
+      // broker emits; the family/verb pass keeps a new event in Chinese instead
+      // of falling back to a bare English verb, and only an event whose family
+      // we do not know at all shows its raw id behind "其他事件".
+      const eventFamilies = {
+        secret: '密钥', connection: '连接', credential: '凭据', vault: '保险库', oauth: 'OAuth 授权',
+        item: '条目', grant: '授权', request: '申请', fill: '填充', ai: 'AI', admin: '管理', policy: '策略', telegram: 'Telegram',
+      };
+      const eventVerbs = {
+        read: '读取', 'read-deny': '拒绝读取', 'read-noapproval': '免审批读取', write: '写入', 'write-deny': '拒绝写入',
+        use: '代持调用', 'use.error': '调用失败', fill: '网页填充', materialize: '生成填充文件',
+        request: '请求', approve: '批准', deny: '拒绝', expire: '过期', expired: '已过期', 'access-deny': '拒绝访问',
+        create: '新建', update: '更新', delete: '删除', rotate: '轮换', 'rotate.restore': '恢复轮换前版本', 'rotate.purge': '清除轮换前版本',
+        share: '授权', revoke: '撤销', adjust: '调整授权', extend: '延长授权', 'auto-approve': '自动批准',
+        unlock: '解锁', lock: '锁定', 'oidc-unlock': '单点登录解锁', register: '注册客户端', token: '签发令牌',
+        'token-refresh': '刷新令牌', 'token-deny': '拒绝令牌', 'redeem-deny': '拒绝兑换',
+        'expiry.update': '更新到期时间', 'fill-policy.update': '更新填充策略', 'use-policy.update': '更新调用策略',
+        'plaintext-read-policy.update': '更新明文策略', 'shadow-mismatch': '策略不一致',
+        login: '登录', 'login-fail': '登录失败', 'oidc-login': '单点登录', 'origin-mismatch': '来源不匹配',
+        connect: '补充', cancel: '取消', ask: '提问',
+      };
+      const eventDirect = {
+        'secret.read': '读取', 'secret.read-deny': '拒读', 'secret.read-noapproval': '免审批读取',
+        'secret.write': '写入', 'secret.write-deny': '拒写', 'secret.use': '代持调用', 'secret.use.error': '调用失败',
+        'secret.fill': '网页填充', 'secret.materialize': '生成填充文件',
+        'connection.request': '连接请求', 'connection.approve': '批准连接', 'connection.deny': '拒绝连接',
+        'connection.expire': '连接过期', 'connection.access-deny': '拒绝连接访问',
+        'vault.unlock': '解锁保险库', 'vault.lock': '锁定保险库', 'vault.oidc-unlock': '单点登录解锁',
+        'credential.request': '请求补充密钥', 'credential.connect': '已补充密钥', 'credential.cancel': '取消补充密钥',
+        'oauth.register': '注册客户端', 'oauth.token': '签发令牌', 'oauth.token-refresh': '刷新令牌', 'oauth.token-deny': '拒绝令牌',
+        'access.denied': '访问被拒', 'fill.redeem-deny': '拒绝兑换', 'policy.shadow-mismatch': '策略不一致',
+        'admin.login': '管理员登录', 'admin.login-fail': '管理员登录失败', 'admin.oidc-login': '管理员单点登录',
+        'admin.origin-mismatch': '来源不匹配',
         'grant.share': '授权', 'grant.revoke': '撤销', 'grant.adjust': '改授权', 'grant.delete': '删授权',
-        'request.create': '申请', 'request.approve': '批准', 'request.deny': '拒绝',
-        'credential.request': '求密钥', 'credential.connect': '已补密钥', 'credential.cancel': '取消求密钥',
-        'item.create': '建条目', 'item.update': '改条目', 'item.delete': '删条目',
-      })[event] || String(event || '').replace(/^[a-z]+\./, '');
+        'grant.expire': '授权过期', 'grant.extend': '延长授权',
+        'request.create': '申请', 'request.approve': '批准', 'request.deny': '拒绝', 'request.auto-approve': '自动批准',
+        'item.create': '建条目', 'item.update': '改条目', 'item.delete': '删条目', 'item.rotate': '轮换',
+        'item.rotate.restore': '恢复轮换前版本', 'item.rotate.purge': '清除轮换前版本', 'item.expiry.update': '更新到期时间',
+        'fill-policy.update': '更新填充策略', 'use-policy.update': '更新调用策略', 'plaintext-read-policy.update': '更新明文策略',
+      };
+      const eventLabel = (event) => {
+        const id = String(event || '');
+        if (eventDirect[id]) return eventDirect[id];
+        const dot = id.indexOf('.');
+        const family = dot < 0 ? id : id.slice(0, dot);
+        const verb = dot < 0 ? '' : id.slice(dot + 1);
+        const familyText = eventFamilies[family] || '';
+        if (familyText && eventVerbs[verb]) return familyText + '·' + eventVerbs[verb];
+        if (familyText) return familyText + '·事件';
+        return '其他事件（' + (id || '未命名') + '）';
+      };
       const dismissed = new Set();
       const drafts = new Map();
       // The add form is rebuilt on every poll, so what the operator typed and
@@ -635,6 +678,10 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
       // Last payload, so a tab click paints at once instead of waiting on the
       // network. Every tab used to refetch all five endpoints, ~1.2s per click.
       let last = null;
+      // The activity tab shows the newest few rows; "查看全部" swaps in a
+      // one-shot 100-row read until the operator toggles back.
+      let showAllActivity = false;
+      let activityAll = null;
       const load = async (fromCache) => {
         if (fromCache && !last) return;
         if (!fromCache) {
@@ -727,6 +774,47 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
           // Collect the nodes, then append them in one pass. No fragment, no
           // repeated reflow, and a minimal DOM stub can drive this too.
           const out = [];
+          // Read-only push page for anything that is not an approval (an
+          // activity row, a token detail). Same slide-in as the approval page.
+          const openInfoPage = (title, subtitle, rows) => {
+            const host = overlay.querySelector('.sb-host');
+            if (!host || overlay.querySelector('.sb-page')) return;
+            const page = cls('div', 'sb-page');
+            const nav = cls('div', 'sb-nav');
+            const back = cls('button', 'sb-icon-btn', '\u2039');
+            back.setAttribute('aria-label', '返回');
+            back.onclick = () => page.remove();
+            nav.appendChild(back);
+            const titles = cls('div', 'sb-row-main');
+            titles.appendChild(cls('div', 'sb-nav-title', title));
+            if (subtitle) titles.appendChild(cls('div', 'sb-nav-sub', subtitle));
+            nav.appendChild(titles);
+            page.appendChild(nav);
+            const pageBody = cls('div', 'sb-body');
+            const group = cls('div', 'sb-card');
+            for (const [label, value] of rows) {
+              const kv = cls('dl', 'sb-kv');
+              kv.appendChild(cls('dt', '', label));
+              kv.appendChild(cls('dd', '', value || '—'));
+              group.appendChild(kv);
+            }
+            pageBody.appendChild(group);
+            page.appendChild(pageBody);
+            overlay.appendChild(page);
+            requestAnimationFrame(() => page.setAttribute('data-in', 'true'));
+          };
+          // "查看全部" is a one-shot 100-row read; it stays out of the 15s poll
+          // so the badge path keeps fetching only the two queue endpoints.
+          const toggleActivity = async () => {
+            if (showAllActivity) { showAllActivity = false; activityAll = null; load(true); return }
+            showAllActivity = true;
+            try {
+              const response = await fetch('/api/secrets-broker/activity?limit=100');
+              const payload = await response.json().catch(() => ({}));
+              activityAll = Array.isArray(payload.activity) ? payload.activity : [];
+            } catch { activityAll = [] }
+            load(true);
+          };
 
           if (tab === 'queue') {
             const actionLabel = { 'secret.read': '读取明文', 'secret.use': '代持调用', 'secret.fill': '网页填充', 'secret.materialize': '写入本地文件', 'secret.write': '写入密钥', 'connection': '首次连接' };
@@ -756,15 +844,37 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
               };
               kv('动作', actionLabel[entry.action] || entry.action || '—');
               if (entry.targetOrigin) kv('目标', entry.targetOrigin);
+              // A connection asks for a range and whether plaintext is wanted; the
+              // write bit is the operator's call, so it is a checkbox here rather
+              // than something the agent requested.
+              let grantWrite = false;
+              if (entry.action === 'connection') {
+                const scope = entry.requestedScope || {};
+                kv('申请范围', scope.all ? '全部条目' : (Array.isArray(scope.itemIds) && scope.itemIds.length ? scope.itemIds.length + ' 个条目' : '未指定'));
+                kv('明文读取', entry.requestedPlaintext ? '申请了明文读取' : '未申请明文');
+                if (entry.expiresAt) kv('到期', new Date(entry.expiresAt).toLocaleString());
+              }
               kv('请求时间', entry.createdAt ? new Date(entry.createdAt).toLocaleString() : '—');
               if (entry.reason) kv('理由', entry.reason);
               pageBody.appendChild(group);
+              if (entry.action === 'connection') {
+                const writeWrap = document.createElement('label');
+                writeWrap.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:var(--sb-fs-sub);color:var(--sb-label-2);padding:var(--sb-sp-3) 0;cursor:pointer';
+                const box = document.createElement('input');
+                box.type = 'checkbox';
+                box.style.cssText = 'width:auto;margin:0';
+                box.onchange = () => { grantWrite = box.checked };
+                writeWrap.appendChild(box);
+                writeWrap.appendChild(cls('span', '', '同时允许写入（put_secret）'));
+                pageBody.appendChild(writeWrap);
+              }
               page.appendChild(pageBody);
               const foot = cls('div', 'sb-foot');
               const decideOn = (decision) => async (button) => {
                 button.disabled = true;
                 try {
-                  await fetch('/api/secrets-broker/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: entry.id, decision }) });
+                  const body = { id: entry.id, decision, ...(entry.action === 'connection' ? { writeAllowed: grantWrite } : {}) };
+                  await fetch('/api/secrets-broker/decide', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
                   page.remove();
                   load();
                 } catch { button.disabled = false }
@@ -796,8 +906,11 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
               for (const entry of pending) {
                 const row = cls('div', 'sb-row');
                 const main = cls('div', 'sb-row-main');
-                main.appendChild(cls('div', 'sb-row-title', (entry.agent || 'Agent') + ' → ' + (entry.name || '')));
-                const meta = [actionLabel[entry.action] || entry.action, entry.targetOrigin].filter(Boolean).join(' · ');
+                const isConnection = entry.action === 'connection';
+                const scope = entry.requestedScope || {};
+                const scopeText = isConnection ? (scope.all ? '全部条目' : (Array.isArray(scope.itemIds) ? scope.itemIds.length + ' 个条目' : '')) : '';
+                main.appendChild(cls('div', 'sb-row-title', (entry.agent || 'Agent') + ' → ' + (entry.name || (isConnection ? '首次连接' : ''))));
+                const meta = [actionLabel[entry.action] || entry.action, scopeText, entry.targetOrigin].filter(Boolean).join(' · ');
                 main.appendChild(cls('div', 'sb-row-sub', meta || '批准后可读取'));
                 row.appendChild(main);
                 row.appendChild(cls('span', 'sb-chev', '\u203a'));
@@ -854,7 +967,15 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
           }
 
           if (tab === 'activity') {
-            const items = Array.isArray(activityResponse.activity) ? activityResponse.activity : [];
+            const items = showAllActivity && activityAll
+              ? activityAll
+              : (Array.isArray(activityResponse.activity) ? activityResponse.activity : []);
+            const head = mk('div', '', 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:2px 0 4px');
+            head.appendChild(mk('span', showAllActivity ? '最近 100 条' : '最近动态', 'font-size:var(--sb-fs-mini);color:var(--sb-label-3)'));
+            const more = mk('button', showAllActivity ? '只看最近' : '查看全部', 'border:0;background:transparent;color:var(--sb-blue);font:var(--sb-fs-cap) var(--sb-font);cursor:pointer;padding:2px 4px');
+            more.onclick = (event) => { event.stopPropagation(); toggleActivity() };
+            head.appendChild(more);
+            out.push(head);
             if (!items.length) out.push(mk('div', '还没有活动记录。', 'font-size:var(--sb-fs-cap);color:var(--sb-label-2);padding:6px 0'));
             for (const entry of items) {
               // 12 rows of bare HH:MM:SS read as today even when they are from
@@ -866,10 +987,24 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
                 : at;
               const who = entry.agent || '系统';
               const what = entry.name ? '「' + entry.name + '」' : '';
-              const row = mk('div', '', 'display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--sb-sep);font-size:var(--sb-fs-cap)');
+              const row = mk('div', '', 'display:flex;gap:8px;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--sb-sep);font-size:var(--sb-fs-cap);cursor:pointer');
               row.appendChild(mk('span', stamp, 'color:var(--sb-label-3);font:11px/1.4 ui-monospace,monospace;flex:0 0 auto'));
               row.appendChild(mk('span', eventLabel(entry.event), 'color:' + (entry.ok ? 'var(--sb-green)' : 'var(--sb-red)') + ';flex:0 0 auto'));
               row.appendChild(mk('span', who + ' ' + what, 'color:var(--sb-label-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap'));
+              // Every row opens a read-only detail page: the one-line list
+              // truncates the agent name and hides the event id, and "why did
+              // this fail" needs both.
+              row.onclick = () => openInfoPage(
+                eventLabel(entry.event),
+                who + (entry.name ? ' · ' + entry.name : ''),
+                [
+                  ['时间', when ? when.toLocaleString('zh-CN', { hour12: false }) : '—'],
+                  ['事件', entry.event || '—'],
+                  ['Agent', who],
+                  ['条目', entry.name || '—'],
+                  ['结果', entry.ok ? '允许 / 成功' : '拒绝 / 失败'],
+                ],
+              );
               out.push(row);
             }
           }
