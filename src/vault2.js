@@ -244,7 +244,11 @@ export async function vault2DeviceSelf(env, deviceId) {
 // A paired device holds the same data key, wrapped to its own public key. The
 // token is returned once and stored only as a hash, so the row alone cannot be
 // used to pull ciphertext.
-export async function vault2Pair(env, key, { name, publicKey, publicJwk, canWrite = true }) {
+// A missing canWrite means read-only, the same as the column default in
+// migration 0002 and the same as every reader of the row. Callers that do grant
+// writes (the CLI's cookie pairing, a human approving a device code) pass true
+// explicitly, so no path can acquire write by forgetting a field.
+export async function vault2Pair(env, key, { name, publicKey, publicJwk, canWrite = false }) {
   const ctx = keyContext(key)
   const label = String(name ?? '').trim().slice(0, 60)
   if (!label) throw new Error('a device needs a name')

@@ -111,7 +111,9 @@ export function makeDaemon({ pull, everyMs = 15 * 60 * 1000, now = () => Date.no
       const decision = await gate.check(agent, message)
       if (!decision.ok) {
         const suffix = decision.approvalUrl ? '; approve at ' + decision.approvalUrl : ''
-        return send(response, 403, { jsonrpc: '2.0', id: message?.id ?? null, error: { code: -32001, message: decision.reason + suffix } })
+        // The reason code travels beside the message so a client can tell a
+        // policy refusal (do not retry) from an auth failure (fix the URL).
+        return send(response, 403, { jsonrpc: '2.0', id: message?.id ?? null, error: { code: -32001, message: decision.reason + suffix, data: { reasonCode: decision.reasonCode ?? 'local-approval-required' } } })
       }
       const answered = await createLocalServer({ vault: state.vault, revision: state.revision, audit }).handle(message, { agent })
       return send(response, answered.status ?? 200, answered.body ?? '')

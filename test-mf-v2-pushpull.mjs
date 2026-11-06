@@ -60,7 +60,9 @@ await call('/api/v2/init', { method: 'POST', body: { password: MASTER } })
 const seeded = await call('/api/v2/items', { method: 'POST', body: { kind: 'api', payload: { name: 'alpha', secret: 'alpha-secret-value' } } })
 
 const keypair = await newDeviceKeypair()
-const laptop = await call('/api/v2/pair', { method: 'POST', body: { name: 'laptop', publicKey: keypair.publicJwk } })
+// An unnamed canWrite now means read-only, so this suite asks for the write bit
+// the way the CLI does; P4 then turns it off to prove push is refused.
+const laptop = await call('/api/v2/pair', { method: 'POST', body: { name: 'laptop', publicKey: keypair.publicJwk, canWrite: true } })
 const token = laptop.body.token
 const dek = await unwrapDekDevice(laptop.body.envelope, keypair.privateJwk)
 

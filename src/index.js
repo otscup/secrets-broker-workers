@@ -10968,7 +10968,10 @@ const TOOL_META = {
           })).json().catch(() => ({}))
           if (!peek.ok) return fail('pairing not found or expired', 410)
           if (peek.entry.approved) return fail('this code was already approved', 409)
-          const paired = await vault2Pair(env, dek, { name: peek.entry.name, publicJwk: peek.entry.jwk })
+          // A human approved this device code in a browser; that approval is
+          // what the write bit represents. The implicit pair default is now
+          // read-only, so the granted write is stated here.
+          const paired = await vault2Pair(env, dek, { name: peek.entry.name, publicJwk: peek.entry.jwk, canWrite: true })
           const keygen = String((await env.VAULT_DB.prepare("SELECT value FROM meta WHERE key = 'keygen'").first())?.value ?? '')
           await stateStub(env).fetch('https://state/pair', {
             method: 'POST',

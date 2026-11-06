@@ -123,7 +123,7 @@ const callTool = async (name, args) => (await ask({ jsonrpc: '2.0', id: 7, metho
     params: { name: 'http_request', arguments: { name: 'api-proxy', url: 'https://evil.example.com/v1/chat' } },
   })
   const body = JSON.parse(result.body).result
-  const ok = body.isError === true && /not the url/.test(body.content[0].text)
+  const ok = body.isError === true && /not the host stored/.test(body.content[0].text)
   ok ? pass('L10 a different host is refused before fetch') : fail('L10', JSON.stringify(body))
 }
 

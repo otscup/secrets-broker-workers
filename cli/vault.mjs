@@ -62,7 +62,9 @@ export async function pair({ url, cookie, name = 'this computer' }) {
   const response = await fetch(endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ name, publicKey: keypair.publicJwk }),
+    // This machine is paired with an admin session and is expected to push, so
+    // it asks for write explicitly instead of relying on a server-side default.
+    body: JSON.stringify({ name, publicKey: keypair.publicJwk, canWrite: true }),
   })
   const text = await response.text()
   if (!response.ok) throw new Error('pairing failed (' + response.status + '): ' + text.slice(0, 300))

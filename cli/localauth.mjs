@@ -17,6 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { openBrowser } from './approval.mjs'
 import { protectSecret, unprotectSecret } from './store.mjs'
+import { WRITE_REFUSAL } from './vaulttools.mjs'
 
 const PORT = 4319
 const WINDOW_MS = 15 * 60 * 1000
@@ -120,14 +121,20 @@ export function authenticate(url) {
   return a.length === b.length && crypto.timingSafeEqual(a, b) ? agent : null
 }
 
-function granted(row, item, now) {
+// The read decision is the agent's own policy mode, nothing else:
+//   ask     never answered here, so every read goes to the approval page
+//   allow   the listed items; an empty list (and "*") means every item
+//   window  every item until `until`
+// Unknown or malformed modes fall back to ask rather than granting.
+function policyVerdict(row, item, now) {
   const policy = row?.policy ?? {}
-  if (policy.mode === 'window' && Number(policy.until) > now) return true
-  if (policy.mode === 'allow') {
+  const mode = String(policy.mode ?? 'ask')
+  if (mode === 'window') return Number(policy.until) > now ? { ok: true, mode } : { ok: false, mode }
+  if (mode === 'allow') {
     const items = Array.isArray(policy.items) ? policy.items : []
-    return items.length === 0 || items.includes('*') || items.includes(item)
+    return (items.length === 0 || items.includes('*') || items.includes(item)) ? { ok: true, mode } : { ok: false, mode }
   }
-  return false
+  return { ok: false, mode: 'ask' }
 }
 
 function escapeHtml(value) {
@@ -210,7 +217,7 @@ for (const button of document.querySelectorAll('button')) {
     if (decision === 'once') {
       row.resolve({ ok: true })
     } else if (decision === 'deny') {
-      row.resolve({ ok: false, reason: 'denied by the user' })
+      row.resolve({ ok: false, reason: 'denied by the user', reasonCode: 'local-approval-denied' })
     } else {
       const all = readAll()
       const current = all[row.agent] ?? blank()
@@ -246,18 +253,19 @@ for (const button of document.querySelectorAll('button')) {
     const item = String(message?.params?.arguments?.name ?? '')
     const target = String(message?.params?.arguments?.url ?? '')
     if (tool === 'put_secret') {
-      audit({ agent, tool, item, result: 'refused_write' })
-      return { ok: false, reason: 'a paired device reads; writes go through the remote broker' }
+      audit({ agent, tool, item, result: 'refused_write', reasonCode: 'local-write-disabled' })
+      return { ok: false, reason: WRITE_REFUSAL, reasonCode: 'local-write-disabled' }
     }
     if (tool !== 'get_secret' && tool !== 'get_credential' && tool !== 'http_request') return { ok: true }
     const row = readAll()[agent]
-    if (granted(row, item, now())) {
-      audit({ agent, tool, item, result: 'allowed_by_policy' })
-      return { ok: true }
+    const verdict = policyVerdict(row, item, now())
+    if (verdict.ok) {
+      audit({ agent, tool, item, result: 'allowed_by_policy', policyMode: verdict.mode })
+      return { ok: true, reasonCode: 'local-policy-' + verdict.mode }
     }
     if (rateLimited(agent)) {
       audit({ agent, tool, item, result: 'rate_limited' })
-      return { ok: false, reason: 'too many approval requests; wait a minute' }
+      return { ok: false, reason: 'too many approval requests; wait a minute', reasonCode: 'local-approval-rate-limited' }
     }
 
     const id = crypto.randomUUID()
@@ -268,7 +276,7 @@ for (const button of document.querySelectorAll('button')) {
       timer = setTimeout(() => {
         pending.delete(id)
         audit({ agent, tool, item, result: 'timeout' })
-        resolve({ ok: false, reason: 'approval timed out', approvalUrl: url })
+        resolve({ ok: false, reason: 'approval timed out', approvalUrl: url, reasonCode: 'local-approval-timeout' })
       }, timeoutMs)
       pending.set(id, { id, agent, tool, item, target, url, createdAt: now(), resolve, timer })
       try {

@@ -78,6 +78,11 @@ function closest(wanted, names) {
   return names.find((name) => name.toLowerCase().replace(/[\s_\-.]+/g, '') === loose) ?? ''
 }
 
+// One refusal, one wording. The daemon gate and the MCP tool both say this,
+// and it names the policy rather than the item so an agent does not read it as
+// "wrong name, try another".
+export const WRITE_REFUSAL = 'put_secret is refused by local policy on a paired device (this is not a name problem); retrying will not help — write through the remote broker, where a human approves it'
+
 const PROXY_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'])
 const PROXY_HEADERS = { authorization: 'Authorization', 'x-api-key': 'X-Api-Key', 'api-key': 'Api-Key', 'x-auth-token': 'X-Auth-Token' }
 const BLOCKED_HEADERS = new Set(['host', 'content-length', 'connection', 'cookie', 'set-cookie', 'authorization', 'proxy-authorization', 'proxy-authenticate', 'x-api-key', 'api-key', 'x-auth-token', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'keep-alive', 'expect'])
@@ -106,10 +111,10 @@ function proxyTarget(item, args, policy) {
   if (url.username || url.password) return { error: 'userinfo in target url is not allowed' }
   const host = url.hostname.toLowerCase().replace(/\.$/, '')
   if (privateHost(host)) return { error: 'private/local targets are not allowed' }
-  if (host !== policy.host || (url.port || '443') !== policy.port) return { error: 'target host is not the url stored on this item' }
+  if (host !== policy.host || (url.port || '443') !== policy.port) return { error: 'target host is not the host stored on this item' }
   const pathname = url.pathname || '/'
   if (!(pathname === policy.pathname || pathname.startsWith(policy.pathname.endsWith('/') ? policy.pathname : policy.pathname + '/'))) {
-    return { error: 'target path is outside the url stored on this item' }
+    return { error: 'target path is outside the path stored on this item' }
   }
   return { url, host, pathname }
 }
@@ -131,7 +136,7 @@ async function httpRequest(item, args, { fetchImpl, audit = () => {}, agent = ''
   const headers = Object.create(null)
   for (const [rawKey, rawValue] of Object.entries(rawHeaders)) {
     const key = String(rawKey)
-    if (!/^[A-Za-z0-9-]+$/.test(key)) return text('invalid header name: ' + key.slice(0, 64), true)
+    if (!/^[A-Za-z0-9-]+$/.test(key)) return text('invalid header name (allowed: /^[A-Za-z0-9-]+$/): ' + key.slice(0, 64), true)
     if (BLOCKED_HEADERS.has(key.toLowerCase())) continue
     const value = String(rawValue ?? '')
     if (value.length > 4096) return text('header value too long (max 4KB): ' + key.slice(0, 64), true)
@@ -153,7 +158,10 @@ async function httpRequest(item, args, { fetchImpl, audit = () => {}, agent = ''
     response = await fetchImpl(target.url.toString(), init)
   } catch (error) {
     audit({ agent, tool: 'http_request', item: item.name, host: target.host, path: target.pathname.slice(0, 200), result: 'fetch_failed' })
-    return text(error?.name === 'TimeoutError' ? 'upstream request timed out (15s)' : 'upstream fetch failed: ' + String(error?.message ?? error).slice(0, 200), true)
+    // The upstream's own text can name internal hosts or echo the injected
+    // header; it is audit-only. The agent gets the same fixed wording as the
+    // remote broker so one client script handles both.
+    return text(error?.name === 'TimeoutError' ? 'upstream request timed out (15s)' : 'upstream request failed', true)
   }
   const raw = (await response.text()).slice(0, 8000)
   const bodyOut = scrubSecret(raw, secret, authPrefix)
@@ -195,7 +203,7 @@ export function createLocalServer({ vault, revision = 0, fetchImpl = globalThis.
       return httpRequest(item, args, { fetchImpl, audit, agent: meta.agent })
     }
     if (name === 'put_secret') {
-      return text('a paired device reads; writes go through the remote broker, where a human approves them', true)
+      return text(WRITE_REFUSAL, true)
     }
     return text('unknown tool: ' + name, true)
   }

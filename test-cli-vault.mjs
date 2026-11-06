@@ -65,7 +65,10 @@ const vault = await import('./cli/vault.mjs?scratch=' + Date.now())
 {
   const paired = await vault.pair({ url: base, cookie: 'sb_admin=test', name: 'laptop' })
   const record = JSON.parse(readFileSync(join(home, '.secrets-broker', 'device.json'), 'utf8'))
-  const keyHeld = record.privateKeyStore === 'dpapi' ? !record.privateJwk : Boolean(record.privateJwk?.d)
+  // saveDevice records the OS store as 'os' whatever the backend; the old
+  // 'dpapi' spelling only appeared when the store was unavailable, so the test
+  // used to pass exactly when the key leaked into the file.
+  const keyHeld = record.privateKeyStore === 'os' ? !record.privateJwk : Boolean(record.privateJwk?.d)
   const ok = provesCookie && pairCalls === 1 && paired.fingerprint === FINGERPRINT
     && keyHeld && JSON.parse(record.envelope).kind === 'device'
     && !JSON.stringify(record).includes(String(DEK))
