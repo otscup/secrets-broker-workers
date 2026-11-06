@@ -316,6 +316,12 @@ jobs:
       - name: Connection request notifications (no runtime)
         shell: bash
         run: npm run test:connection-notify 2>&1 | tee "$RUNNER_TEMP/ci-logs/connection-notify.log"
+      - name: Connection admission and scope (no runtime)
+        shell: bash
+        run: npm run test:connection-admission 2>&1 | tee "$RUNNER_TEMP/ci-logs/connection-admission.log"
+      - name: Item approval wait, deny and replay (no runtime)
+        shell: bash
+        run: npm run test:pending-approval 2>&1 | tee "$RUNNER_TEMP/ci-logs/pending-approval.log"
       - name: Overview stats and detail panels (no runtime)
         shell: bash
         run: npm run test:overview-stats 2>&1 | tee "$RUNNER_TEMP/ci-logs/overview-stats.log"

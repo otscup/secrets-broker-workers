@@ -2041,6 +2041,11 @@ const CONNECTION_MAX_TTL_MS = 30 * 86400 * 1000
 const CONNECTION_DENY_TTL_MS = 24 * 3600 * 1000
 const CONNECTION_RETENTION_MS = 24 * 3600 * 1000
 const CONNECTION_TTL_PRESETS = { '1h': 3600e3, '24h': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3 }
+// A decided item request deletes its pending row, which leaves no evidence that
+// the operator already answered. Keep the answer briefly so a waiting client can
+// tell "approved" from "denied", and a denial is returned instead of turning the
+// retry into a fresh approval request.
+const PENDING_RESULT_TTL_MS = 10 * 60 * 1000
 // The console's unlock tiers. The server used to read only ttlMs, so a client
 // that sent just `duration` got the 1h default while the audit line (and the
 // UI) promised 12h/7d/30d. A preset now maps to a real TTL; `device` stays at
@@ -3500,10 +3505,14 @@ function materializeTarget(state, raw) {
 
 async function decidePending(env, id, decision, source = 'web') {
   let outcome = null
+  // Captured separately from `outcome`: a denial outcome does not carry the
+  // action, and the result record must still match the request it answers.
+  let answered = { agent: '', name: '', action: '' }
   await updateState(env, (state) => {
     const entry = state.pending[id]
     if (!entry) return state
     delete state.pending[id]
+    answered = { agent: String(entry.agent ?? ''), name: String(entry.name ?? ''), action: String(entry.action ?? '') }
     if (decision === 'deny') {
       outcome = { denied: true, agent: entry.agent, name: entry.name }
       return state
@@ -3689,8 +3698,44 @@ async function decidePending(env, id, decision, source = 'web') {
     return state
   })
   if (!outcome) return null
+  // Remember the answer next to the pending map. The row itself is gone, so
+  // this is the only way /api/pending/status can say "approved" or "denied"
+  // rather than "no longer pending", and the only way a replay can be told that
+  // the operator already said no.
+  const decided = {
+    id,
+    agent: String(outcome.agent ?? answered.agent),
+    name: String(outcome.name ?? answered.name),
+    action: String(outcome.action ?? answered.action),
+    decision: outcome.denied ? 'deny' : 'allow',
+    reasonCode: outcome.denied ? String(outcome.error ?? 'approval-denied') : '',
+    decidedAt: nowIso(),
+    expiresAt: Date.now() + PENDING_RESULT_TTL_MS,
+  }
+  await updateState(env, (next) => {
+    next.pendingResults ??= {}
+    for (const [key, value] of Object.entries(next.pendingResults)) {
+      if (Number(value?.expiresAt ?? 0) <= Date.now()) delete next.pendingResults[key]
+    }
+    next.pendingResults[id] = decided
+    return next
+  })
   await addAudit(env, { event: outcome.denied ? 'request.deny' : 'request.approve', ...outcome, source })
   return outcome
+}
+
+// A live denial for exactly this request triple. Used before creating a new
+// pending row so an agent that replays after a refusal receives the operator's
+// answer instead of a brand new approval prompt.
+function recentPendingDenial(state, agentName, name, action, now = Date.now()) {
+  for (const entry of Object.values(state.pendingResults ?? {})) {
+    if (entry?.decision !== 'deny') continue
+    if (Number(entry.expiresAt ?? 0) <= now) continue
+    if (String(entry.agent) !== String(agentName) || String(entry.name) !== String(name)) continue
+    if (String(entry.action ?? '') !== String(action)) continue
+    return entry
+  }
+  return null
 }
 
 async function signedApprovalLinks(env, id, origin, source = 'notification') {
@@ -5488,6 +5533,18 @@ async function agentAccess(env, { session, agentName, agent, state, name, origin
   const legacyGrant = action === 'secret.read' ? activeGrant(state, agentName, name) : null
   const noApprovalSatisfies = action === 'secret.read' && policy?.noApproval === true
   if (!noApprovalSatisfies && (!decision.capability || needsTargetApproval) && !legacyGrant) {
+    // The operator already answered this exact request and said no. Return that
+    // answer instead of queueing the same question again: a client that waited
+    // for the decision replays the call, and without this it would look like the
+    // denial never happened.
+    const deniedBefore = createRequest ? recentPendingDenial(state, agentName, name, action) : null
+    if (deniedBefore) {
+      return {
+        status: 'forbidden', code: 'approval-denied', reason: 'approval-denied',
+        reasonCode: 'approval-denied',
+        error: '管理员拒绝了这次申请：' + name + '（' + action + '），短时间内不会再次询问；需要时请先在面板里调整授权。',
+      }
+    }
     let pendingId = findPending(state, agentName, name, action)
     if (!pendingId) {
       const rateKey = agentName + '\u0000' + name + '\u0000' + action
@@ -8221,6 +8278,50 @@ export default {
         message: outcome.ok ? '' : connectionMessage(outcome.reasonCode ?? 'connection-pending'),
       })
     }
+    // Item approvals get the same wait contract as a connection. A pending row
+    // is deleted when it is approved or denied, so the short-lived result
+    // written by decidePending is what distinguishes the two. The caller then
+    // replays the original tool: an approval yields the value, a denial yields
+    // the broker's refusal reason. Waiting past the window answers "still
+    // pending" (200) rather than an error, so a client that chooses to wait
+    // never has to treat polling as a failure.
+    if (url.pathname === '/api/pending/status' && request.method === 'GET') {
+      const resolved = await resolveAgent(request, env)
+      if (!resolved) return fail('unauthorized', 401)
+      const id = String(url.searchParams.get('id') ?? '').trim()
+      if (!id) return fail('id required', 400)
+      const waitMs = Math.min(Math.max(Number(url.searchParams.get('wait')) || 0, 0), 30) * 1000
+      const deadline = Date.now() + waitMs
+      let state = await loadState(env)
+      let entry = state.pending?.[id] ?? null
+      if (entry && String(entry.agent) !== String(resolved.name)) return fail('not your request', 404)
+      let result = state.pendingResults?.[id] ?? null
+      if (!entry && result && String(result.agent) !== String(resolved.name)) return fail('not your request', 404)
+      while (entry && Date.now() < deadline) {
+        await sleep(Math.min(1000, Math.max(20, deadline - Date.now())))
+        state = await loadState(env)
+        entry = state.pending?.[id] ?? null
+        result = state.pendingResults?.[id] ?? null
+      }
+      if (entry) {
+        return json({
+          ok: true, id, status: 'pending', retryAfterMs: 2000,
+          waitUntil: new Date(Date.now() + 2000).toISOString(), waitSeconds: 30,
+          message: 'still waiting for approval',
+        })
+      }
+      const decided = result && Number(result.expiresAt ?? 0) > Date.now() ? result : null
+      return json({
+        ok: true, id, status: 'decided',
+        // 'allow' means the replay will succeed; 'deny' means the replay will
+        // return this reason. Both still replay, so the tool's own answer is
+        // what the client sees either way.
+        decision: decided?.decision ?? '',
+        reasonCode: decided?.reasonCode ?? '',
+        retryAfterMs: 0, waitUntil: null, waitSeconds: 30,
+        message: decided?.decision === 'deny' ? 'the operator refused this request; replay the call to read the reason' : 'no longer pending; replay the original call to receive the value',
+      })
+    }
     if (url.pathname === '/api/grants/revoke' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       // An unlocked vault is the only trustworthy source of the account scope,
@@ -9661,7 +9762,22 @@ const TOOL_META = {
         const text = (value, isError = false) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], ...(isError ? { isError: true } : {}) })
         // A pending answer is not a value and not a failure: say what it is, give the
         // request id, and tell the model to retry the same call after approval.
-        const pendingText = (access) => text({ status: 'pending-approval', requestId: access.requestId ?? '', approvalUrl: access.approvalUrl ?? '', retryAfterSeconds: 5, next: '批准后重新调用同一个工具即可取到值；不需要再申请一次', message: 'pending approval: ' + (access.approvalUrl ?? '') })
+        const pendingText = (access) => {
+          const id = access.requestId ?? ''
+          return text({
+            status: 'pending-approval', requestId: id,
+            approvalUrl: access.approvalUrl ?? '',
+            // Same long-poll contract as a connection: ask this URL with wait<=30s,
+            // and replay the original tool when it answers "decided". The absence
+            // of the pending row means approved or denied; the replay carries the
+            // refusal reason in the latter case.
+            waitUrl: url.origin + '/api/pending/status?id=' + encodeURIComponent(id),
+            waitSeconds: 30,
+            retryAfterMs: 5000,
+            next: '可以按 wait≥0 秒轮询 waitUrl；返回 decided 后重新调用同一个工具即可拿到值或拒绝原因，不需要再申请一次',
+            message: 'pending approval: ' + (access.approvalUrl ?? ''),
+          })
+        }
         const session = await getSession(env)
         if (!session) return result(text('vault locked; open the broker page or run unlock.mjs', true))
         // Per-agent MCP surface. An empty list means "every tool", so agents created
@@ -9705,6 +9821,12 @@ const TOOL_META = {
             const ticket = resolved.state.writeTickets?.[ticketKey] ?? null
             const ticketLive = writeTicketLive(ticket, session.email)
             if (!ticketLive) {
+              // A refusal the operator already made must not be re-asked: the
+              // client replays after the decision and would otherwise see a
+              // brand new approval prompt instead of the answer.
+              if (recentPendingDenial(resolved.state, resolved.name, itemName, 'secret.write')) {
+                return result(text('管理员拒绝了这次写入申请：' + itemName + '，短时间内不会再次询问；需要时请先在面板里调整授权。', true))
+              }
               // Same pending shape as a read request, so the console, Telegram and
               // the push notifications surface a write without a second code path.
               let pendingId = findPending(resolved.state, resolved.name, itemName, 'secret.write')
@@ -9817,7 +9939,21 @@ const TOOL_META = {
             const access = await agentAccess(env, { session, agentName: resolved.name, agent: resolved.agent, state: resolved.state, name: secretName, origin: url.origin, ctx, consumeRead: false, createRequest: true, connection: admission.record })
             const label = accessStatusLabel(access)
             if (label.status === 'allowed') return result(text(label.message))
-            if (label.status === 'pending') return result(text({ status: 'pending', request_id: label.requestId, approval_url: label.approvalUrl, item_id: label.itemId }))
+            // The pending answer carries the same wait contract as a write or a
+            // connection: the caller can poll /api/pending/status and replay
+            // this call, and an approval turns into "allowed" without a second
+            // round trip. Old clients only read status/request_id, so both the
+            // legacy spelling and the camel-case one are present.
+            if (label.status === 'pending') {
+              return result(text({
+                status: 'pending', request_id: label.requestId, approval_url: label.approvalUrl, item_id: label.itemId,
+                requestId: label.requestId, approvalUrl: label.approvalUrl,
+                waitUrl: url.origin + '/api/pending/status?id=' + encodeURIComponent(label.requestId ?? ''),
+                waitSeconds: 30, retryAfterMs: 5000,
+                next: '可以按 wait≥0 秒轮询 waitUrl；返回 decided 后重新调用同一个工具即可拿到值或拒绝原因，不需要再申请一次',
+                message: 'pending approval: ' + (label.approvalUrl ?? ''),
+              }))
+            }
             // A third-party client may render only `code`, never `error`, so the
             // remedy travels as its own machine-readable field instead of living
             // inside a prose sentence.

@@ -21,19 +21,46 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * A pending connection arrives as a JSON-RPC result whose text payload says so.
- * Reads and item approvals keep their own shapes and are handled elsewhere.
+ * Item approvals are a different payload and are recognised by
+ * pendingApprovalOf below.
  * @param {string} raw response body
  */
 export function pendingConnectionOf(raw) {
+  const payload = payloadOf(raw)
+  if (payload?.status !== 'pending-connection') return null
+  return payload
+}
+
+/**
+ * An item approval (read, write, plaintext, fill) arrives as pending-approval.
+ * request_access keeps its historical `pending` / `request_id` shape for old
+ * clients, so both spellings are accepted here. It carries the request id the
+ * console approves, so the bridge can wait on /api/pending/status and then
+ * replay the original tool call.
+ * @param {string} raw response body
+ */
+export function pendingApprovalOf(raw) {
+  const payload = payloadOf(raw)
+  if (!payload) return null
+  // `pending` alone is used by other tools (materialize reports progress that
+  // way), so the legacy branch requires request_access' request_id spelling.
+  if (payload.status === 'pending-approval') {
+    const requestId = String(payload.requestId ?? '')
+    return requestId ? { ...payload, requestId } : null
+  }
+  if (payload.status === 'pending' && payload.request_id) {
+    return { ...payload, requestId: String(payload.request_id) }
+  }
+  return null
+}
+
+function payloadOf(raw) {
   if (!raw) return null
   let envelope
   try { envelope = JSON.parse(raw) } catch { return null }
   const content = envelope?.result?.content?.[0]?.text
   if (typeof content !== 'string') return null
-  let payload
-  try { payload = JSON.parse(content) } catch { return null }
-  if (payload?.status !== 'pending-connection') return null
-  return payload
+  try { return JSON.parse(content) } catch { return null }
 }
 
 // Only a link on the configured broker can be opened: the pending payload comes
@@ -139,9 +166,43 @@ export function createBridge({ brokerUrl, staticToken = '', onApproval = handleA
   }
 
   /**
-   * @param {object} message JSON-RPC message from the client
-   * @returns {Promise<string>} raw response body, may be ''
+   * Wait on an item approval. /api/pending/status answers "pending" with a
+   * retry hint until the row is decided; "decided" means the caller should
+   * replay the original tool, because only the replay knows whether the answer
+   * is a value or a refusal (and its reason). A denied item is therefore not an
+   * error here — the replayed tool returns the broker's own explanation.
    */
+  const waitForItemApproval = async (token, pending, windowEndsAt) => {
+    const approvalUrl = safeApprovalUrl(pending.approvalUrl, brokerUrl)
+    if (approvalUrl) {
+      log('item approval needed:', approvalUrl)
+      try { (opener ?? openBrowser)(approvalUrl) } catch {}
+    }
+    const retryMs = (value) => Math.min(Math.max(Number(value) || 0, MIN_RETRY_MS), MAX_RETRY_MS)
+    let delay = 0
+    while (Date.now() < windowEndsAt) {
+      if (delay > 0) await sleep(Math.min(delay, Math.max(windowEndsAt - Date.now(), 0)))
+      if (Date.now() >= windowEndsAt) break
+      let response
+      try {
+        response = await fetch(`${brokerUrl}/api/pending/status?wait=${STATUS_WAIT_SECONDS}&id=${encodeURIComponent(String(pending.requestId))}`, {
+          method: 'GET',
+          headers: { authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+        })
+      } catch {
+        delay = MAX_RETRY_MS
+        continue
+      }
+      if (response.status === 401) throw new Error('the broker rejected the token while waiting for item approval; create a new agent token in the panel')
+      const body = await response.json().catch(() => null)
+      if (!body) { delay = MAX_RETRY_MS; continue }
+      if (body.status === 'decided') return body
+      delay = retryMs(body.retryAfterMs ?? pending.retryAfterMs)
+    }
+    throw new Error('the approval window ended without a decision; ask the operator to approve this request and retry')
+  }
+
   const request = async (message) => {
     const token = await getToken()
     let windowEndsAt = 0
@@ -173,6 +234,16 @@ export function createBridge({ brokerUrl, staticToken = '', onApproval = handleA
         await waitForApproval(token, pending, windowEndsAt)
         // Approved: send the original call again so the client gets the answer
         // it was originally waiting for rather than a second round trip.
+        continue
+      }
+
+      // An item approval (read, write, plaintext, fill) follows the same rule:
+      // wait for the console's decision, then replay this exact call. Only the
+      // replay knows whether the answer is a value or a refusal.
+      const itemPending = waitForConnection ? pendingApprovalOf(result.text) : null
+      if (itemPending) {
+        if (!windowEndsAt) windowEndsAt = Date.now() + CONNECTION_WINDOW_MS
+        await waitForItemApproval(token, itemPending, windowEndsAt)
         continue
       }
 
