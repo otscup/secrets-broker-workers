@@ -133,3 +133,12 @@ do {
 调用 `/api/lock` 现在会删除该会话的全部 v2 密钥槽（含 `plainOk` 明文确认位），以及控制台 helper 使用的 account 镜像槽。锁定后同一个 cookie 再请求 `/api/v2/items?plain=1` 返回 **423**，`/api/me` 的 `unlocked` 为 `false`，刷新页面也保持未解锁；要继续使用必须重新输入主密码解锁。
 
 以前只删除 v1 会话，v2 的 DEK 缓存仍然存活，所以"锁定"后刷新看起来还是已解锁，明文读取也继续可用。依赖"锁定但保持 v2 解锁"的脚本需要改成：锁定后重新走一次 `/api/v2/unlock`。
+
+## 8. 本地侧车与远端工具的策略/文案对齐（行为收紧，非破坏性）
+
+本地 `/mcp` 的 `http_request` 现在也读同一组可选环境变量：`HTTP_ALLOW_METHODS`、`HTTP_ALLOWED_HOSTS`、`HTTP_ALLOWED_PORTS`、`HTTP_ALLOW_PATHS`。它们只能 **在条目存储的 https URL 之上再收窄**（取交集），不会放宽本地原有的"目标必须落在条目 URL 的 host/port/path 内"这一条；两者同时满足才放行。远端继续是"按条目 use 策略 + 可选同名环境变量"。
+
+- 本地与远端现在返回同样的固定文案：`invalid method (max 16 chars)`、`target method is not allowed by HTTP_ALLOW_METHODS`、`target host is not allowed by HTTP_ALLOWED_HOSTS`、`target port is not allowed by HTTP_ALLOWED_PORTS`、`target path is not allowed`、`upstream request failed`、`upstream request timed out (15s)`；非幂等请求超时追加"可能已在远端执行，重试前先核对"。
+- 上游返回的原始错误文本不再回传给 agent（可能包含内部主机名或注入头部的回显），只进审计。
+- 本地 `put_secret` 的拒绝文案与 daemon 闸门统一（`reasonCode: local-write-disabled`），明确"这是策略拒绝，不是名字写错"；批准/拒绝/超时/限流也带 `reasonCode`（`local-approval-*`）。
+- 设备 `canWrite` 的隐式默认统一为 **只读**：配对的函数默认、D1 列默认、读设备行时的缺省值现在一致。CLI cookie 配对与浏览器里批准设备码这两条明确授予写入的路径显式传 `canWrite: true`，因此现有配对方式的能力不变；只有"忘了传字段"的第三方调用会从可写变成只读。

@@ -104,6 +104,17 @@ function proxyPolicy(item) {
   return { host: url.hostname.toLowerCase().replace(/\.$/, ''), port: url.port || '443', pathname: url.pathname || '/' }
 }
 
+// Optional operator caps, the same names the remote broker uses. They can only
+// narrow what the stored url already allows, never widen it: the item's url
+// stays the authority, these are the intersection.
+function envSet(raw) {
+  return new Set(String(raw ?? '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean))
+}
+function envPathAllowed(pathname) {
+  const prefixes = [...envSet(process.env.HTTP_ALLOW_PATHS)]
+  if (!prefixes.length) return true
+  return prefixes.some((prefix) => pathname === prefix || (prefix.endsWith('/') ? pathname.startsWith(prefix) : pathname.startsWith(prefix + '/')))
+}
 function proxyTarget(item, args, policy) {
   let url
   try { url = new URL(String(args.url ?? '')) } catch { return { error: 'invalid url' } }
@@ -116,6 +127,11 @@ function proxyTarget(item, args, policy) {
   if (!(pathname === policy.pathname || pathname.startsWith(policy.pathname.endsWith('/') ? policy.pathname : policy.pathname + '/'))) {
     return { error: 'target path is outside the path stored on this item' }
   }
+  const allowedHosts = envSet(process.env.HTTP_ALLOWED_HOSTS)
+  if (allowedHosts.size && !allowedHosts.has(host)) return { error: 'target host is not allowed by HTTP_ALLOWED_HOSTS' }
+  const allowedPorts = envSet(process.env.HTTP_ALLOWED_PORTS)
+  if (allowedPorts.size && !allowedPorts.has(url.port || '443')) return { error: 'target port is not allowed by HTTP_ALLOWED_PORTS' }
+  if (!envPathAllowed(pathname)) return { error: 'target path is not allowed' }
   return { url, host, pathname }
 }
 
@@ -123,6 +139,9 @@ async function httpRequest(item, args, { fetchImpl, audit = () => {}, agent = ''
   const policy = proxyPolicy(item)
   if (!policy) return text('http_request needs an API item with an https url', true)
   const method = String(args.method ?? 'GET').trim().toUpperCase()
+  if (!method || method.length > 16) return text('invalid method (max 16 chars)', true)
+  const allowedMethods = envSet(process.env.HTTP_ALLOW_METHODS)
+  if (allowedMethods.size && !allowedMethods.has(method.toLowerCase())) return text('target method is not allowed by HTTP_ALLOW_METHODS', true)
   if (!PROXY_METHODS.has(method)) return text('method is not allowed', true)
   const target = proxyTarget(item, args, policy)
   if (target.error) return text(target.error, true)
@@ -161,7 +180,13 @@ async function httpRequest(item, args, { fetchImpl, audit = () => {}, agent = ''
     // The upstream's own text can name internal hosts or echo the injected
     // header; it is audit-only. The agent gets the same fixed wording as the
     // remote broker so one client script handles both.
-    return text(error?.name === 'TimeoutError' ? 'upstream request timed out (15s)' : 'upstream request failed', true)
+    const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError'
+    // A timed-out write may already have run upstream, exactly as on the remote
+    // broker; retrying it blindly can double-charge, so say that.
+    if (timedOut && !['GET', 'HEAD'].includes(method)) {
+      return text('upstream request timed out (15s); the request may already have been executed upstream — verify the upstream state before retrying', true)
+    }
+    return text(timedOut ? 'upstream request timed out (15s)' : 'upstream request failed', true)
   }
   const raw = (await response.text()).slice(0, 8000)
   const bodyOut = scrubSecret(raw, secret, authPrefix)
