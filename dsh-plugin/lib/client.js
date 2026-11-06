@@ -306,6 +306,10 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
       const [form, setForm] = react.useState({ url: "", token: "" });
       const [note, setNote] = react.useState(null);
       const [busy, setBusy] = react.useState("");
+      // Per-connection write choice, keyed by request id. A connection row is
+      // read-only until the operator ticks the box, the same default the popup
+      // approval card uses.
+      const [connWrite, setConnWrite] = react.useState({});
       const load = () => {
         Promise.allSettled([
           fetch("/api/secrets-broker/pending").then((response) => response.json()),
@@ -336,8 +340,8 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
         return () => clearInterval(timer);
       }, []);
       const post = (path, body) => fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then((response) => response.json());
-      const decide = (id, decision) => {
-        post("/api/secrets-broker/decide", { id, decision }).then((payload) => {
+      const decide = (id, decision, extra) => {
+        post("/api/secrets-broker/decide", { id, decision, ...(extra || {}) }).then((payload) => {
           if (!payload || payload.ok === false) throw new Error((payload && payload.error) || "failed");
           setState((current) => ({ ...current, pending: current.pending.filter((entry) => entry.id !== id) }));
         }).catch((error) => setNote({ ok: false, text: String(error.message || error) }));
@@ -467,15 +471,28 @@ html[data-theme="dark"] .sb-backdrop, html.dark .sb-backdrop {
         ),
         state.pending.length === 0 ? react.createElement("p", { className: "sb-note" }, t("empty")) : null,
         ...state.pending.map((entry) => {
-          const actionLabel = { "secret.read": "读取明文", "secret.use": "代持调用", "secret.fill": "网页填充", "secret.materialize": "写入本地文件" }[entry.action] || entry.action || "";
-          const targetLine = [actionLabel, entry.targetOrigin].filter(Boolean).join(" · ");
+          const isConn = entry.action === "connection";
+          const actionLabel = { "secret.read": "读取明文", "secret.use": "代持调用", "secret.fill": "网页填充", "secret.materialize": "写入本地文件", "connection": "首次连接" }[entry.action] || entry.action || "";
+          const scope = entry.requestedScope || {};
+          const scopeText = isConn ? (scope.all ? "全部条目" : (Array.isArray(scope.itemIds) ? scope.itemIds.length + " 个条目" : "")) : "";
+          const targetLine = [actionLabel, scopeText, entry.targetOrigin].filter(Boolean).join(" · ");
+          // Same two-step as the popup: approve read access first, and only the
+          // ticked connections also carry write. The boolean is per request id
+          // so one row's choice never changes another row.
+          const writeExtra = isConn ? { writeAllowed: Boolean(connWrite[entry.id]) } : null;
           return react.createElement("div", { key: entry.id, className: "sb-row", style: { flexDirection: "column", alignItems: "stretch", gap: "var(--sb-sp-1)", cursor: "default" } },
-            react.createElement("div", { className: "sb-row-title" }, (entry.agent || "Agent") + " → " + (entry.name || "")),
+            react.createElement("div", { className: "sb-row-title" }, (entry.agent || "Agent") + " → " + (entry.name || (isConn ? "首次连接" : ""))),
             react.createElement("div", { className: "sb-row-sub" }, targetLine + (entry.createdAt ? " · " + new Date(entry.createdAt).toLocaleString() : "")),
+            isConn ? react.createElement("label", { className: "sb-note", style: { display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" } },
+              react.createElement("input", {
+                type: "checkbox", checked: Boolean(connWrite[entry.id]), style: { width: "auto", margin: 0 },
+                onChange: (event) => setConnWrite((current) => ({ ...current, [entry.id]: event.target.checked }))
+              }),
+              "同时允许写入（put_secret）") : null,
             react.createElement("div", { className: "sb-actions", style: { marginTop: "var(--sb-sp-1)" } },
-              react.createElement("button", { type: "button", className: "sb-btn sb-btn--primary", onClick: () => decide(entry.id, "once") }, t("approveOnce")),
-              react.createElement("button", { type: "button", className: "sb-btn", onClick: () => decide(entry.id, "24h") }, t("approve24")),
-              react.createElement("button", { type: "button", className: "sb-btn", onClick: () => decide(entry.id, "always") }, t("approveAlways")),
+              react.createElement("button", { type: "button", className: "sb-btn sb-btn--primary", onClick: () => decide(entry.id, "once", writeExtra) }, t("approveOnce")),
+              react.createElement("button", { type: "button", className: "sb-btn", onClick: () => decide(entry.id, "24h", writeExtra) }, t("approve24")),
+              react.createElement("button", { type: "button", className: "sb-btn", onClick: () => decide(entry.id, "always", writeExtra) }, t("approveAlways")),
               react.createElement("button", { type: "button", className: "sb-btn sb-btn--danger", onClick: () => decide(entry.id, "deny") }, t("deny"))
             )
           );
