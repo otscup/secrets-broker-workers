@@ -74,10 +74,6 @@ export function parseLoose(text) {
   return JSON.parse(out.replace(/,\s*([}\]])/g, '$1'))
 }
 
-export function hasComment(text) {
-  return /(^|[^:])\/\//.test(text) || /\/\*/.test(text)
-}
-
 /** Every place worth looking, with the shape of what lives there. */
 export function adapters({
   home = os.homedir(),

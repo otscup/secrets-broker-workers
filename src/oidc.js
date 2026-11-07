@@ -39,13 +39,6 @@ function b64urlDecode(text) {
   return Uint8Array.from(atob(clean + pad), (c) => c.charCodeAt(0))
 }
 
-export function b64urlEncode(bytes) {
-  const view = new Uint8Array(bytes)
-  let binary = ''
-  for (let offset = 0; offset < view.length; offset += 0x8000) binary += String.fromCharCode.apply(null, view.subarray(offset, offset + 0x8000))
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
 /** Split a JWS into { header, payload, signingInput, signature }. Throws on malformed input. */
 export function parseJwt(token) {
   if (typeof token !== 'string' || !token) throw new Error('missing id_token')

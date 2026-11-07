@@ -1138,12 +1138,6 @@ async function cookieKey(env) {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode('cookie:' + String(env.SESSION_KEK ?? ''))))
 }
 
-async function makeCookie(env) {
-  const expires = Date.now() + 7 * 86400 * 1000
-  const signature = await hmacToken(await cookieKey(env), String(expires))
-  return `v1.${expires}.${signature}`
-}
-
 function cookieSessionId(request) {
   const value = readSessionCookie(request)
   if (!value.startsWith('v2.')) return ''
@@ -1347,10 +1341,6 @@ async function loadState(env) {
     }
   }
   return state
-}
-
-async function saveState(env, state) {
-  await stateStub(env).fetch('https://state/state', { method: 'PUT', body: JSON.stringify(state) })
 }
 
 // Compare-and-swap save: only writes when the stored version still matches what
@@ -4553,7 +4543,6 @@ async function notifyPending(env, origin, entry, ctx) {
 // expires within the reminder window, and agents that have gone quiet. Pending
 // approvals always take priority over reminders in the UI, but both are
 // returned so the banner can explain why it is showing one and not the other.
-const REMINDER_WINDOWS = [5, 3, 1]
 const IDLE_DAYS = 7
 // Whole-trail answer to "when did this Agent last read a value". The audit slice
 // the console receives holds a few hundred rows, so "never" and "not in the
@@ -4805,10 +4794,6 @@ async function geoEventSummary(env) {
 const CREDENTIAL_KINDS = new Set(['api', 'web'])
 const FILL_ACTIONS = new Set(['login'])
 
-// Fill authorizations live apart from capabilities: they are one-shot, bound to
-// a concrete origin, and redeemed by the execution layer only.
-function fillPolicyKey(itemId) { return itemId }
-
 // Normalise an origin to scheme + host + port so comparisons are exact.
 // No suffix or wildcard matching: "example.com.evil.test" must never match
 // a policy for "example.com".
@@ -5029,13 +5014,6 @@ function requireClassification(state) {
   // classification is metadata now, and an unclassified item being refused after
   // an explicit approval is what made this model feel backwards.
   return state?.settings?.requireClassification === true
-}
-// How long a fill authorization stays valid. Kept short on purpose: the
-// execution layer redeems it immediately.
-function fillAuthTtlMs(env) {
-  const configured = Number(env.FILL_AUTH_TTL_MS ?? 0)
-  if (Number.isFinite(configured) && configured > 0) return Math.min(15 * 60 * 1000, configured)
-  return 10 * 60 * 1000
 }
 // ── Web fill task control plane (P3.0) ────────────────────────────────────
 // A task is the unit of work an execution layer performs. The lifecycle is
@@ -5292,17 +5270,6 @@ async function createFillTask(env, { agent, accountId, cipherId, itemName, origi
 // Stored under its own top-level key so the main state shape is untouched.
 // The DO transaction is the only place an authorization can be redeemed, so a
 // replayed nonce or a concurrent second request cannot both succeed.
-async function issueFillAuthorization(env, { nonce, agent, itemId, itemName, accountId, origin, action, ttlMs, policyRevision }) {
-  const now = Date.now()
-  const expiresAt = now + ttlMs
-  const record = { nonce, agent, itemId, itemName: itemName ?? '', accountId, origin, action, policyRevision: policyRevision ?? '', issuedAt: now, expiresAt, consumedAt: 0 }
-  const response = await stateStub(env).fetch('https://state/fill/issue', {
-    method: 'POST',
-    body: JSON.stringify({ record }),
-  })
-  return response.json()
-}
-
 // Redeem exactly once. Returns the binding so the execution layer can check
 // that the origin it is about to fill matches the authorized one.
 async function consumeFillAuthorization(env, { nonce, agent, itemId, accountId, origin }) {
@@ -5474,7 +5441,6 @@ const SECRET_ACTIONS = new Set(['secret.read', 'secret.use', 'secret.fill', 'sec
 // expiresAt: null = permanent (never use magic timestamps).
 // maxUses: null = unlimited (still bound by expiry/revoke/scope/target).
 const CAPABILITY_DURATIONS = { '1d': 86400e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, permanent: null }
-const CAPABILITY_MODES = new Set(['preapproved', 'temporary'])
 
 function capabilityKey(subjectId, itemId, action) { return `${subjectId}\u0000${itemId}\u0000${action}` }
 
@@ -5762,10 +5728,6 @@ async function shadowAudit(env, state, action, agentName, itemName, itemId, newD
     new: newDecision ? 'allow' : 'deny',
     legacy: legacyDecision ? 'allow' : 'deny',
   })
-}
-
-function itemIdByName(state, name) {
-  return state.itemIds?.[name] ?? ''
 }
 
 // Resolve a stable NodeWarden cipher id for an item name. Used by the hybrid

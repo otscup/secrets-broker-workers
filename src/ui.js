@@ -149,8 +149,6 @@ html[data-theme="dark"] .notice-bar .notice-count{background:rgba(255,255,255,.1
 .globe-expand{position:absolute;top:6px;right:6px;z-index:3;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:3px 8px;font-size:13px;line-height:1.2;cursor:pointer}
 .globe-expand:hover{background:var(--btn)}
 html[data-theme="dark"] .globe-box{background:transparent}
-.globe-box.globe-full{position:fixed;inset:16px;z-index:60;height:auto;margin:0;border-radius:16px;box-shadow:0 24px 60px rgba(10,20,40,.35)}
-.globe-box.globe-full canvas{cursor:grab}
 .globe-big{position:fixed;inset:6%;z-index:80;background:var(--card);border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 24px 70px rgba(8,16,32,.35);display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,320px);gap:0}
 .globe-big-stage{min-width:0;position:relative;background:var(--bg)}
 .globe-box-big{position:absolute;inset:0;height:100%;margin-top:0;border:0;border-radius:0;background:transparent}
@@ -632,7 +630,7 @@ nav button svg{display:block;width:22px;height:22px;stroke-width:1.7}
 #globe-card .globe-box{height:150px}
 .dash #globe-card{display:flex;flex-direction:column;min-height:0}
 .globe-split{display:flex;align-items:center;gap:var(--sp-3);flex:1 1 auto;min-height:0;margin-top:var(--sp-2)}
-#globe-card.globe-off .globe-side,#globe-card.globe-off #globe-open,#globe-card.globe-off #globe-full{display:none}
+#globe-card.globe-off .globe-side,#globe-card.globe-off #globe-open{display:none}
 .globe-still{position:absolute;inset:0;z-index:1;display:flex;align-items:center;justify-content:center;border-radius:12px;overflow:hidden}
 #globe-card.globe-live .globe-still{display:none}
 .globe-still img{width:128px;height:128px;border-radius:50%;object-fit:cover;object-position:50% 45%;box-shadow:0 10px 24px rgba(8,20,40,.26),inset 0 0 0 1px rgba(255,255,255,.1)}
@@ -3161,7 +3159,6 @@ async function fetchCustomModels() {
 // asks the server to keep it. The panel never closes itself — not on a page
 // action, not on a poll — so a half-written question is never lost.
 const AI_THREAD_KEY = 'sb-ai-thread'
-const AI_THREAD_PERSIST_KEY = 'sb-ai-thread-persist'
 
 function aiThreadLoad() {
   try {
@@ -4004,16 +4001,6 @@ function syncGlobeToView(view) {
   globe.hidden = true
   stopGlobePolling()
 }
-function toggleGlobeFullscreen() {
-  const box = $('globe-box')
-  const button = $('globe-full')
-  if (!box) return
-  const next = !box.classList.contains('globe-full')
-  box.classList.toggle('globe-full', next)
-  if (button) button.textContent = next ? '缩小' : '放大'
-  // Let the container settle before measuring for the new viewport size.
-  requestAnimationFrame(() => { try { window.dispatchEvent(new Event('resize')) } catch {} })
-}
 // Live connection feed: only shown while there are fresh connections, and it
 // scrolls like a danmaku stream. Each entry is a real captured event.
 let danmuTimer = null
@@ -4166,10 +4153,6 @@ function initGlobe() {
     if (globe.instance) globe.instance.setPaused(globe.paused)
     syncGlobePolling()
   }
-  // The card is now compact: the corner icon opens the enlarged view, which
-  // carries the full-size globe plus the live connection feed.
-  const fullBtn = $('globe-full')
-  if (fullBtn) fullBtn.onclick = () => openGlobeModal()
   const boxEl = $('globe-box')
   // Distinguish a click from a drag: only a press-and-release without movement
   // opens the enlarged view, so rotating the globe never pops a dialog.
@@ -4697,9 +4680,6 @@ function agentDisplayNote(agent) {
   return agent.note || ''
 }
 const IOS_PERSON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.6"></circle><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6"></path></svg>'
-// The all-clear mark on the work queue. Drawn, not typed, so it scales with the
-// surrounding text and keeps the same stroke weight as the other icons.
-const IOS_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 12.4l2.6 2.6L16 9.6"></path></svg>'
 function renderAgents() {
   const all = (app.data && app.data.agents) || []
   renderAgentStats(all)
@@ -5572,13 +5552,6 @@ async function loadRecent() {
   try { const data = await auditPage({ limit: 8 }); app.recentAudit = data.entries || [] } catch { app.recentAudit = [] }
   renderRecent()
 }
-// Options are rebuilt from the audit rows on every render (the data can change
-// under a refresh); the current choice is carried over by value.
-function logEventInGroup(group, event) {
-  if (group.red) return RED_LOG_EVENTS.has(event)
-  return (group.match || []).some((kind) => (kind.endsWith('.*') ? event.startsWith(kind.slice(0, -1)) : event === kind))
-}
-
 // Filters go to the server. Keeping only the matching window in memory is the
 // point: a large trail used to arrive in full and be filtered in the browser.
 const logState = { rows: [], total: 0, more: false, masked: false }
