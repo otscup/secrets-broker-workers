@@ -34,6 +34,10 @@ function seed(extra = {}) {
     adminSessions: {
       stale: { id: 'stale', expiresAt: expired },
     },
+    pending: {
+      old: { id: 'old', agent: HARNESS.AGENT, name: HARNESS.ITEM, action: 'secret.read', createdAt: new Date(now - 4 * 86400e3).toISOString() },
+      fresh: { id: 'fresh', agent: HARNESS.AGENT, name: HARNESS.ITEM, action: 'secret.read', createdAt: new Date(now - 3600e3).toISOString() },
+    },
     ...extra,
   }
 }
@@ -60,12 +64,13 @@ async function stateOf(env) {
     && !state.oauthRefreshTokens.ref && !state.oauthCodes.code
     && !state.writeTickets.ticket && Boolean(state.writeTickets.permanent)
     && !state.pendingResults.answer && !state.adminSessions.stale
-  if (ok) pass('1a expired capability, token, refresh token, code, ticket, result and session are gone')
-  else fail('1a sweep', JSON.stringify({ status: response.status, capabilities: Object.keys(state.capabilities), tokens: Object.keys(state.oauthTokens), tickets: Object.keys(state.writeTickets), sessions: Object.keys(state.adminSessions) }))
+    && !state.pending.old && Boolean(state.pending.fresh)
+  if (ok) pass('1a expired capability, token, refresh token, code, ticket, result, session and 3-day request are gone')
+  else fail('1a sweep', JSON.stringify({ status: response.status, capabilities: Object.keys(state.capabilities), tokens: Object.keys(state.oauthTokens), tickets: Object.keys(state.writeTickets), sessions: Object.keys(state.adminSessions), pending: Object.keys(state.pending || {}) }))
 
   const events = env._vault.auditRows.slice(beforeAudit).map((row) => row.event)
   const has = (name) => events.includes(name)
-  if (has('capability.expire') && has('oauth.token-expire') && has('oauth.refresh-expire') && has('oauth.code-expire') && has('write-ticket.expire') && has('session.expire')) {
+  if (has('capability.expire') && has('oauth.token-expire') && has('oauth.refresh-expire') && has('oauth.code-expire') && has('write-ticket.expire') && has('session.expire') && has('pending.expire')) {
     pass('1b each removed shape is recorded in audit')
   } else {
     fail('1b audit events', JSON.stringify(events))
@@ -73,7 +78,7 @@ async function stateOf(env) {
 
   const capRow = env._vault.auditRows.slice(beforeAudit).find((row) => row.event === 'capability.expire')
   const counts = capRow ? { before: capRow.before, after: capRow.after } : null
-  if (counts?.before?.capabilities === 2 && counts?.after?.capabilities === 1) {
+  if (counts?.before?.capabilities === 2 && counts?.after?.capabilities === 1 && counts?.before?.pending === 2 && counts?.after?.pending === 1) {
     pass('1c the audit line carries before/after counts')
   } else {
     fail('1c counts', JSON.stringify(counts))
