@@ -63,7 +63,7 @@ jobs:
           }
           $lines | Set-Content -Encoding ascii SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: secrets-broker-desktop-${{ github.run_number }}
           path: |

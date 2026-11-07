@@ -57,7 +57,7 @@ jobs:
         run: npm run test:session 2>&1 | tee "$RUNNER_TEMP/ci-logs/session.log"
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: miniflare-vault-logs
           path: ${{ runner.temp }}/ci-logs
@@ -113,7 +113,7 @@ jobs:
         run: npm run test:actions 2>&1 | tee "$RUNNER_TEMP/ci-logs/actions.log"
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: permissions-model-logs
           path: ${{ runner.temp }}/ci-logs
@@ -246,7 +246,7 @@ jobs:
         run: npm run test:ui-item-page 2>&1 | tee "$RUNNER_TEMP/ci-logs/ui-item-page.log"
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-suites-logs
           path: ${{ runner.temp }}/ci-logs
@@ -524,7 +524,7 @@ jobs:
         run: npm run test:security:short 2>&1 | tee "$RUNNER_TEMP/ci-logs/security-short.log"
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: security-tests-logs
           path: ${{ runner.temp }}/ci-logs
