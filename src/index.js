@@ -4282,7 +4282,57 @@ async function signedApprovalLinks(env, id, origin, source = 'notification') {
   return links
 }
 
-// ── Notification templates ───────────────────────────────────────────────
+// A notification carries a link that only locates the request; it never encodes
+// scope, plaintext or write permission, so editing the URL cannot widen an
+// approval. The token is signed, single-use and short-lived (30 minutes, the
+// same TTL a pending request has). Signing and consuming are both audited.
+const APPROVAL_LINK_TTL_MS = 30 * 60 * 1000
+async function approvalLinkSignature(env, kind, id, exp) {
+  return await hmacToken(await cookieKey(env), `approval-link:${kind}:${id}:${exp}`)
+}
+async function makeApprovalLink(env, origin, { id, kind, source = 'notification' }) {
+  const exp = Date.now() + APPROVAL_LINK_TTL_MS
+  const sig = await approvalLinkSignature(env, kind, id, exp)
+  const base = String(origin || '').replace(/\/$/, '')
+  const link = `${base}/approve?k=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}&exp=${exp}&sig=${encodeURIComponent(sig)}&ch=${encodeURIComponent(source)}`
+  await updateState(env, (state) => {
+    state.approvalLinks ??= {}
+    const links = state.approvalLinks
+    for (const [key, value] of Object.entries(links)) {
+      const until = Number(value?.exp ?? 0)
+      if (!value || until <= Date.now() || (value.usedAt && until + 3600e3 <= Date.now())) delete links[key]
+    }
+    links[sig] = { kind, id, exp, createdAt: nowIso(), source }
+    return state
+  })
+  await addAudit(env, { event: 'approval.link', kind, requestId: id, expiresAt: exp, source })
+  return link
+}
+async function readApprovalLink(env, state, { kind, id, exp, sig }) {
+  if (!['pending', 'connection'].includes(kind)) return { ok: false, error: '链接类型无效' }
+  if (!Number.isFinite(exp) || exp <= Date.now()) return { ok: false, error: '链接已过期' }
+  const expected = await approvalLinkSignature(env, kind, id, exp)
+  if (!constantTimeEqual(encoder.encode(expected), encoder.encode(sig))) return { ok: false, error: '签名无效' }
+  const record = state.approvalLinks?.[sig]
+  if (!record) return { ok: false, error: '链接未被签发或已失效' }
+  if (record.usedAt) return { ok: false, error: '链接已使用' }
+  if (Number(record.exp) <= Date.now()) return { ok: false, error: '链接已过期' }
+  if (record.kind !== kind || String(record.id) !== String(id)) return { ok: false, error: '链接与请求不匹配' }
+  return { ok: true, record }
+}
+async function consumeApprovalLink(env, sig) {
+  let consumed = false
+  await updateState(env, (state) => {
+    const record = state.approvalLinks?.[sig]
+    if (!record || record.usedAt) return state
+    record.usedAt = nowIso()
+    consumed = true
+    return state
+  })
+  return consumed
+}
+
+
 // One approval template shared by all channels, editable in Settings →
 // 通知模板 (stored at settings.notifications.templates) so copy changes do
 // not need a redeploy. Missing/empty fields fall back to the defaults below,
@@ -4556,7 +4606,13 @@ async function notifyConnectionPending(env, origin, record) {
   const notifications = liveChannels(state.settings?.notifications ?? {})
   const when = String(record.createdAt || nowIso()).replace('T', ' ').slice(0, 16) + ' UTC'
   const where = origin ? `\n在控制台的待审批面板处理：${String(origin).replace(/\/$/, '')}/#pending` : '\n在控制台的待审批面板处理'
-  const text = `${record.agent} 申请首次连接（${when}）${where}`
+  const approvalLink = origin ? await makeApprovalLink(env, origin, { id: record.id, kind: 'connection', source: 'connection' }) : ''
+  await updateState(env, (state) => {
+    const row = state.connections?.[record.id]
+    if (row && String(row.state) === 'pending') row.approvalLink = approvalLink
+    return state
+  }).catch(() => {})
+  const text = `${record.agent} 申请首次连接（${when}）${where}${approvalLink ? `\n\n打开授权页：${approvalLink}` : ''}`
   const title = 'Secrets Broker · 连接申请'
   const tasks = []
   if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
@@ -4603,7 +4659,15 @@ async function notifyPending(env, origin, entry, ctx) {
   if (entry.denied === true) return notifyDenied(env, origin, entry, notifications)
   const tpl = notificationTemplates(notifications).approval
   const links = await signedApprovalLinks(env, entry.id, origin)
-  const shortText = renderTemplate(tpl.body, { agent: entry.agent, name: entry.name, time: entry.createdAt, origin })
+  const approvalLink = await makeApprovalLink(env, origin, { id: entry.id, kind: 'pending', source: 'pending' })
+  // The console reads this field to render a "打开授权页" link on the same
+  // pending row, so every channel points at one signed URL.
+  await updateState(env, (state) => {
+    const row = state.pending?.[entry.id]
+    if (row) row.approvalLink = approvalLink
+    return state
+  }).catch(() => {})
+  const shortText = renderTemplate(tpl.body, { agent: entry.agent, name: entry.name, time: entry.createdAt, origin }) + `\n\n打开授权页：${approvalLink}`
   const linkText = `${shortText}\n\n${tpl.labels.once}: ${links.once}\n${tpl.labels['24h']}: ${links['24h']}\n${tpl.labels.always}: ${links.always}\n${tpl.labels.deny}: ${links.deny}`
   const tasks = []
   if (notifications.telegram?.botToken && notifications.telegram?.chatId) {
@@ -9967,6 +10031,102 @@ export default {
       const decision = String(params.get('d') ?? '')
       const exp = Number(params.get('exp') ?? '0')
       const signature = String(params.get('sig') ?? '')
+      // The notification link form: a signed, single-use token that only names
+      // the request. Scope/plaintext/write/duration are chosen on this page and
+      // validated server-side on submit, so editing the URL cannot widen it.
+      if (params.get('k')) {
+        const kind = String(params.get('k') ?? '')
+        const linkExp = Number(params.get('exp') ?? '0')
+        const linkSig = String(params.get('sig') ?? '')
+        const source = String(params.get('ch') ?? 'notification')
+        const state = await loadState(env)
+        const checked = await readApprovalLink(env, state, { kind, id: id, exp: linkExp, sig: linkSig })
+        if (!checked.ok) return new Response(checked.error, { status: 410, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } })
+        // The link locates the request; the account still has to be the one
+        // logged in. Without a session we come back here after login instead of
+        // dropping the operator on the homepage.
+        if (!(await adminAuthorized(request, env))) {
+          const here = url.pathname + url.search
+          return new Response(null, { status: 302, headers: { location: `/login?next=${encodeURIComponent(here)}`, 'cache-control': 'no-store' } })
+        }
+        const hidden = [['k', kind], ['id', id], ['exp', String(linkExp)], ['sig', linkSig], ['ch', source]]
+        const hiddenFields = hidden.map(([name, value]) => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`).join('')
+        const durationOptions = [['once', '仅本次（10 分钟）'], ['1h', '1 小时'], ['24h', '24 小时'], ['7d', '7 天'], ['always', '永久']]
+          .map(([value, label], index) => `<option value="${value}"${index === 2 ? ' selected' : ''}>${label}</option>`).join('')
+        if (request.method === 'GET') {
+          if (kind === 'pending') {
+            const pending = state.pending?.[id]
+            if (!pending) return new Response('请求不存在或已处理', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+            const isWrite = String(pending.action ?? '') === 'secret.write'
+            return htmlResponse(`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+              `<title>确认授权 · Secrets Broker</title>` +
+              `<div style="font:15px/1.7 system-ui;max-width:560px;margin:48px auto;padding:0 18px;color:#152033">` +
+              `<h2 style="font-size:19px;margin:0 0 12px">${isWrite ? '确认写入' : '确认读取'}请求</h2>` +
+              `<p>Agent <strong>${escapeHtml(String(pending.agent ?? '').slice(0, 80))}</strong> 请求${isWrite ? '写入' : '读取'} <strong>${escapeHtml(String(pending.name ?? '').slice(0, 120))}</strong>。</p>` +
+              `<p style="color:#6b7890;font-size:13px">范围与写入权限按申请预填；本次提交一次完成，不需要再输验证码。</p>` +
+              `<form method="post" action="/approve" autocomplete="off">${hiddenFields}` +
+              `<label style="display:block;margin:12px 0 4px">授权时长</label>` +
+              `<select name="d" style="width:100%;padding:9px;border:1px solid #c9d2e2;border-radius:8px">${durationOptions}</select>` +
+              `<button type="submit" style="width:100%;margin-top:16px;padding:12px;border:1px solid #152033;border-radius:10px;background:#152033;color:#fff;font-size:15px">批准</button></form>` +
+              `<form method="post" action="/approve" autocomplete="off">${hiddenFields}<input type="hidden" name="d" value="deny">` +
+              `<button type="submit" style="width:100%;margin-top:8px;padding:10px;border:1px solid #c9d2e2;border-radius:10px;background:#fff;color:#a12b2b;font-size:14px">拒绝</button></form>` +
+              `<p style="color:#6b7890;font-size:12px;margin-top:14px">链接 30 分钟内有效，提交一次后立即失效。</p></div>`)
+          }
+          const record = state.connections?.[id]
+          if (!record || String(record.state) !== 'pending') return new Response('请求不存在或已处理', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+          const items = Object.entries(state.itemIds ?? {}).sort((a, b) => a[0].localeCompare(b[0])).slice(0, 200)
+            .map(([name, itemId]) => `<label style="display:flex;align-items:center;gap:8px;min-height:26px;font-size:12px"><input type="checkbox" name="itemIds" value="${escapeHtml(String(itemId))}"> ${escapeHtml(String(name).slice(0, 90))}</label>`).join('')
+          return htmlResponse(`<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">` +
+            `<title>确认连接 · Secrets Broker</title>` +
+            `<div style="font:15px/1.7 system-ui;max-width:560px;margin:48px auto;padding:0 18px;color:#152033">` +
+            `<h2 style="font-size:19px;margin:0 0 12px">确认首次连接</h2>` +
+            `<p><strong>${escapeHtml(String(record.agent ?? '').slice(0, 80))}</strong> 申请连接（${escapeHtml(String(record.createdAt ?? '').replace('T', ' ').slice(0, 16))} UTC）。</p>` +
+            `<form method="post" action="/approve" autocomplete="off">${hiddenFields}` +
+            `<div style="display:flex;gap:16px;margin:12px 0"><label style="display:flex;gap:6px;align-items:center"><input type="radio" name="scope" value="all" checked> 全部条目</label>` +
+            `<label style="display:flex;gap:6px;align-items:center"><input type="radio" name="scope" value="selected"> 指定条目</label></div>` +
+            `<div style="border:1px solid #dfe5ef;border-radius:8px;padding:6px 10px;max-height:180px;overflow:auto">${items}</div>` +
+            `<div style="display:flex;flex-wrap:wrap;gap:16px;margin:12px 0"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="plaintextAllowed"> 允许读取明文</label>` +
+            `<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="writeAllowed"> 允许写入</label></div>` +
+            `<label style="display:block;margin:4px 0">授权时长</label>` +
+            `<select name="duration" style="width:100%;padding:9px;border:1px solid #c9d2e2;border-radius:8px">${durationOptions}</select>` +
+            `<button type="submit" style="width:100%;margin-top:16px;padding:12px;border:1px solid #152033;border-radius:10px;background:#152033;color:#fff;font-size:15px">批准</button></form>` +
+            `<form method="post" action="/approve" autocomplete="off">${hiddenFields}<input type="hidden" name="deny" value="1">` +
+            `<button type="submit" style="width:100%;margin-top:8px;padding:10px;border:1px solid #c9d2e2;border-radius:10px;background:#fff;color:#a12b2b;font-size:14px">拒绝</button></form>` +
+            `<p style="color:#6b7890;font-size:12px;margin-top:14px">链接 30 分钟内有效，提交一次后立即失效。</p></div>`)
+        }
+        // POST: consume before deciding, so a double submit cannot approve twice.
+        if (!(await consumeApprovalLink(env, linkSig))) return new Response('链接已使用或已失效', { status: 410, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+        if (kind === 'pending') {
+          const chosen = String(params.get('d') ?? '24h')
+          if (!['once', '1h', '24h', '7d', 'always', 'deny'].includes(chosen)) return new Response('授权时长无效', { status: 400, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+          const outcome = await decidePending(env, id, chosen, source, request)
+          await addAudit(env, { event: 'approval.link-used', kind, requestId: id, decision: chosen, source, ok: Boolean(outcome) })
+          if (!outcome) return new Response('请求不存在或已处理', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+          const message = outcome.denied ? `已拒绝：${outcome.agent} 访问「${outcome.name}」` : `已授权：${outcome.agent} 访问「${outcome.name}」${outcome.mode ? `（${outcome.mode}）` : ''}`
+          return htmlResponse(`<meta charset="utf-8"><title>Secrets Broker</title><h2>${escapeHtml(message)}</h2><p style="color:#6b7890;font-size:13px">此链接已失效，重复打开不会再次授权。</p>`)
+        }
+        if (params.has('deny')) {
+          const result = await decideConnectionRequest(env, { id, decision: 'deny', via: 'notification-link', request })
+          await addAudit(env, { event: 'approval.link-used', kind, requestId: id, decision: 'deny', source, status: result.status })
+          return htmlResponse(`<meta charset="utf-8"><title>Secrets Broker</title><h2>${result.status === 200 ? '已拒绝这条连接申请' : '请求已处理或不存在'}</h2>`)
+        }
+        const scope = String(params.get('scope') ?? 'all') === 'selected' ? 'selected' : 'all'
+        const itemIds = scope === 'selected' ? (params.getAll('itemIds') ?? []).map((value) => String(value)) : []
+        const payload = {
+          all: scope === 'all',
+          scope,
+          itemIds,
+          duration: String(params.get('duration') ?? '1h'),
+          plaintextAllowed: params.get('plaintextAllowed') === 'on' || params.get('plaintextAllowed') === '1',
+          writeAllowed: params.get('writeAllowed') === 'on' || params.get('writeAllowed') === '1',
+        }
+        const result = await decideConnectionRequest(env, { id, decision: 'approve', payload, via: 'notification-link', request })
+        await addAudit(env, { event: 'approval.link-used', kind, requestId: id, decision: 'approve', source, status: result.status, scope, itemIds: itemIds.length, plaintextAllowed: payload.plaintextAllowed, writeAllowed: payload.writeAllowed })
+        if (result.status !== 200) {
+          return htmlResponse(`<meta charset="utf-8"><title>Secrets Broker</title><h2>没能完成批准</h2><p style="color:#a12b2b">${escapeHtml(String(result.body?.error ?? '请回到控制台处理'))}</p>`, result.status)
+        }
+        return htmlResponse(`<meta charset="utf-8"><title>Secrets Broker</title><h2>已批准连接</h2><p style="color:#6b7890;font-size:13px">此链接已失效，重复打开不会再次授权。</p>`)
+      }
       if (!id || !['once', '24h', 'always', 'deny'].includes(decision) || !Number.isFinite(exp) || exp < Date.now()) return new Response('链接已过期或无效', { status: 400, headers: { 'content-type': 'text/plain; charset=utf-8' } })
       const expected = await hmacToken(await cookieKey(env), `${id}:${decision}:${exp}`)
       if (!constantTimeEqual(encoder.encode(expected), encoder.encode(signature))) return new Response('签名无效', { status: 400, headers: { 'content-type': 'text/plain; charset=utf-8' } })
@@ -9987,7 +10147,7 @@ export default {
           `<button type="submit" style="width:100%;padding:12px;border:1px solid #152033;border-radius:10px;background:#152033;color:#fff;font-size:15px">${verb}</button></form>` +
           `<p style="color:#6b7890;font-size:12px;margin-top:14px">此页面只在你点击按钮后执行，链接本身不会再自动生效。</p></div>`)
       }
-      const outcome = await decidePending(env, id, decision, String(params.get('ch') ?? 'notification'))
+      const outcome = await decidePending(env, id, decision, String(params.get('ch') ?? 'notification'), request)
       if (!outcome) return new Response('请求不存在或已处理', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } })
       const message = outcome.denied ? `已拒绝：${outcome.agent} 访问「${outcome.name}」` : `已授权：${outcome.agent} 访问「${outcome.name}」${outcome.mode ? `（${outcome.mode}）` : ''}`
       return htmlResponse(`<meta charset="utf-8"><title>Secrets Broker</title><h2>${escapeHtml(message)}</h2>`)
@@ -10016,7 +10176,7 @@ export default {
       const data = String(callback.data ?? '')
       const [kind, id, mode] = data.split(':')
       const decision = kind === 'd' ? 'deny' : (mode || 'once')
-      const outcome = await decidePending(env, id, decision, 'telegram')
+      const outcome = await decidePending(env, id, decision, 'telegram', request)
       const token = telegram.botToken
       if (token) {
         const answer = outcome ? (outcome.denied ? '已拒绝' : '已授权') : '请求不存在或已处理'
