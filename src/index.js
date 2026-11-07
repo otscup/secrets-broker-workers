@@ -103,6 +103,14 @@ const V2_KEY_STORAGE_PREFIX = 'v2key:'
 function v2KeyStorageName(session, account) {
   return V2_KEY_STORAGE_PREFIX + JSON.stringify([session, account])
 }
+// An approval has to work while the vault is locked, so the wrapped DEK has to
+// outlive a lock. The live slots above are deleted by an explicit lock; this
+// copy is not. It is wrapped with the same SESSION_KEK, never plaintext, and it
+// only lets the approval path reopen what a trusted device already unlocked.
+const V2_BACKUP_STORAGE_PREFIX = 'v2backup:'
+function v2BackupStorageName(account) {
+  return V2_BACKUP_STORAGE_PREFIX + String(account ?? '').trim().toLowerCase()
+}
 // "This browser session already passed the second factor once." It is separate
 // from the key slot because the account mirror is deliberately written with
 // plainOk off (helpers must never inherit a browser's pass), so the key slot
@@ -133,7 +141,8 @@ export class BrokerState extends DurableObject {
     try {
       const record = await this.ctx.storage.get(name)
       if (!record) return null
-      if (!record.expiresAt || Number(record.expiresAt) <= Date.now()) {
+      // null is the "keep unlocked until an explicit lock" tier, not "missing".
+      if (record.expiresAt !== null && !(Number(record.expiresAt) > Date.now())) {
         await this.ctx.storage.delete(name)
         return null
       }
@@ -142,7 +151,7 @@ export class BrokerState extends DurableObject {
         dek: new Uint8Array(await unwrapWithKek(record.dek, kek)),
         legacyDek: record.legacyDek ? new Uint8Array(await unwrapWithKek(record.legacyDek, kek)) : null,
         account: String(record.account ?? account),
-        expiresAt: Number(record.expiresAt),
+        expiresAt: record.expiresAt === null ? null : Number(record.expiresAt),
         plainOk: record.plainOk === true,
         confirm: record.confirm === true,
       }
@@ -156,13 +165,24 @@ export class BrokerState extends DurableObject {
   async writeV2KeySlot(session, account, entry) {
     try {
       const kek = await kekBytes(this.env)
+      const dek = await wrapWithKek(entry.dek, kek)
+      const legacyDek = entry.legacyDek ? await wrapWithKek(entry.legacyDek, kek) : null
+      const backing = String(entry.account ?? account ?? '').trim().toLowerCase()
       await this.ctx.storage.put(v2KeyStorageName(session, account), {
-        dek: await wrapWithKek(entry.dek, kek),
-        legacyDek: entry.legacyDek ? await wrapWithKek(entry.legacyDek, kek) : null,
+        dek,
+        legacyDek,
         account: String(entry.account ?? account),
         expiresAt: entry.expiresAt,
         plainOk: entry.plainOk === true,
         confirm: entry.confirm === true,
+      })
+      // The durable copy the approval path reopens from. It deliberately has no
+      // expiresAt: a lock must not destroy it, and reopening sets its own TTL.
+      await this.ctx.storage.put(v2BackupStorageName(backing), {
+        dek,
+        legacyDek,
+        account: backing,
+        updatedAt: Date.now(),
       })
     } catch {}
   }
@@ -173,6 +193,20 @@ export class BrokerState extends DurableObject {
     } catch {}
   }
 
+  // A lock is the master switch: it destroys both the live slot and the
+  // SESSION_KEK-wrapped durable copy, so nothing on the server can reopen the
+  // vault without a new password unlock.
+  async deleteV2KeyBackup(account) {
+    try {
+      if (account) {
+        await this.ctx.storage.delete(v2BackupStorageName(account))
+        return
+      }
+      const backups = await this.ctx.storage.list({ prefix: V2_BACKUP_STORAGE_PREFIX })
+      if (backups.size) await this.ctx.storage.delete([...backups.keys()])
+    } catch {}
+  }
+
   // Expired slots would otherwise stay forever; unlock is rare enough that a
   // sweep there costs nothing.
   async sweepV2KeySlots() {
@@ -180,7 +214,7 @@ export class BrokerState extends DurableObject {
       const records = await this.ctx.storage.list({ prefix: V2_KEY_STORAGE_PREFIX })
       const now = Date.now()
       const stale = []
-      for (const [name, record] of records) if (!record?.expiresAt || Number(record.expiresAt) <= now) stale.push(name)
+      for (const [name, record] of records) if (record?.expiresAt !== null && !(Number(record?.expiresAt) > now)) stale.push(name)
       if (stale.length) await this.ctx.storage.delete(stale)
     } catch {}
   }
@@ -339,7 +373,7 @@ export class BrokerState extends DurableObject {
         // With no session id the lookup key IS the account slot, and with a
         // session id only that session's own entry may answer: a session never
         // borrows the key another session unlocked.
-        if (!entry || entry.expiresAt <= Date.now()) {
+        if (!entry || !(entry.expiresAt === null || Number(entry.expiresAt) > Date.now())) {
           entry = await this.readV2KeySlot(scoped ? session : '', account)
           if (entry) {
             if (scoped) this.v2Keys.set(keyId, entry)
@@ -358,17 +392,18 @@ export class BrokerState extends DurableObject {
         const dek = Uint8Array.from(Array.isArray(body.dek) ? body.dek : [])
         if (dek.length !== 32) return json({ ok: false, reason: 'bad-key' }, 400)
         const legacyDek = Array.isArray(body.legacyDek) && body.legacyDek.length === 32 ? Uint8Array.from(body.legacyDek) : null
-        // 12h used to be the hard ceiling. The console now offers 7d/30d as an
-        // explicit tier and a device-bound tier; the default stays 12h. The cap
-        // exists so a leaked cache cannot outlive a deliberate 30d choice.
-        const ttl = Math.min(30 * 24 * 3600 * 1000, Math.max(60 * 1000, Number(body.ttlMs) || 3600 * 1000))
+        // `ttlMs: null` (or duration `forever`) is the "keep unlocked until an
+        // explicit lock" tier: the slot has no expiry. Everything else keeps the
+        // 30-day ceiling so a leaked cache cannot outlive a deliberate choice.
+        const permanent = body.ttlMs === null || body.ttlMs === 0 || body.duration === 'forever' || body.duration === 'permanent'
+        const ttl = permanent ? null : Math.min(30 * 24 * 3600 * 1000, Math.max(60 * 1000, Number(body.ttlMs) || 3600 * 1000))
         // A new unlock starts a new session: the plaintext listing needs its own
         // second factor again instead of inheriting the previous unlock's pass.
         // An unlock that already checked the code in the same request hands the
         // pass in here, so the operator proves presence once instead of twice.
         // confirm asks the console for a fresh password/TOTP before dangerous
         // actions; only the longer tiers set it.
-        const entry = { dek, legacyDek, account, expiresAt: Date.now() + ttl, plainOk: body.plainOk === true, confirm: body.confirm === true }
+        const entry = { dek, legacyDek, account, expiresAt: permanent ? null : Date.now() + ttl, plainOk: body.plainOk === true, confirm: body.confirm === true }
         if (scoped) {
           this.v2Keys.set(keyId, entry)
           await this.writeV2KeySlot(session, account, entry)
@@ -397,7 +432,9 @@ export class BrokerState extends DurableObject {
         if (session) {
           const live = await this.readFactor(session)
           if (body.plainOk === true || body.factorVerified === true || live > Date.now()) {
-            await this.writeFactor(session, entry.expiresAt)
+            // A permanent slot gets a permanent pass: the whole point is that
+            // nothing asks for a code again until the operator locks.
+            await this.writeFactor(session, permanent ? Number.MAX_SAFE_INTEGER : entry.expiresAt)
           }
         }
         await this.sweepV2KeySlots()
@@ -412,6 +449,11 @@ export class BrokerState extends DurableObject {
             this.v2Keys.delete(accountId)
             await this.deleteV2KeySlot('', account)
           }
+          // The wrapped durable copy goes with the live slot: after a lock the
+          // server must not be able to reopen this account without a new
+          // password unlock. An empty account means the deployment's single
+          // vault, so every copy is cleared.
+          await this.deleteV2KeyBackup(account)
           // A scoped lock ends that browser's pass too; otherwise a locked vault
           // could still answer "second factor already passed" to a reveal.
           if (session) await this.deleteFactor(session)
@@ -419,6 +461,7 @@ export class BrokerState extends DurableObject {
           this.v2Keys.clear()
           this.v2Key = null
           await this.clearV2KeySlots()
+          await this.deleteV2KeyBackup('')
           await this.clearFactors()
         }
         return json({ ok: true })
@@ -434,7 +477,7 @@ export class BrokerState extends DurableObject {
       const accountId = `\u0000${account}`
       const keyId = `${session}\u0000${account}`
       let entry = scoped ? this.v2Keys.get(keyId) : this.v2Key
-      if (!entry || entry.expiresAt <= Date.now()) {
+      if (!entry || !(entry.expiresAt === null || Number(entry.expiresAt) > Date.now())) {
         entry = await this.readV2KeySlot(scoped ? session : '', account)
         if (entry) {
           if (scoped) this.v2Keys.set(keyId, entry)
@@ -1906,7 +1949,9 @@ async function markSessionFactor(env, request, state = null) {
     const account = resolveVaultAccount(snapshot, null, env)
     const query = '?account=' + encodeURIComponent(account) + '&session=' + encodeURIComponent(session)
     const key = await stateStub(env).fetch('https://state/v2-key' + query).then((response) => response.json()).catch(() => null)
-    const expiresAt = Number(key?.expiresAt ?? 0)
+    // A permanent unlock has no expiry to mirror; the pass is permanent too and
+    // only an explicit lock clears it.
+    const expiresAt = key?.expiresAt === null ? Number.MAX_SAFE_INTEGER : Number(key?.expiresAt ?? 0)
     // Without a live v2 unlock there is no window to attach the pass to; the
     // caller keeps asking rather than inventing a duration.
     if (!(expiresAt > Date.now())) return 0
@@ -2223,8 +2268,11 @@ const PENDING_REQUEST_TTL_MS = 3 * 86400e3
 // UI) promised 12h/7d/30d. A preset now maps to a real TTL; `device` stays at
 // one hour by design because it pairs a browser and reopens silently rather
 // than keeping a key cached for weeks.
-const V2_UNLOCK_TTL_MS = { '12h': 12 * 3600e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, 'device': 3600e3 }
+const V2_UNLOCK_TTL_MS = { '12h': 12 * 3600e3, '7d': 7 * 86400e3, '30d': 30 * 86400e3, 'device': 3600e3, forever: null }
 function v2UnlockTtlMs(duration, explicit) {
+  // "forever" is the explicit long-term tier: the slot has no expiry and only
+  // an operator lock removes it. It is never inferred from a missing value.
+  if (duration === 'forever') return null
   const asked = Number(explicit)
   if (Number.isFinite(asked) && asked > 0) return asked
   return V2_UNLOCK_TTL_MS[duration] ?? V2_UNLOCK_TTL_MS['12h']
@@ -11388,15 +11436,19 @@ const TOOL_META = {
             plainOk = true
             factorVerified = true
           }
-          const duration = ['12h', '7d', '30d', 'device'].includes(body.duration) ? body.duration : '12h'
+          const duration = ['12h', '7d', '30d', 'forever', 'device'].includes(body.duration) ? body.duration : '12h'
           const ttlMs = v2UnlockTtlMs(duration, body.ttlMs)
-          const stored = await keyCall('PUT', { dek: [...opened.dek], legacyDek: opened.legacyDek ? [...opened.legacyDek] : null, ttlMs, confirm: body.confirm === true, plainOk, factorVerified })
+          // A permanent unlock is itself the presence proof: it cannot be chosen
+          // without the main password, so plaintext does not ask for a code again
+          // until the operator locks.
+          const plainOkFinal = plainOk || duration === 'forever'
+          const stored = await keyCall('PUT', { dek: [...opened.dek], legacyDek: opened.legacyDek ? [...opened.legacyDek] : null, ttlMs, confirm: body.confirm === true, plainOk: plainOkFinal, factorVerified })
           // The tier is part of the audit record: "unlocked for 30 days" is a
           // different risk decision from "unlocked for the default 12 hours".
           // The TTL is the value the Durable Object actually stored (it clamps),
           // so the audit cannot drift from the live cache again.
           const actualTtlMs = Number(stored.expiresAt) > 0 ? Number(stored.expiresAt) - Date.now() : ttlMs
-          await addAudit(env, { event: 'vault.unlock', agent: 'admin', name: opened.fingerprint, via: 'password', duration, ttlMs: actualTtlMs })
+          await addAudit(env, { event: 'vault.unlock', agent: 'admin', name: opened.fingerprint, via: 'password', duration, ttlMs: actualTtlMs ?? 'forever' })
           // The unlock already produced this account's key, so the pre-account
           // rows can be claimed here without asking for the password again. It is
           // best effort: a failure never blocks a valid unlock, and a row the
@@ -11409,7 +11461,7 @@ const TOOL_META = {
             console.error('vault claim failed: ' + String(error?.message ?? error))
             await addAudit(env, { event: 'vault.claim-failed', agent: 'admin', reason: String(error?.message ?? error).slice(0, 200) })
           }
-          return json({ ok: true, fingerprint: opened.fingerprint, account: account || null, legacy: opened.legacyOnly === true, duration, ttlMs: actualTtlMs, plainOk, factorOk: totpEnabled ? Boolean(factorVerified || passAt > Date.now()) : false, expiresAt: stored.expiresAt ?? null, claimed: claimed ? { tagged: claimed.tagged, remaining: claimed.remaining } : null })
+          return json({ ok: true, fingerprint: opened.fingerprint, account: account || null, legacy: opened.legacyOnly === true, duration, ttlMs: actualTtlMs, plainOk: plainOkFinal, factorOk: totpEnabled ? Boolean(factorVerified || passAt > Date.now()) : false, expiresAt: stored.expiresAt ?? null, claimed: claimed ? { tagged: claimed.tagged, remaining: claimed.remaining } : null })
         }
         // Long-term tier, step 2: the console has unwrapped the device envelope in
         // the browser and presents the DEK. The DEK itself is checked against the
