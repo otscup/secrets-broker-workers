@@ -1,6 +1,6 @@
 {
   "name": "secrets-broker-workers",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "private": true,
   "type": "module",
   "bin": {
@@ -72,6 +72,7 @@
     "test:http-request": "node --import ./test-support/register.mjs test-http-request-errors.mjs",
     "test:api-error": "node --import ./test-support/register.mjs test-api-error-boundary.mjs",
     "test:v2-unlock-persist": "node --import ./test-support/register.mjs test-v2-unlock-persist.mjs",
+    "test:approval-forever": "node --import ./test-support/register.mjs test-approval-forever-link.mjs",
     "test:vault-claim": "node --import ./test-support/register.mjs test-vault2-claim.mjs",
     "test:maxreads": "node test-mf-maxreads.mjs",
     "test:permissions": "node test-mf-permissions.mjs",
