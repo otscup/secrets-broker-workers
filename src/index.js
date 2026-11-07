@@ -103,6 +103,15 @@ const V2_KEY_STORAGE_PREFIX = 'v2key:'
 function v2KeyStorageName(session, account) {
   return V2_KEY_STORAGE_PREFIX + JSON.stringify([session, account])
 }
+// "This browser session already passed the second factor once." It is separate
+// from the key slot because the account mirror is deliberately written with
+// plainOk off (helpers must never inherit a browser's pass), so the key slot
+// cannot answer "did this session pass?" without leaking that rule. One record
+// per admin session id; the value is an epoch-ms expiry and nothing else.
+const V2_FACTOR_STORAGE_PREFIX = 'v2factor:'
+function v2FactorStorageName(session) {
+  return V2_FACTOR_STORAGE_PREFIX + session
+}
 
 export class BrokerState extends DurableObject {
   // The v2 data key for the current unlock, cached in memory for the requests
@@ -111,6 +120,10 @@ export class BrokerState extends DurableObject {
   // Scoped copies keyed by session + account; v2Key above mirrors the last unlock
   // for the account-agnostic console helpers.
   v2Keys = new Map()
+  // Session id -> expiry for the one-time second-factor pass. Memory first, DO
+  // storage second, so an eviction does not force the operator to type the code
+  // again in the middle of the same unlock.
+  v2Factors = new Map()
 
   // Reads the durable copy of one slot and rehydrates it into the in-memory
   // shape the routes use. A missing SESSION_KEK or an unreadable record means
@@ -179,6 +192,58 @@ export class BrokerState extends DurableObject {
     } catch {}
   }
 
+  async readFactor(session) {
+    if (!session) return 0
+    const memory = Number(this.v2Factors.get(session) ?? 0)
+    if (memory > Date.now()) return memory
+    try {
+      const record = await this.ctx.storage.get(v2FactorStorageName(session))
+      const expiresAt = Number(record?.expiresAt ?? 0)
+      if (expiresAt > Date.now()) {
+        this.v2Factors.set(session, expiresAt)
+        return expiresAt
+      }
+      if (record) await this.ctx.storage.delete(v2FactorStorageName(session))
+    } catch {}
+    this.v2Factors.delete(session)
+    return 0
+  }
+
+  async writeFactor(session, expiresAt) {
+    if (!session || !(expiresAt > Date.now())) return
+    this.v2Factors.set(session, expiresAt)
+    try {
+      await this.ctx.storage.put(v2FactorStorageName(session), { expiresAt })
+    } catch {}
+  }
+
+  async deleteFactor(session) {
+    if (!session) return
+    this.v2Factors.delete(session)
+    try {
+      await this.ctx.storage.delete(v2FactorStorageName(session))
+    } catch {}
+  }
+
+  async clearFactors() {
+    this.v2Factors.clear()
+    try {
+      const records = await this.ctx.storage.list({ prefix: V2_FACTOR_STORAGE_PREFIX })
+      if (records.size) await this.ctx.storage.delete([...records.keys()])
+    } catch {}
+  }
+
+  async sweepFactors() {
+    const now = Date.now()
+    for (const [session, expiresAt] of this.v2Factors) if (Number(expiresAt) <= now) this.v2Factors.delete(session)
+    try {
+      const records = await this.ctx.storage.list({ prefix: V2_FACTOR_STORAGE_PREFIX })
+      const stale = []
+      for (const [name, record] of records) if (!record?.expiresAt || Number(record.expiresAt) <= now) stale.push(name)
+      if (stale.length) await this.ctx.storage.delete(stale)
+    } catch {}
+  }
+
   async fetch(request) {
     const url = new URL(request.url)
     if (url.pathname === '/state') {
@@ -240,6 +305,28 @@ export class BrokerState extends DurableObject {
     // every unlock for that account refreshes, so it no longer matters which
     // session unlocked last. The unscoped slot remains only as a mirror for a
     // deployment that has no account at all.
+    // One second-factor pass per admin session. GET answers "has this session
+    // passed?" so every sensitive route can skip the prompt without reading the
+    // vault key; POST records it; DELETE is the lock path.
+    if (url.pathname === '/factor') {
+      const body = request.method === 'POST' ? await request.json().catch(() => ({})) : {}
+      const session = String(body.session ?? url.searchParams.get('session') ?? '')
+      if (request.method === 'GET') {
+        const expiresAt = await this.readFactor(session)
+        return json({ ok: expiresAt > Date.now(), expiresAt })
+      }
+      if (request.method === 'POST') {
+        const expiresAt = Number(body.expiresAt ?? 0)
+        if (!session || !(expiresAt > Date.now())) return json({ ok: false, reason: 'bad-pass' }, 400)
+        await this.writeFactor(session, expiresAt)
+        return json({ ok: true, expiresAt })
+      }
+      if (request.method === 'DELETE') {
+        if (session) await this.deleteFactor(session)
+        else await this.clearFactors()
+        return json({ ok: true })
+      }
+    }
     if (url.pathname === '/v2-key') {
       const body = request.method === 'PUT' ? await request.json().catch(() => ({})) : {}
       const account = String(body.account ?? url.searchParams.get('account') ?? '').trim().toLowerCase()
@@ -301,7 +388,15 @@ export class BrokerState extends DurableObject {
         // The unscoped slot only matters on a deployment without an account; it
         // costs one more wrapped copy and keeps that case working after eviction.
         if (!account) await this.writeV2KeySlot('', '', entry)
+        // A new unlock starts a new factor window: the previous pass belongs to
+        // the old session lifecycle. The exception is an unlock that verified
+        // the code in the same request (plainOk), which starts the window now.
+        if (session) {
+          if (body.plainOk === true) await this.writeFactor(session, entry.expiresAt)
+          else await this.deleteFactor(session)
+        }
         await this.sweepV2KeySlots()
+        await this.sweepFactors()
         return json({ ok: true, expiresAt: entry.expiresAt })
       }
       if (request.method === 'DELETE') {
@@ -312,10 +407,14 @@ export class BrokerState extends DurableObject {
             this.v2Keys.delete(accountId)
             await this.deleteV2KeySlot('', account)
           }
+          // A scoped lock ends that browser's pass too; otherwise a locked vault
+          // could still answer "second factor already passed" to a reveal.
+          if (session) await this.deleteFactor(session)
         } else {
           this.v2Keys.clear()
           this.v2Key = null
           await this.clearV2KeySlots()
+          await this.clearFactors()
         }
         return json({ ok: true })
       }
@@ -1770,6 +1869,43 @@ async function totpSecret(env, state) {
   return new TextDecoder().decode(await unwrapWithKek(state.security.totpSecretWrapped, await kekBytes(env)))
 }
 
+// The pass is bound to the admin session id (v2 cookie), never to the account:
+// another browser, another device or a fresh login must prove presence again.
+// Only an existing v2 session can carry it; the legacy v1 cookie has no id and
+// keeps the old one-code-per-action behaviour on purpose.
+async function sessionFactorExpiresAt(env, request) {
+  const session = cookieSessionId(request)
+  if (!session) return 0
+  try {
+    const response = await stateStub(env).fetch('https://state/factor?session=' + encodeURIComponent(session))
+    const payload = await response.json()
+    return payload?.ok === true ? Number(payload.expiresAt ?? 0) : 0
+  } catch { return 0 }
+}
+
+// Records the pass against the live unlock, not a fixed TTL. Locking, logging
+// out, or unlocking again ends it; an eviction does not, because the DO keeps a
+// wrapped-storage copy. Returns the expiry it recorded (0 when it could not).
+async function markSessionFactor(env, request, state = null) {
+  const session = cookieSessionId(request)
+  if (!session) return 0
+  try {
+    const snapshot = state ?? await loadState(env)
+    const account = resolveVaultAccount(snapshot, null, env)
+    const query = '?account=' + encodeURIComponent(account) + '&session=' + encodeURIComponent(session)
+    const key = await stateStub(env).fetch('https://state/v2-key' + query).then((response) => response.json()).catch(() => null)
+    const expiresAt = Number(key?.expiresAt ?? 0)
+    // Without a live v2 unlock there is no window to attach the pass to; the
+    // caller keeps asking rather than inventing a duration.
+    if (!(expiresAt > Date.now())) return 0
+    await stateStub(env).fetch('https://state/factor', {
+      method: 'POST',
+      body: JSON.stringify({ session, expiresAt }),
+    }).catch(() => null)
+    return expiresAt
+  } catch { return 0 }
+}
+
 // The one place a browser session may hand out plaintext. Reading a stored
 // password and dumping the whole vault in one file are the same risk, so they
 // share a gate: a cookie proves who is asking, a code proves the account holder
@@ -1777,17 +1913,25 @@ async function totpSecret(env, state) {
 // Returns a Response when refused, or null when the caller may continue. The
 // code is passed in because the caller has already parsed the body; reading the
 // request twice locks the stream and turns a refusal into a 500.
-async function secondFactorWall(request, env, event, code) {
+//
+// One pass per unlock session: after the first correct code, later sensitive
+// actions in the same browser session answer without it. The factor is still
+// mandatory (unlike an optional prompt) — it is just no longer asked per click.
+async function secondFactorWall(request, env, event, code, snapshot = null) {
   const ip = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-forwarded-for') ?? 'unknown'
-  const state = await loadState(env)
+  const state = snapshot ?? await loadState(env)
   if (loginBlocked(state, ip)) return fail('尝试次数过多，请 15 分钟后再试', 429)
   if (state.security?.totpEnabled !== true) return fail('totp not configured', 428)
-  if (!(await verifyTotp(await totpSecret(env, state), code))) {
+  if (await sessionFactorExpiresAt(env, request) > Date.now()) return null
+  const normalized = String(code ?? '').replace(/\s+/g, '')
+  if (!normalized) return fail('需要验证码才能继续', 428)
+  if (!(await verifyTotp(await totpSecret(env, state), normalized))) {
     await recordLoginFailure(env, ip)
     await addAudit(env, { event: event + '-deny', reason: 'bad-totp', via: 'web' })
     return fail('验证码错误', 401)
   }
   await clearLoginFailures(env, ip)
+  await markSessionFactor(env, request, state)
   return null
 }
 
@@ -1799,6 +1943,9 @@ async function confirmSensitive(request, env, body, event, always = false) {
   const ip = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-forwarded-for') ?? 'unknown'
   const state = await loadState(env)
   if (loginBlocked(state, ip)) return fail('尝试次数过多，请 15 分钟后再试', 429)
+  // Same session pass as the reveal gate. A password confirmation does not
+  // create one: only a real TOTP does.
+  if (await sessionFactorExpiresAt(env, request) > Date.now()) return null
   const code = String(body.confirmCode ?? body.code ?? '').replace(/\s+/g, '')
   if (/^\d{6}$/.test(code)) {
     if (state.security?.totpEnabled !== true) return fail('totp not configured', 428)
@@ -1808,13 +1955,11 @@ async function confirmSensitive(request, env, body, event, always = false) {
       return fail('验证码错误', 401)
     }
     await clearLoginFailures(env, ip)
+    await markSessionFactor(env, request, state)
     return null
   }
   const password = String(body.confirmPassword ?? '')
-  if (!password) {
-    await addAudit(env, { event: event + '-deny', reason: 'missing-confirmation', via: 'web' })
-    return fail('这个操作需要再确认一次（密码或动态验证码）', 428)
-  }
+  if (!password) return fail('这个操作需要再确认一次（密码或动态验证码）', 428)
   if (!(await verifyAdminPassword(env, state, password))) {
     await recordLoginFailure(env, ip)
     await addAudit(env, { event: event + '-deny', reason: 'bad-password', via: 'web' })
@@ -11268,10 +11413,14 @@ const TOOL_META = {
               const security = (await loadState(env)).security ?? {}
               if (security.totpEnabled === true) {
                 const code = String(url.searchParams.get('code') ?? request.headers.get('x-totp-code') ?? '').trim()
-                if (!code) return fail('需要验证码才能显示条目名称', 428)
-                const refused = await secondFactorWall(request, env, 'vault.plain', code)
-                if (refused) return refused
-                await addAudit(env, { event: 'vault.plain', via: 'web' }).catch(() => {})
+                // The pass from another sensitive action in this unlock counts
+                // here too; only a session that has not passed is asked.
+                if (!code && await sessionFactorExpiresAt(env, request) <= Date.now()) return fail('需要验证码才能显示条目名称', 428)
+                if (code) {
+                  const refused = await secondFactorWall(request, env, 'vault.plain', code)
+                  if (refused) return refused
+                  await addAudit(env, { event: 'vault.plain', via: 'web' }).catch(() => {})
+                }
               }
               // No TOTP enrolled: keep the previous behaviour rather than
               // locking a deployment out of its own item list.

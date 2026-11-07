@@ -1379,6 +1379,14 @@ async function askConfirm(reason) {
   return totp ? { confirmCode: value } : { confirmPassword: value }
 }
 async function sensitiveRequest(url, method, payload, reason) {
+  // The second factor is once per unlock session on the server, so try first
+  // and prompt only when the session has not passed yet (428). A wrong code
+  // still fails the retry with 401 instead of looping.
+  try {
+    return await api(url, { method, body: JSON.stringify(payload) })
+  } catch (error) {
+    if (error.status !== 428) throw error
+  }
   const confirm = await askConfirm(reason)
   if (!confirm) throw new Error('已取消')
   return api(url, { method, body: JSON.stringify({ ...payload, ...confirm }) })
@@ -5580,13 +5588,28 @@ async function bulkDelete() {
   else toast('已处理 ' + done + '，删除 ' + deleted + ' 个条目')
 }
 async function exportItems() {
-  // The file holds every password in the vault, so the server asks for a code.
-  // Ask here too, rather than letting the click fail with a 428.
-  const code = await askCode('导出文件包含全部明文。请输入验证器上的 6 位验证码。', { label: '导出验证码' })
-  if (!code) return
+  // The file holds every password, so the server still requires the second
+  // factor. It is asked once per unlock session: try without a code first and
+  // prompt only when this session has not passed yet.
+  const download = (data) => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = 'secrets-export-' + new Date().toISOString().slice(0, 10) + '.json'
+    link.click()
+    URL.revokeObjectURL(link.href)
+    toast('已导出（包含明文，请妥善保存）')
+  }
   try {
-    const data = await api('/api/items/export', { method: 'POST', body: JSON.stringify({ code }) }); const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }); const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'secrets-export-' + new Date().toISOString().slice(0, 10) + '.json'; link.click(); URL.revokeObjectURL(link.href); toast('已导出（包含明文，请妥善保存）')
-  } catch (error) { toast(error.status === 428 ? '先在「设置 → 安全」启用两步验证，导出才可用' : error.message, true) }
+    download(await api('/api/items/export', { method: 'POST', body: '{}' }))
+    return
+  } catch (error) {
+    if (error.status !== 428) return toast(error.message, true)
+    if (/totp not configured/i.test(error.message)) return toast('先在「设置 → 安全」启用两步验证，导出才可用', true)
+    const code = await askCode('导出文件包含全部明文。本次解锁内只需一次验证码。', { label: '导出验证码' })
+    if (!code) return
+    try { download(await api('/api/items/export', { method: 'POST', body: JSON.stringify({ code }) })) } catch (next) { toast(next.message, true) }
+  }
 }
 function openModal(title, body) { const card = document.querySelector('#modal > .card'); if (card) card.classList.remove('pm-wide'); $('modal-title').textContent = title; $('modal-body').innerHTML = body; show('modal', true) }
 function uaLabel(ua) {
@@ -5788,7 +5811,27 @@ window.addEventListener('beforeunload', (event) => {
 // cookie alone would otherwise be enough to empty the vault. So the button asks
 // for a TOTP code, and an account without TOTP is told to enrol instead of being
 // quietly handed the plaintext.
+function renderRevealed(data) {
+  $('modal-body').innerHTML = '<div class="kv"><span>用户名</span><b>' + esc(data.username || '未设置') + '</b></div>' +
+    '<div class="kv"><span>密钥</span><b><code>' + esc(data.value || '') + '</code></b></div>' +
+    (data.totp ? '<div class="kv"><span>验证码</span><b><code>' + esc(data.totp) + '</code></b></div>' : '') +
+    '<div class="row"><button class="primary" id="rv-copy" type="button">复制密钥</button></div>'
+  $('rv-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(data.value || ''); toast('已复制') } catch { toast('复制失败，请手动选择密钥文本', true) }
+  }
+}
 async function revealItemSecret(item) {
+  // The server keeps one successful second factor for this unlock session. Try
+  // the value first and only prompt on 428 ("this session has not passed yet"),
+  // so the code stays mandatory but is asked once instead of on every click.
+  try {
+    const data = await api('/api/secret/reveal', { method: 'POST', body: JSON.stringify({ name: item.name }) })
+    openModal('查看 ' + item.name, '')
+    renderRevealed(data)
+    return
+  } catch (error) {
+    if (error.status !== 428) return toast(error.message, true)
+  }
   let security
   try { security = await api('/api/security') } catch (error) { return toast(error.message, true) }
   if (!security.totpEnabled) {
@@ -5824,13 +5867,7 @@ async function revealItemSecret(item) {
     go.textContent = '验证中…'
     try {
       const data = await api('/api/secret/reveal', { method: 'POST', body: JSON.stringify({ name: item.name, code }) })
-      $('modal-body').innerHTML = '<div class="kv"><span>用户名</span><b>' + esc(data.username || '未设置') + '</b></div>' +
-        '<div class="kv"><span>密钥</span><b><code>' + esc(data.value || '') + '</code></b></div>' +
-        (data.totp ? '<div class="kv"><span>验证码</span><b><code>' + esc(data.totp) + '</code></b></div>' : '') +
-        '<div class="row"><button class="primary" id="rv-copy" type="button">复制密钥</button></div>'
-      $('rv-copy').onclick = async () => {
-        try { await navigator.clipboard.writeText(data.value || ''); toast('已复制') } catch { toast('复制失败，请手动选择密钥文本', true) }
-      }
+      renderRevealed(data)
     } catch (error) {
       go.disabled = false
       go.removeAttribute('aria-busy')
