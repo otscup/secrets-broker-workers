@@ -302,6 +302,51 @@ async function pushOnce({ ok = true, state = {} } = {}) {
     } else {
       fail('5d 410', JSON.stringify({ dead, after }).slice(0, 260))
     }
+
+    // ===== end to end on the browser side: decrypt the real body, feed it to
+    // the real sw.js push handler, and prove the notification is rendered
+    // without any /api/state fetch. =====
+    const body = new Uint8Array(calls[0].body)
+    const salt = body.slice(0, 16)
+    const senderPublic = body.slice(21, 21 + body[20])
+    const ciphertext = body.slice(21 + body[20])
+    const senderKey = await crypto.subtle.importKey('raw', senderPublic, { name: 'ECDH', namedCurve: 'P-256' }, false, [])
+    const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: senderKey }, pair.privateKey, 256)
+    const hkdf = async (saltBytes, ikm, info, len) => {
+      const k1 = await crypto.subtle.importKey('raw', saltBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+      const prk = await crypto.subtle.sign('HMAC', k1, ikm)
+      const k2 = await crypto.subtle.importKey('raw', prk, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+      return new Uint8Array(await crypto.subtle.sign('HMAC', k2, new Uint8Array([...info, 1]))).slice(0, len)
+    }
+    const text = (value) => new TextEncoder().encode(value)
+    const uaPublic = new Uint8Array(Buffer.from(p256dh, 'base64url'))
+    const authBytes = new Uint8Array(Buffer.from(auth, 'base64url'))
+    const ikm = await hkdf(authBytes, new Uint8Array(shared), new Uint8Array([...text('WebPush: info\0'), ...uaPublic, ...senderPublic]), 32)
+    const cek = await hkdf(salt, ikm, text('Content-Encoding: aes128gcm\0'), 16)
+    const nonce = await hkdf(salt, ikm, text('Content-Encoding: nonce\0'), 12)
+    const aesKey = await crypto.subtle.importKey('raw', cek, { name: 'AES-GCM', length: 128 }, false, ['decrypt'])
+    const plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce }, aesKey, ciphertext))
+    const received = JSON.parse(new TextDecoder().decode(plain.slice(0, plain.findIndex((byte) => byte === 0x02))))
+    const listeners = {}
+    const shown = []
+    let fetched = false
+    const self = {
+      location: { origin: 'https://broker.test' },
+      addEventListener: (type, handler) => { listeners[type] = handler },
+      registration: { showNotification: async (title, options) => { shown.push({ title, options }) } },
+      clients: { matchAll: async () => [] },
+    }
+    vm.runInNewContext(SW, { self, fetch: async () => { fetched = true; return { ok: false } }, URL })
+    let pending = Promise.resolve()
+    listeners.push({ data: { json: () => received }, waitUntil: (promise) => { pending = promise } })
+    await pending
+    if (received.title === 'Secrets Broker · 测试推送' && received.body.includes('已经通了')
+      && shown[0]?.title === received.title && shown[0]?.options.body === received.body
+      && shown[0]?.options.data.url === '/#pending' && !fetched) {
+      pass('5e the encrypted payload decrypts and sw.js renders the notification without fetching /api/state')
+    } else {
+      fail('5e browser side end to end', JSON.stringify({ received, shown, fetched }).slice(0, 320))
+    }
   } finally {
     globalThis.fetch = realFetch
   }
