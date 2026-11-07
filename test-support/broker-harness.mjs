@@ -47,10 +47,14 @@ export async function legacyCipherRow({ id = HARNESS.ITEM_ID, name = HARNESS.ITE
 }
 
 class FakeD1 {
-  constructor({ auditRows = [], cipherRows = [], failAuditInsert = false } = {}) {
+  constructor({ auditRows = [], cipherRows = [], failAuditInsert = false, v2Initialized = false } = {}) {
     this.auditRows = auditRows
     this.cipherRows = cipherRows
     this.failAuditInsert = failAuditInsert
+    // A suite that exercises the v2 write path needs the store to look
+    // initialised: vault2Context refuses a vault whose keyrings/meta say it
+    // never was. Off by default so the legacy suites keep their old shape.
+    this.v2Initialized = v2Initialized
     // A batch that fails once, then succeeds, is how the migration retry is
     // proved without waiting for the stale-claim window.
     this.failNextBatch = false
@@ -73,6 +77,9 @@ class FakeD1 {
         if (/FROM users/.test(sql)) return { id: 'u1' }
         if (/COUNT\(\*\) AS live/.test(sql)) return { live: 0 }
         if (/COUNT\(\*\) AS n FROM audit_v2/.test(sql)) return { n: self.auditRows.length }
+        if (self.v2Initialized && /FROM keyrings/.test(sql)) return { id: 'password' }
+        if (/FROM meta/.test(sql) && /'revision'/.test(sql)) return { value: '1' }
+        if (self.v2Initialized && /FROM meta/.test(sql) && /'source'/.test(sql)) return { value: 'v2' }
         return null
       },
       async all() {

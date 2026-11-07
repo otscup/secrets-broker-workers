@@ -593,7 +593,14 @@ async function main() {
     const locked = await decide(env, cookie, {
       id: pending.requestId, decision: 'approve', all: true, plaintextAllowed: false, duration: '1h',
     })
-    ok('未解锁时批准返回 423', locked.status === 423 && locked.body.error === 'locked', JSON.stringify(locked.body))
+    // 0.8.9: a lock is no longer a hard refusal. Approving without any unlock
+    // answers 428 with the "unlock once (preferably 保持解锁) then approve"
+    // wording, so a remote operator is told what to do instead of being blocked
+    // by "Vault 已锁定".
+    ok('未解锁时批准返回 428，且是可读的「先解锁一次」文案',
+      locked.status === 428 && locked.body.code === 'vault-not-unlocked'
+        && String(locked.body.error).includes('解锁') && !String(locked.body.error).includes('Vault 已锁定'),
+      JSON.stringify(locked.body))
     await putSession(env)
     const approved = await decide(env, cookie, {
       id: pending.requestId, decision: 'approve', all: true, plaintextAllowed: false, duration: '1h',
@@ -611,20 +618,18 @@ async function main() {
     ok('未解锁也能拒绝连接', denied.status === 200 && denied.body.ok === true, JSON.stringify(denied.body))
   }
 
-  // 18: the console must not stop at "Vault is locked". The local check mirrors
-  // consoleVault, a locked click opens the inline sheet, and the unlock
-  // callback resumes the same approval body without a page change.
+  // 18: the console must not stop at "Vault is locked". 0.8.9 removed the
+  // client-side vault gate entirely: the approval goes to the server, which
+  // answers 428 with the readable unlock instruction, and the card shows it.
   {
-    ok('UI 的解锁判定同时接受 v1 session 与 v2 槽',
-      /function vaultUnlocked\(\)[\s\S]{0,400}app\.v2\.initialized === true && app\.v2\.unlocked === true[\s\S]{0,160}app\.me \? app\.me\.unlocked === true/.test(uiHtml))
-    ok('未解锁时批准会先就地解锁并续批',
-      /if \(!vaultUnlocked\(\)\) \{[\s\S]{0,260}inlineUnlockSheet\(\(\) => \{ openPendingSheet\(\); decideConnection\(null, body, null, \{ afterUnlock: true \}\) \}\)/.test(uiHtml))
-    ok('423 不只提示，还会打开就地解锁并继续这次批准',
-      /error\.status === 423[\s\S]{0,700}inlineUnlockSheet\(\(\) => \{ openPendingSheet\(\); decideConnection\(null, body, null, \{ afterUnlock: true \}\) \}\)/.test(uiHtml))
+    ok('UI 不再用 vaultUnlocked 前置拦截审批（批准由服务端判定）',
+      !/function vaultUnlocked\(\)/.test(uiHtml))
+    ok('428 在连接卡上就地显示可读文案，而不是打开「已锁定」硬拒',
+      /error\.status === 428[\s\S]{0,400}setConnectionStatus\(card, error\.message, true\)/.test(uiHtml))
+    ok('锁定的连接卡仍提供「先解锁」入口',
+      uiHtml.includes('data-conn-unlock'))
     ok('解锁完成后执行续批回调',
       /if \(typeof options\.after === 'function'\) await options\.after\(\)/.test(uiHtml))
-    ok('锁定的连接卡提供「先解锁并回到审批」入口',
-      uiHtml.includes('data-conn-unlock') && uiHtml.includes('先解锁并回到审批'))
   }
 
   // 19: one approval must cover the chosen scope. A connection approval used to
