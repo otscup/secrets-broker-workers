@@ -2902,6 +2902,12 @@ let swMessageWired = false
 function wireServiceWorkerMessages() {
   if (swMessageWired || !('serviceWorker' in navigator)) return
   swMessageWired = true
+  // Register on every page load, not only when someone clicks "enable": a push
+  // subscription is bound to the registration that created it, and a browser
+  // that lost the worker would otherwise keep a dead subscription silently.
+  navigator.serviceWorker.register('/sw.js')
+    .then((registration) => registration.update().catch(() => {}))
+    .catch(() => {})
   navigator.serviceWorker.addEventListener('message', (event) => {
     if (event.data && event.data.type === 'secrets-broker:pending') checkPendingNotifications()
   })

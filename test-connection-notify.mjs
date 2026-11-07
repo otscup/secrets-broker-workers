@@ -244,11 +244,17 @@ async function pushOnce({ ok = true, state = {} } = {}) {
 // statuses, and the state keeps the last attempt for the settings page.
 {
   const env = makeEnv()
+  // A real subscription key pair: the payload is now encrypted (RFC 8291), so a
+  // placeholder p256dh/auth would fail before any request reaches the push
+  // service and would test nothing.
+  const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const p256dh = Buffer.from(await crypto.subtle.exportKey('raw', pair.publicKey)).toString('base64url')
+  const auth = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('base64url')
   await seedState(env, {
     settings: {
       notifications: {
         webpush: {
-          subscriptions: [{ endpoint: 'https://fcm.googleapis.com/fcm/send/test-endpoint', keys: { p256dh: 'p', auth: 'a' }, addedAt: '2026-01-01T00:00:00.000Z' }],
+          subscriptions: [{ endpoint: 'https://fcm.googleapis.com/fcm/send/test-endpoint', keys: { p256dh, auth }, addedAt: '2026-01-01T00:00:00.000Z' }],
         },
       },
       vaultEmail: HARNESS.ACCT,
@@ -265,11 +271,12 @@ async function pushOnce({ ok = true, state = {} } = {}) {
   }
   try {
     const accepted = await (await call(env, '/api/push/test', { method: 'POST', headers: { cookie } })).json()
-    const auth = String(calls[0]?.headers?.authorization || '')
-    if (accepted.sent === 1 && accepted.results?.[0]?.status === 201 && auth.startsWith('vapid t=')) {
-      pass('5a a 201 is reported as sent and the VAPID header is signed')
+    const authHeader = String(calls[0]?.headers?.authorization || '')
+    const encrypted = calls[0]?.headers?.['content-encoding'] === 'aes128gcm' && Number(calls[0]?.body?.byteLength) > 0
+    if (accepted.sent === 1 && accepted.results?.[0]?.status === 201 && authHeader.startsWith('vapid t=') && encrypted) {
+      pass('5a a 201 is reported as sent, the VAPID header is signed and the body is encrypted')
     } else {
-      fail('5a accepted push', JSON.stringify({ accepted, auth: auth.slice(0, 30) }).slice(0, 260))
+      fail('5a accepted push', JSON.stringify({ accepted, auth: authHeader.slice(0, 30), encrypted }).slice(0, 260))
     }
     const stored = env._store.state.settings.notifications.webpush.lastAttempt
     if (stored?.sent === 1 && stored.results?.[0]?.status === 201 && stored.results?.[0]?.host === 'fcm.googleapis.com') {

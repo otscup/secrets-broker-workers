@@ -11,7 +11,8 @@ import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, 
 import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
 import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2ListPlain, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2SetDeviceWrite, vault2PurgeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf, vault2Push, vault2MigrateAccount, vault2ClaimLegacyRows, vault2MigratePending, vault2SnapshotItem, vault2RestoreItem } from './vault2.js'
 import { publicKeyFingerprint, dekFingerprint } from './envelope.js'
-import { generateVapid, vapidAuthorization } from './webpush.js'
+import { generateVapid } from './webpush.js'
+import { buildPushPayload } from '@block65/webcrypto-web-push'
 import { scrubSecret } from './redact.js'
 import { verifyGatewayJwt, federatedAgent } from './federation.js'
 // The worker's version has exactly one editable source: package.json. This
@@ -4555,26 +4556,38 @@ async function recordPushAttempt(env, attempt) {
     })
   } catch {}
 }
-async function sendWebPush(env) {
+async function sendWebPush(env, message = {}) {
   const webpush = await ensureWebPush(env)
   if (!webpush?.publicKey || !webpush?.privateWrapped || !webpush.subscriptions?.length) return { sent: 0, results: [] }
   let privateJwk
   try {
     privateJwk = JSON.parse(decoder.decode(await unwrapWithKek(webpush.privateWrapped, await kekBytes(env))))
   } catch { return { sent: 0, results: [] } }
+  // A real encrypted payload (RFC 8291, aes128gcm) travels with the push, so the
+  // service worker renders it directly. The previous empty payload made the
+  // worker fetch /api/state first; that request needs a live session and a
+  // running network, which is exactly what is not guaranteed when a background
+  // push wakes the worker — and the notification silently never appeared.
+  const payload = {
+    data: JSON.stringify({
+      title: String(message.title || 'Secrets Broker'),
+      body: String(message.body || '有新的审批请求，打开控制台查看'),
+      url: String(message.url || '/#pending'),
+    }),
+    options: { ttl: 600, urgency: 'high' },
+  }
+  const vapid = { subject: 'mailto:admin@otscup.com', publicKey: webpush.publicKey, privateKey: String(privateJwk.d || '') }
   const stale = []
   const results = []
   let sent = 0
   await Promise.allSettled(webpush.subscriptions.map(async (subscription) => {
     const host = webpushHost(subscription.endpoint)
     try {
-      const authorization = await vapidAuthorization(subscription.endpoint, webpush.publicKey, privateJwk)
-      const response = await fetch(subscription.endpoint, {
-        method: 'POST',
-        headers: { authorization, ttl: '600', urgency: 'high' },
-        body: '',
-      })
-      results.push({ host, status: response.status, ok: response.ok === true })
+      const built = await buildPushPayload(payload, subscription, vapid)
+      const response = await fetch(subscription.endpoint, { ...built, signal: AbortSignal.timeout(8000) })
+      let detail = ''
+      if (!response.ok) detail = (await response.text().catch(() => '')).slice(0, 200)
+      results.push({ host, status: response.status, ok: response.ok === true, ...(detail ? { detail } : {}) })
       if (response.status === 404 || response.status === 410) stale.push(subscription.endpoint)
       else if (response.ok) sent += 1
     } catch (error) {
@@ -4627,7 +4640,11 @@ async function notifyDenied(env, origin, entry, notifications) {
       body: JSON.stringify({ title: 'Secrets Broker · 被拦下的请求', content: text }),
     }))
   }
-  tasks.push(sendWebPush(env).catch(() => ({ sent: 0 })))
+  tasks.push(sendWebPush(env, {
+    title: 'Secrets Broker · 被拦下的请求',
+    body: `${entry.agent || 'Agent'} 尝试${actionLabel}「${entry.name || ''}」被拦下`,
+    url: '/#items',
+  }).catch(() => ({ sent: 0 })))
   await Promise.allSettled(tasks)
 }
 
@@ -4680,7 +4697,11 @@ async function notifyConnectionPending(env, origin, record) {
   }
   // Only wake Web Push when someone subscribed; otherwise this would mint VAPID
   // keys on the first agent call for a deployment that never opted in.
-  if ((state.settings?.notifications?.webpush?.subscriptions || []).length) tasks.push(sendWebPush(env).catch(() => ({ sent: 0 })))
+  if ((state.settings?.notifications?.webpush?.subscriptions || []).length) tasks.push(sendWebPush(env, {
+    title: 'Secrets Broker · 连接请求',
+    body: `${record.agent || 'Agent'} 请求首次连接`,
+    url: '/#pending',
+  }).catch(() => ({ sent: 0 })))
   if (!tasks.length) return
   await Promise.allSettled(tasks)
 }
@@ -4752,7 +4773,11 @@ async function notifyPending(env, origin, entry, ctx) {
       tasks.push(fetch(notifications.wxpush.url, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body }))
     }
   }
-  tasks.push(sendWebPush(env).catch(() => ({ sent: 0 })))
+  tasks.push(sendWebPush(env, {
+    title: 'Secrets Broker · 授权请求',
+    body: `${entry.agent || 'Agent'} 请求读取「${entry.name || ''}」`,
+    url: '/#pending',
+  }).catch(() => ({ sent: 0 })))
   if (!tasks.length) return
   const run = Promise.allSettled(tasks)
   if (ctx?.waitUntil) ctx.waitUntil(run)
@@ -9863,7 +9888,11 @@ export default {
     }
     if (url.pathname === '/api/push/test' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
-      const result = await sendWebPush(env)
+      const result = await sendWebPush(env, {
+        title: 'Secrets Broker · 测试推送',
+        body: '如果你看到这条通知，网页端推送已经通了',
+        url: '/#pending',
+      })
       return json({ ok: true, ...result })
     }
     if (url.pathname === '/api/settings') {
