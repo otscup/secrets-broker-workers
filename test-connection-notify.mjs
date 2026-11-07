@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs'
 import vm from 'node:vm'
 import worker from './src/index.js'
-import { HARNESS, makeEnv, seedState, putSession, tokenHash, makeReporter } from './test-support/broker-harness.mjs'
+import { HARNESS, makeEnv, seedState, putSession, tokenHash, makeReporter, login, call } from './test-support/broker-harness.mjs'
 
 const { pass, fail, finish } = makeReporter()
 
@@ -235,6 +235,68 @@ async function pushOnce({ ok = true, state = {} } = {}) {
     pass('4d the title count and plugin card share the connection queue')
   } else {
     fail('4d queue count', 'title or plugin card misses connections')
+  }
+}
+
+// ============ 5. The push service's answer is recorded, not swallowed ============
+// The console could only say "sent 0" while a 401 (VAPID mismatch) and a 410
+// (dead subscription) looked identical. /api/push/test now returns per-endpoint
+// statuses, and the state keeps the last attempt for the settings page.
+{
+  const env = makeEnv()
+  await seedState(env, {
+    settings: {
+      notifications: {
+        webpush: {
+          subscriptions: [{ endpoint: 'https://fcm.googleapis.com/fcm/send/test-endpoint', keys: { p256dh: 'p', auth: 'a' }, addedAt: '2026-01-01T00:00:00.000Z' }],
+        },
+      },
+      vaultEmail: HARNESS.ACCT,
+    },
+  })
+  const cookie = await login(env)
+  const realFetch = globalThis.fetch
+  let status = 201
+  const calls = []
+  globalThis.fetch = async (url, init = {}) => {
+    if (!String(url).startsWith('https://fcm.googleapis.com/')) return realFetch(url, init)
+    calls.push({ url: String(url), headers: init.headers || {}, body: init.body ?? null })
+    return new Response('{}', { status })
+  }
+  try {
+    const accepted = await (await call(env, '/api/push/test', { method: 'POST', headers: { cookie } })).json()
+    const auth = String(calls[0]?.headers?.authorization || '')
+    if (accepted.sent === 1 && accepted.results?.[0]?.status === 201 && auth.startsWith('vapid t=')) {
+      pass('5a a 201 is reported as sent and the VAPID header is signed')
+    } else {
+      fail('5a accepted push', JSON.stringify({ accepted, auth: auth.slice(0, 30) }).slice(0, 260))
+    }
+    const stored = env._store.state.settings.notifications.webpush.lastAttempt
+    if (stored?.sent === 1 && stored.results?.[0]?.status === 201 && stored.results?.[0]?.host === 'fcm.googleapis.com') {
+      pass('5b the last attempt keeps host + status, never the full endpoint')
+    } else {
+      fail('5b last attempt', JSON.stringify(stored).slice(0, 260))
+    }
+
+    status = 401
+    const rejected = await (await call(env, '/api/push/test', { method: 'POST', headers: { cookie } })).json()
+    const kept = env._store.state.settings.notifications.webpush.subscriptions?.length
+    if (rejected.sent === 0 && rejected.failed === 1 && rejected.results?.[0]?.status === 401 && kept === 1) {
+      pass('5c a 401 is named and the subscription is kept for a key re-subscribe')
+    } else {
+      fail('5c 401', JSON.stringify({ rejected, kept }).slice(0, 260))
+    }
+
+    status = 410
+    const dead = await (await call(env, '/api/push/test', { method: 'POST', headers: { cookie } })).json()
+    const after = env._store.state.settings.notifications.webpush.subscriptions?.length
+    if (dead.sent === 0 && dead.results?.[0]?.status === 410 && dead.stale?.includes('fcm.googleapis.com') && after === 0) {
+      pass('5d a 410 is recorded and the dead subscription is removed')
+    } else {
+      fail('5d 410', JSON.stringify({ dead, after }).slice(0, 260))
+    }
+  } finally {
+    globalThis.fetch = realFetch
   }
 }
 

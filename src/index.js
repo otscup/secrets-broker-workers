@@ -4535,16 +4535,38 @@ async function ensureWebPush(env) {
   return (await loadState(env)).settings.notifications.webpush
 }
 
+// The push service's answer is the only way to tell "delivered" from "the
+// browser unsubscribed" or "the VAPID key no longer matches". These used to be
+// swallowed, so the console could only say "sent 0" and had no way to name the
+// real cause. The stored shape carries a host, never a full endpoint: an
+// endpoint is a capability URL and the state document is readable by the
+// console.
+function webpushHost(endpoint) {
+  try { return new URL(String(endpoint)).host.slice(0, 120) } catch { return 'invalid-endpoint' }
+}
+async function recordPushAttempt(env, attempt) {
+  try {
+    await updateState(env, (state) => {
+      state.settings ??= { notifications: {} }
+      state.settings.notifications ??= {}
+      state.settings.notifications.webpush ??= {}
+      state.settings.notifications.webpush.lastAttempt = attempt
+      return state
+    })
+  } catch {}
+}
 async function sendWebPush(env) {
   const webpush = await ensureWebPush(env)
-  if (!webpush?.publicKey || !webpush?.privateWrapped || !webpush.subscriptions?.length) return { sent: 0 }
+  if (!webpush?.publicKey || !webpush?.privateWrapped || !webpush.subscriptions?.length) return { sent: 0, results: [] }
   let privateJwk
   try {
     privateJwk = JSON.parse(decoder.decode(await unwrapWithKek(webpush.privateWrapped, await kekBytes(env))))
-  } catch { return { sent: 0 } }
+  } catch { return { sent: 0, results: [] } }
   const stale = []
+  const results = []
   let sent = 0
   await Promise.allSettled(webpush.subscriptions.map(async (subscription) => {
+    const host = webpushHost(subscription.endpoint)
     try {
       const authorization = await vapidAuthorization(subscription.endpoint, webpush.publicKey, privateJwk)
       const response = await fetch(subscription.endpoint, {
@@ -4552,9 +4574,12 @@ async function sendWebPush(env) {
         headers: { authorization, ttl: '600', urgency: 'high' },
         body: '',
       })
+      results.push({ host, status: response.status, ok: response.ok === true })
       if (response.status === 404 || response.status === 410) stale.push(subscription.endpoint)
       else if (response.ok) sent += 1
-    } catch {}
+    } catch (error) {
+      results.push({ host, status: 0, ok: false, error: String(error?.message ?? error).slice(0, 120) })
+    }
   }))
   if (stale.length) {
     await updateState(env, (state) => {
@@ -4563,7 +4588,16 @@ async function sendWebPush(env) {
       return state
     })
   }
-  return { sent }
+  const attempt = {
+    at: nowIso(),
+    sent,
+    failed: results.filter((entry) => !entry.ok).length,
+    stale: stale.map(webpushHost),
+    results,
+  }
+  await recordPushAttempt(env, attempt)
+  console.log('[webpush]', JSON.stringify(attempt))
+  return attempt
 }
 
 async function notifyDenied(env, origin, entry, notifications) {
@@ -9796,7 +9830,7 @@ export default {
     if (url.pathname === '/api/push/vapid' && request.method === 'GET') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const webpush = await ensureWebPush(env)
-      return json({ publicKey: webpush.publicKey, subscriptions: webpush.subscriptions?.length ?? 0 })
+      return json({ publicKey: webpush.publicKey, subscriptions: webpush.subscriptions?.length ?? 0, lastAttempt: webpush.lastAttempt ?? null })
     }
     if (url.pathname === '/api/push/subscribe' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -9843,7 +9877,7 @@ export default {
           ntfy: { enabled: n.ntfy?.enabled !== false, url: n.ntfy?.url ?? '', topic: n.ntfy?.topic ?? '', configured: Boolean(n.ntfy?.url && n.ntfy?.topic) },
           gotify: { enabled: n.gotify?.enabled !== false, url: n.gotify?.url ?? '', configured: Boolean(n.gotify?.url && n.gotify?.token) },
           wxpush: { enabled: n.wxpush?.enabled !== false, url: n.wxpush?.url ?? '', format: n.wxpush?.format ?? 'form', configured: Boolean(n.wxpush?.url && n.wxpush?.token) },
-          webpush: { configured: Boolean(n.webpush?.publicKey), subscriptions: n.webpush?.subscriptions?.length ?? 0 },
+          webpush: { configured: Boolean(n.webpush?.publicKey), subscriptions: n.webpush?.subscriptions?.length ?? 0, lastAttempt: n.webpush?.lastAttempt ?? null },
           templates: notificationTemplates(n),
         }, oidc: {
           issuer: effectiveOidc?.issuer ?? '',

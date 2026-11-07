@@ -1261,7 +1261,7 @@ async function api(path, options = {}) {
   if (route === '/api/items' || route === '/api/v2/status') clearDbDown()
   return body
 }
-let app = { me: null, data: { agents: [], policies: {}, grants: [], pending: [], audit: [] }, items: [], itemsLoaded: false, itemsError: '', stateLoaded: false, stateError: '', stats: null, recentAudit: [], range: '24h', token: '' }
+let app = { me: null, data: { agents: [], policies: {}, grants: [], pending: [], audit: [] }, items: [], itemsLoaded: false, itemsError: '', stateLoaded: false, stateError: '', stats: null, recentAudit: [], range: '24h', token: '', pushSubscriptions: null, pushLastAttempt: null }
 // A detail panel answers "what happened in this range", so it reads the same
 // audit table /api/stats aggregates. /api/state carries only a 20-row slice for
 // the overview and must never stand in for the full window.
@@ -2006,7 +2006,7 @@ $('global-search-results').addEventListener('click', (event) => {
 })
 $('trend-prev').onclick = () => { trendFace = (trendFace + trendFaces.length - 1) % trendFaces.length; renderTrendFace() }
 $('trend-next').onclick = () => { trendFace = (trendFace + 1) % trendFaces.length; renderTrendFace() }
-$('items-refresh').onclick = loadItems; $('items-select').onclick = () => { itemsSelecting = !itemsSelecting; if (!itemsSelecting) selectedItems.clear(); $('items-select').textContent = itemsSelecting ? '完成' : '选择'; renderItems() }; $('item-filter').oninput = () => { if ($('item-filter').value.trim()) localStorage.setItem('sb-item-filter', $('item-filter').value); else localStorage.removeItem('sb-item-filter'); renderItems() }; $('item-sort').onchange = () => { localStorage.setItem('sb-item-sort', $('item-sort').value); renderItems() }; $('item-density').onclick = () => { const dense = $('item-density').getAttribute('aria-pressed') !== 'true'; if (dense) localStorage.setItem('sb-item-density', 'compact'); else localStorage.removeItem('sb-item-density'); setItemDensity(dense) }; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('ai-save').onclick = saveAiSettings; $('ai-model-fetch').onclick = fetchCustomModels; $('ai-help').onclick = () => openAiHelp();; $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + ('自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('enable-webpush').onclick = enableWebPush; $('test-webpush').onclick = testWebPush; $('test-browser-notify').onclick = () => showBrowserNotification('测试通知', '浏览器通知工作正常'); $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
+$('items-refresh').onclick = loadItems; $('items-select').onclick = () => { itemsSelecting = !itemsSelecting; if (!itemsSelecting) selectedItems.clear(); $('items-select').textContent = itemsSelecting ? '完成' : '选择'; renderItems() }; $('item-filter').oninput = () => { if ($('item-filter').value.trim()) localStorage.setItem('sb-item-filter', $('item-filter').value); else localStorage.removeItem('sb-item-filter'); renderItems() }; $('item-sort').onchange = () => { localStorage.setItem('sb-item-sort', $('item-sort').value); renderItems() }; $('item-density').onclick = () => { const dense = $('item-density').getAttribute('aria-pressed') !== 'true'; if (dense) localStorage.setItem('sb-item-density', 'compact'); else localStorage.removeItem('sb-item-density'); setItemDensity(dense) }; $('item-create').onclick = createItemMenu; $('item-import').onclick = () => $('import-file').click(); $('import-file').onchange = importItems; $('item-export').onclick = exportItems; $('bulk-share').onclick = openBulkShare; $('bulk-kind').onclick = openBulkKind; $('bulk-delete').onclick = bulkDelete; $('bulk-clear').onclick = () => { selectedItems.clear(); renderItems() }; $('settings-save').onclick = saveSettings; $('ai-save').onclick = saveAiSettings; $('ai-model-fetch').onclick = fetchCustomModels; $('ai-help').onclick = () => openAiHelp();; $('ai-test').onclick = async () => { try { status('ai-status', '测试中…'); const d = await api('/api/ai/ask', { method: 'POST', body: JSON.stringify({ question: '用一个句子说明你能看到什么，并列出当前最需要处理的一件事。' }) }); status('ai-status', d.ok ? ('可用（' + ('自建 API') + '）：' + d.text.slice(0, 120)) : ('不可用：' + (d.error || '')), d.ok ? 'ok' : 'error') } catch (e) { status('ai-status', e.message, 'error') } }; $('notify-test').onclick = testNotifications; $('notify-test-approval').onclick = () => testNotifications(true); $('oidc-new').onclick = () => showOidcProviderForm(); $('op-save').onclick = saveOidcProvider; $('op-cancel').onclick = () => $('oidc-provider-form').classList.add('hidden'); $('op-discover').onclick = discoverOidcProvider; $('op-probe').onclick = probeOidcProvider; $('profile-save').onclick = saveProfile; $('password-save').onclick = changePassword; $('totp-setup').onclick = setup2fa; $('totp-enable').onclick = enable2fa; $('totp-disable').onclick = disable2fa; $('enable-browser-notify').onclick = enableBrowserNotifications; $('enable-webpush').onclick = () => enableWebPush({ force: pushNeedsResubscribe() }); $('test-webpush').onclick = testWebPush; $('test-browser-notify').onclick = () => { if (typeof Notification !== 'undefined' && Notification.permission !== 'granted') return enableBrowserNotifications(); showBrowserNotification('测试通知', '浏览器通知工作正常') }; $('vault-switch').onclick = switchAccount; $('vault-folder-save').onclick = saveFolder
 // A reload should not silently reset how the list was being looked at: the
 // filter, the sort and the density are view state, not one-off input.
 { const savedFilter = localStorage.getItem('sb-item-filter'); if (savedFilter && $('item-filter')) $('item-filter').value = savedFilter }
@@ -2695,7 +2695,7 @@ $('grants-box').addEventListener('click', async (event) => {
   }
 })
 async function loadAll() {
-  await refreshAll(); startPendingPolling(); updateBrowserNotifyStatus(); offerPushOnce()
+  await refreshAll(); startPendingPolling(); updateBrowserNotifyStatus(); offerPushOnce(); refreshPushState()
   if (/^#\/?pending$/.test(location.hash)) openPendingSheet()
   else if (/^#\/?grants$/.test(location.hash)) openNoticeModal()
   if (/^#\/?(pending|grants)$/.test(location.hash)) history.replaceState({}, '', '/')
@@ -2708,11 +2708,55 @@ const PENDING_POLL_HIDDEN_MS = 120000
 let knownPending = new Set()
 let pendingInitialized = false
 function updateBrowserNotifyStatus() { const el = $('browser-notify-status'); if (!el) return; el.textContent = typeof Notification === 'undefined' ? '此浏览器不支持通知' : '当前权限：' + Notification.permission }
-function showBrowserNotification(title, body, tag) { if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return; try { const notification = new Notification(title, { body, tag }); notification.onclick = () => { window.focus(); location.hash = '#pending'; openPendingSheet(); notification.close() } } catch {} }
+// Android Chrome has no window.Notification constructor; only the service
+// worker registration can post one. The old try/catch swallowed that TypeError,
+// so a phone never saw the in-page notification even with permission granted.
+function showBrowserNotification(title, body, tag) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+  try {
+    const notification = new Notification(title, { body, tag })
+    notification.onclick = () => { window.focus(); location.hash = '#pending'; openPendingSheet(); notification.close() }
+    return
+  } catch {}
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.ready
+      .then((registration) => registration.showNotification(title, { body, tag, icon: '/logo.png', data: { url: '/#pending' } }))
+      .catch(() => {})
+  }
+}
 async function enableBrowserNotifications() { if (typeof Notification === 'undefined') return status('settings-status', '此浏览器不支持通知', 'error'); const permission = await Notification.requestPermission(); updateBrowserNotifyStatus(); if (permission === 'granted') { status('settings-status', '浏览器通知已启用', 'ok'); startPendingPolling() } else status('settings-status', '未获得通知权限', 'error') }
 function b64urlBytes(value) {
   const normalized = String(value).replace(/-/g, '+').replace(/_/g, '/')
   return Uint8Array.from(atob(normalized + '='.repeat((4 - normalized.length % 4) % 4)), (char) => char.charCodeAt(0))
+}
+function pushFailureText(attempt) {
+  const failed = ((attempt && attempt.results) || []).filter((entry) => !entry.ok)
+  if (!failed.length) return ''
+  const codes = Array.from(new Set(failed.map((entry) => entry.status || 'error'))).join('/')
+  if (/401|403/.test(codes)) return '推送服务返回 ' + codes + '：VAPID 密钥不匹配，点「重新订阅」'
+  if (/404|410/.test(codes)) return '推送服务返回 ' + codes + '：订阅已失效，点「重新订阅」'
+  return '推送失败（' + codes + '）'
+}
+function pushNeedsResubscribe() { return /401|403|404|410/.test(String(((app.pushLastAttempt || {}).results || []).filter((entry) => !entry.ok).map((entry) => entry.status).join(' '))) }
+function setWebPushStatus() {
+  const el = $('webpush-status'); if (!el) return
+  const failure = pushFailureText(app.pushLastAttempt)
+  if (failure) return status('webpush-status', failure, 'error')
+  if (app.pushSubscriptions === null) return status('webpush-status', '正在检查后台推送…')
+  if (app.pushSubscriptions > 0) {
+    const last = app.pushLastAttempt
+    return status('webpush-status', '已订阅 ' + app.pushSubscriptions + ' 个浏览器' + (last?.at ? ' · 最近推送 ' + (last.sent || 0) + '/' + ((last.results || []).length) + ' 成功' : ''), 'ok')
+  }
+  status('webpush-status', '当前没有订阅成功：点「启用后台推送」授权一次', 'error')
+}
+async function refreshPushState() {
+  try {
+    const result = await api('/api/push/vapid')
+    app.pushSubscriptions = Number(result.subscriptions ?? 0)
+    app.pushLastAttempt = result.lastAttempt ?? null
+  } catch {}
+  setWebPushStatus()
+  renderNoticeBar()
 }
 async function enableWebPush(options = {}) {
   try {
@@ -2723,12 +2767,18 @@ async function enableWebPush(options = {}) {
     if (permission !== 'granted') throw new Error('未获得通知权限')
     const { publicKey } = await api('/api/push/vapid')
     const existing = await registration.pushManager.getSubscription()
-    const subscription = existing || await registration.pushManager.subscribe({
+    // A subscription is bound to the applicationServerKey used when it was
+    // created. If the server's VAPID pair changed, reusing the old endpoint
+    // keeps returning 401 forever; only a fresh subscribe can repair it.
+    if (existing && options.force) await existing.unsubscribe().catch(() => {})
+    const subscription = (existing && !options.force) ? existing : await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: b64urlBytes(publicKey),
     })
     await api('/api/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: subscription.toJSON() }) })
-    status('webpush-status', '后台推送已启用，关闭页面也能收到审批请求', 'ok')
+    app.pushSubscriptions = Math.max(1, app.pushSubscriptions || 0)
+    app.pushLastAttempt = null
+    setWebPushStatus()
     if (options.fromBar) toast('后台推送已开启：关闭页面也能收到审批请求')
     return true
   } catch (error) {
@@ -2740,7 +2790,16 @@ async function enableWebPush(options = {}) {
 async function testWebPush() {
   try {
     const result = await api('/api/push/test', { method: 'POST' })
-    status('webpush-status', result.sent ? '已发送 ' + result.sent + ' 条后台推送' : '没有已订阅的浏览器', result.sent ? 'ok' : 'error')
+    app.pushLastAttempt = result
+    const results = result.results || []
+    if (!results.length) {
+      app.pushSubscriptions = 0
+      return status('webpush-status', '没有已订阅的浏览器：先点「启用后台推送」', 'error')
+    }
+    const failure = pushFailureText(result)
+    if (failure) return status('webpush-status', failure, 'error')
+    const codes = Array.from(new Set(results.map((entry) => entry.status))).join('/')
+    status('webpush-status', '推送服务已接受 ' + result.sent + ' 条（HTTP ' + codes + '）', 'ok')
   } catch (error) { status('webpush-status', error.message, 'error') }
 }
 async function checkPendingNotifications() {
@@ -3068,7 +3127,9 @@ async function probeOidcProvider() {
 async function loadSettings() {
   try {
     const data = await api('/api/settings'); const n = data.notifications || {}
-    $('webpush-status').textContent = n.webpush?.subscriptions ? '已订阅 ' + n.webpush.subscriptions + ' 个浏览器后台推送' : '后台推送未启用'
+    app.pushSubscriptions = Number(n.webpush?.subscriptions ?? 0)
+    app.pushLastAttempt = n.webpush?.lastAttempt ?? null
+    setWebPushStatus()
     $('tg-chat').value = n.telegram?.chatId || ''
     $('tg-status').textContent = n.telegram?.configured ? '已配置（token 已保存）' : '未配置'
     $('ntfy-url').value = n.ntfy?.url || ''; $('ntfy-topic').value = n.ntfy?.topic || ''
@@ -4307,14 +4368,23 @@ function offerPushOnce() {
 function notifyOptInHtml() {
   try {
     if (typeof Notification === 'undefined') return ''
+    if (Notification.permission === 'denied') {
+      return '<span class="na-blocked" title="浏览器已拒绝通知权限，请在站点设置里允许">通知权限被拒</span>'
+    }
     if (Notification.permission === 'default') {
       if (localStorage.getItem(NOTIFY_ASK_KEY) === '1') return ''
       return '<button type="button" class="na-notify" data-notice-notify aria-label="开启桌面通知：审批出现时提醒你，只询问一次">开启桌面通知</button>'
     }
     // Permission is already granted, but an in-page Notification dies with the
-    // tab. Offer the background subscription here rather than only in settings.
-    if (Notification.permission === 'granted' && localStorage.getItem(PUSH_ASK_KEY) !== '1') {
-      return '<button type="button" class="na-notify" data-notice-push aria-label="开启后台推送：关闭页面也能收到审批通知，只提示一次">开启后台推送</button>'
+    // tab. Offer the background subscription whenever there is no working one,
+    // even if the prompt was dismissed earlier: hiding this entry is what made
+    // a missing subscription look like a silent failure.
+    if (app.pushSubscriptions === null) return ''
+    if (app.pushSubscriptions === 0) {
+      return '<button type="button" class="na-notify" data-notice-push aria-label="当前没有订阅成功，点击开启后台推送">未订阅后台推送 · 点此开启</button>'
+    }
+    if (pushNeedsResubscribe()) {
+      return '<button type="button" class="na-notify" data-notice-push aria-label="推送服务拒绝，点击重新订阅">重新订阅后台推送</button>'
     }
   } catch { return '' }
   return ''
@@ -4332,13 +4402,6 @@ function waitedLabel(createdAt) {
   if (min < 60) return min + ' 分钟'
   const hr = Math.floor(min / 60)
   return hr < 24 ? hr + ' 小时' : Math.floor(hr / 24) + ' 天'
-}
-function notifyOptInHtml() {
-  try {
-    if (typeof Notification === 'undefined' || Notification.permission !== 'default') return ''
-    if (localStorage.getItem(NOTIFY_ASK_KEY) === '1') return ''
-  } catch { return '' }
-  return '<button type="button" class="na-notify" data-notice-notify aria-label="开启桌面通知：审批出现时提醒你，只询问一次">开启桌面通知</button>'
 }
 // Rows show who asked, which item and how long it has waited; the buttons are
 // the duration the approver grants, so one click settles the request here.
@@ -4403,7 +4466,7 @@ async function decideQuickApproval(button) {
   }
 }
 async function enableWebPushFromBar() {
-  const ok = await enableWebPush({ fromBar: true })
+  const ok = await enableWebPush({ fromBar: true, force: pushNeedsResubscribe() })
   markPushOffered(ok)
 }
 async function askNotifyFromBar() {
