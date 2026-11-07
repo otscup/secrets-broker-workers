@@ -25,6 +25,9 @@ nav .icon-btn{width:30px;height:30px;margin-left:4px}
 .account-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:60;min-width:160px;max-width:min(220px,calc(100vw - 24px))}
 .account-menu button{display:block;width:100%;text-align:left;background:transparent}
 html[data-theme="dark"] .modal{background:rgba(0,0,0,.6)}
+.v2-advanced{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+.v2-advanced>summary{cursor:pointer;font-size:13px;color:var(--muted);list-style-position:inside}
+.v2-advanced[open]>summary{color:var(--text)}
 label.field{display:block}
 input,select,textarea{width:100%;font:inherit;outline:none}
 input[type=checkbox]{min-width:0;accent-color:var(--ok)}
@@ -1029,7 +1032,7 @@ nav{grid-area:tabs}
   </section>
 
   <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">这里显示同步到本服务器的密钥条目。点开可查看明文、调整免审批或分享给 Agent；勾选多条可批量处理。</div><div class="row" style="margin-top:10px"><input id="item-filter" aria-label="搜索条目" placeholder="搜索名称、分组或网址…"><select id="item-sort" aria-label="排序方式" title="排序方式" style="flex:0 0 auto"><option value="name">按名称</option><option value="activity">按最近活动</option><option value="access">按授权数</option><option value="expiry">按到期时间</option></select><button id="item-density" aria-pressed="false" title="列表行距：在舒适与紧凑之间切换">行距：舒适</button><button id="items-refresh">刷新</button><button id="items-select">选择</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><span id="bulk-progress" class="hint" role="status" aria-live="polite" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
-    <div class="card" id="card-vault2"><div class="row" style="justify-content:space-between;align-items:center"><div><h2 style="margin:0">Vault 2.0</h2><div class="hint" style="margin-top:4px">零知识库放在独立数据库里，和上面这一列密文库互不影响。解锁后这里能读出条目名称，锁上就只剩状态。</div></div><span id="v2-badge" class="kind-tag kind-none" style="flex:0 0 auto">读取中…</span></div><div id="v2-status" class="hint" style="margin-top:10px"></div><div class="row" id="v2-unlock-row" style="margin-top:10px"><input id="v2-password" type="password" placeholder="Vault 2.0 主密码（至少 12 位）"><button id="v2-unlock" class="primary">解锁</button><button id="v2-lock">锁定</button><input id="v2-legacy-password" type="password" placeholder="旧主密码（仅导入用）" autocomplete="off"><button id="v2-import">从旧库导入</button><button id="v2-refresh">刷新</button></div><div class="hint" style="margin-top:8px">已配对的电脑、在线状态和撤销按钮都在「电脑」标签页。</div><div class="hint" style="margin-top:6px">风险：解锁时间越长，被盗会话能读的窗口越长。「长期」不会让服务端长期持有钥匙，但本机浏览器会保存解封材料；只有撤销这台设备才会真正失效。</div><div id="v2-box" class="table-wrap scroll-list hidden" style="margin-top:10px"></div><div id="v2-msg" class="status"></div></div>
+    <div class="card" id="card-vault2"><div class="row" style="justify-content:space-between;align-items:center"><div><h2 style="margin:0">Vault 2.0</h2><div class="hint" style="margin-top:4px">零知识库放在独立数据库里，和上面这一列密文库互不影响。解锁后这里能读出条目名称，锁上就只剩状态。</div></div><span id="v2-badge" class="kind-tag kind-none" style="flex:0 0 auto">读取中…</span></div><div id="v2-status" class="hint" style="margin-top:10px"></div><div class="row" id="v2-unlock-row" style="margin-top:10px"><input id="v2-password" type="password" placeholder="Vault 2.0 主密码（至少 12 位）"><button id="v2-unlock" class="primary">解锁</button><button id="v2-lock">锁定</button></div><div class="hint" style="margin-top:8px">已配对的电脑、在线状态和撤销按钮都在「电脑」标签页。</div><div class="hint" style="margin-top:6px">风险：解锁时间越长，被盗会话能读的窗口越长。「长期」不会让服务端长期持有钥匙，但本机浏览器会保存解封材料；只有撤销这台设备才会真正失效。</div><details id="v2-advanced" class="v2-advanced hidden"><summary>高级 / 迁移工具</summary><div class="row" style="margin-top:10px"><input id="v2-legacy-password" type="password" placeholder="旧主密码（仅导入用）" autocomplete="off"><button id="v2-import">从旧库导入</button></div><div id="v2-box" class="table-wrap scroll-list hidden" style="margin-top:10px"></div></details><div id="v2-msg" class="status"></div></div>
 <div class="card hidden" id="card-fill-policies" aria-hidden="true"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。未分类的凭据默认为拒绝读取。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     <div class="card" id="card-denied"><h2>被拦下的请求</h2><div class="hint">Agent 试图读取但没通过权限检查的条目。这里只是记录，没有放行任何东西；点「授权」才会真正放开。</div><div id="denied-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     
@@ -1978,7 +1981,12 @@ associateLabels()
 new MutationObserver(() => associateLabels()).observe(document.body, { childList: true, subtree: true })
 $('mcp-url').textContent = location.origin + '/mcp'
 $('pair-command').textContent = 'secrets-broker pair --url ' + location.origin
-$('v2-refresh').onclick = loadVault2
+const v2Advanced = $('v2-advanced')
+if (v2Advanced) v2Advanced.addEventListener('toggle', () => {
+  // The raw v2 listing and the legacy importer live behind this disclosure.
+  // Opening it is the refresh; there is no separate button any more.
+  if (v2Advanced.open && app.v2?.unlocked) loadVault2(true).catch((error) => { $('v2-msg').textContent = error.message })
+})
 $('devices-refresh').onclick = () => loadVault2(false)
 $('v2-devices').addEventListener('click', async (event) => {
   const write = event.target.closest('[data-v2-write]')
@@ -2031,7 +2039,9 @@ $('v2-unlock').onclick = async () => {
     app.locked = false
     if (app.me) app.me.unlocked = true
     renderLockedSurface()
-    await Promise.all([loadVault2(), loadItems()])
+    // Only fetch the raw listing when the advanced pane is actually open: it is
+    // behind a disclosure now, and it costs a second-factor prompt.
+    await Promise.all([loadVault2($('v2-advanced')?.open === true), loadItems()])
     $('v2-msg').textContent = initialising ? '已初始化并解锁' : '已解锁'
   } catch (error) { $('v2-msg').textContent = error.message }
 }
@@ -3510,6 +3520,12 @@ async function loadVault2(withItems = true) {
     const list = await api('/api/v2/devices').catch(() => ({ devices: [] }))
     const devices = (list.devices || [])
     const ready = status.initialized === true
+    // No empty disclosure: the advanced pane only exists once the vault does.
+    const advanced = $('v2-advanced')
+    if (advanced) {
+      advanced.classList.toggle('hidden', !ready)
+      if (!ready) advanced.open = false
+    }
     const initButton = $('init-v2')
     if (initButton) initButton.classList.toggle('hidden', ready)
     badge.textContent = ready ? (status.unlocked ? '已解锁' : '已锁定') : '未初始化'
