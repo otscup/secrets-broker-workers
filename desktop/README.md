@@ -1,7 +1,7 @@
 # Secrets Broker desktop
 
-M1 of `docs/tauri-desktop-plan.md`: a Tauri v2 window that opens the existing
-console HTML offline, starts the local sidecar, and keeps running in the tray.
+A Tauri v2 window that navigates to the remote console `/login`, starts the
+local sidecar, and keeps running in the tray.
 Closing the window hides it; the tray menu shows the daemon status and can quit.
 Pairing, offline vault and Windows Hello are M2+.
 
