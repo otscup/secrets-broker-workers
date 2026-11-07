@@ -77,6 +77,10 @@ When a task needs a credential:
    genuinely needs the raw value.
 3. If the result says `pending approval: <url>`:
    - Give the user that URL and ask them to approve in the Secrets Broker UI;
+   - Every pending notification (Web Push, Telegram, ntfy, Gotify, wxpush, console,
+     DSH plugin, desktop) also carries a signed, single-use authorization link (30
+     minutes). Opening it lands on that request's approval page with the options
+     prefilled, and one submit completes the approval — no extra TOTP code is asked;
    - Retry `get_secret` after approval;
    - Never ask the user to type the secret.
 4. If the result says `vault locked`:

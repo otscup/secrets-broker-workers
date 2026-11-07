@@ -266,6 +266,12 @@ headers = { Authorization = "Bearer <agent token>" }
 For agents that need a human approval first, call `request_access`, approve in the
 browser, then call `get_secret`. Set an item to **no-approval** to skip the approval step.
 
+Pending approval notifications (Web Push, Telegram, ntfy, Gotify, wxpush, the console
+banner, the DSH plugin and the desktop app) carry a signed authorization link. Opening
+it lands on that request's approval page with scope, plaintext, write and duration
+prefilled; one submit completes the approval, and the link expires after 30 minutes or
+one use. Channels that cannot render buttons put the same URL in the body text.
+
 ## Why browser KDF
 
 Bitwarden's default KDF is PBKDF2 600,000 iterations. A free-plan Worker cannot
@@ -672,6 +678,18 @@ After one password unlock, the Worker also stores a `SESSION_KEK`-wrapped copy
 of that vault account's keys for each OIDC binding on the same account. The next
 OIDC login restores them automatically. `锁定` clears the copies, and a binding
 made for a different vault account never receives them.
+
+### 保持解锁 / Keep unlocked
+
+`/api/v2/unlock` and the unlock form offer **保持解锁** (`duration: "forever"`): the
+key slot gets `expiresAt: null`, so reads, writes, plaintext, export and approvals stop
+asking for a TOTP code or master password until an explicit `锁定`. The Worker keeps a
+`SESSION_KEK`-wrapped copy of the account DEK (`v2backup:<account>`) so a restart or
+eviction does not end the state, which also means the server can decrypt while unlocked
+— an explicit zero-knowledge trade-off. `锁定` is the master switch: it deletes the live
+slots, the session factor pass and the wrapped copy, so the next read or write needs the
+master password again. A new device/browser still re-verifies, and OIDC login never
+writes the second-factor pass.
 
 ## Security notes
 
