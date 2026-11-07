@@ -9,7 +9,7 @@ import {
 } from './crypto.js'
 import { parseJwt, verifyJwtSignature, validateIdTokenClaims, checkUserinfoSub, ALLOWED_ALGS } from './oidc.js'
 import { pullRemote, diffVaults, diffSummary } from './vaultdiff.js'
-import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2ListPlain, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2SetDeviceWrite, vault2PurgeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf, vault2Push, vault2MigrateAccount, vault2MigratePending, vault2SnapshotItem, vault2RestoreItem } from './vault2.js'
+import { vault2Status, vault2Init, vault2Unlock, vault2List, vault2ListPlain, vault2Create, vault2Update, vault2Delete, vault2Read, vault2Pair, vault2Devices, vault2RevokeDevice, vault2SetDeviceWrite, vault2PurgeDevice, vault2DeviceByToken, vault2Rekey, vault2RekeyPending, vault2DeviceSelf, vault2Push, vault2MigrateAccount, vault2ClaimLegacyRows, vault2MigratePending, vault2SnapshotItem, vault2RestoreItem } from './vault2.js'
 import { publicKeyFingerprint, dekFingerprint } from './envelope.js'
 import { generateVapid, vapidAuthorization } from './webpush.js'
 import { scrubSecret } from './redact.js'
@@ -10867,7 +10867,19 @@ const TOOL_META = {
           // so the audit cannot drift from the live cache again.
           const actualTtlMs = Number(stored.expiresAt) > 0 ? Number(stored.expiresAt) - Date.now() : ttlMs
           await addAudit(env, { event: 'vault.unlock', agent: 'admin', name: opened.fingerprint, via: 'password', duration, ttlMs: actualTtlMs })
-          return json({ ok: true, fingerprint: opened.fingerprint, account: account || null, legacy: opened.legacyOnly === true, duration, ttlMs: actualTtlMs, plainOk, expiresAt: stored.expiresAt ?? null })
+          // The unlock already produced this account's key, so the pre-account
+          // rows can be claimed here without asking for the password again. It is
+          // best effort: a failure never blocks a valid unlock, and a row the
+          // current key cannot open is left for the manual migration.
+          let claimed = null
+          try {
+            claimed = await vault2ClaimLegacyRows(env, opened)
+            if (claimed?.tagged) await addAudit(env, { event: 'vault.claim', agent: 'admin', name: opened.fingerprint, tagged: claimed.tagged, skipped: claimed.skipped, remaining: claimed.remaining })
+          } catch (error) {
+            console.error('vault claim failed: ' + String(error?.message ?? error))
+            await addAudit(env, { event: 'vault.claim-failed', agent: 'admin', reason: String(error?.message ?? error).slice(0, 200) })
+          }
+          return json({ ok: true, fingerprint: opened.fingerprint, account: account || null, legacy: opened.legacyOnly === true, duration, ttlMs: actualTtlMs, plainOk, expiresAt: stored.expiresAt ?? null, claimed: claimed ? { tagged: claimed.tagged, remaining: claimed.remaining } : null })
         }
         // Long-term tier, step 2: the console has unwrapped the device envelope in
         // the browser and presents the DEK. The DEK itself is checked against the

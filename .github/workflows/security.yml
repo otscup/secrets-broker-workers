@@ -334,6 +334,9 @@ jobs:
       - name: Vault unlock survives an object restart (no runtime)
         shell: bash
         run: npm run test:v2-unlock-persist 2>&1 | tee "$RUNNER_TEMP/ci-logs/v2-unlock-persist.log"
+      - name: Unlock claims pre-account rows without hiding them (no runtime)
+        shell: bash
+        run: npm run test:vault-claim 2>&1 | tee "$RUNNER_TEMP/ci-logs/vault-claim.log"
       # Fails if src/version.js drifted from package.json, and pins the shape of
       # /api/version (200 without the optional binding, no extra fields).
       - name: Version endpoint and single-source check (no runtime)

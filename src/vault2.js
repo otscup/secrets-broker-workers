@@ -566,10 +566,12 @@ export async function vault2MigrateAccount(env, key, password) {
       lastId = batch[batch.length - 1].id
       const statements = []
       for (const row of batch) {
-        if (accountOf(row.account_id) === account) { skipped += 1; continue }
-        // Already under this account's key (an interrupted run updated the row but
-        // not its tag), so only the tag is missing.
-        if (await openItem(dek, row.id, row.ciphertext).then(() => true, () => false)) {
+        // Never trust the tag alone: a claim pass tags rows without minting this
+        // ring, so a tagged row can still be sealed under the legacy key. Verify
+        // with the key readers will use, and re-seal only on a verified open.
+        const opensWithAccount = await openItem(dek, row.id, row.ciphertext).then(() => true, () => false)
+        if (opensWithAccount) {
+          if (accountOf(row.account_id) === account) { skipped += 1; continue }
           statements.push(env.VAULT_DB.prepare('UPDATE vault_items SET account_id = ?, revision = ?, updated_at = ? WHERE id = ?')
             .bind(account, await nextRevision(env), new Date().toISOString(), row.id))
           tagged += 1
@@ -591,6 +593,40 @@ export async function vault2MigrateAccount(env, key, password) {
   }
   const remaining = await env.VAULT_DB.prepare('SELECT COUNT(*) AS left FROM vault_items WHERE account_id IS NULL').first()
   return { dek, legacyDek, account, fingerprint: await dekFingerprint(dek), minted, converted, tagged, skipped, remaining: Number(remaining?.left ?? 0), legacyClaim: 'first-account', claimed: converted + tagged }
+}
+
+// The tag half of a migration, run with the keys an unlock already produced.
+// It never mints an account ring (that would need the password we deliberately
+// do not keep), so it must not touch a row the current primary key cannot open:
+// tagging a row sealed under a different key would hide it from its real owner.
+// Rows left behind stay null and remain legible through the legacy fallback.
+export async function vault2ClaimLegacyRows(env, key) {
+  const ctx = keyContext(key)
+  const account = ctx.account
+  if (!account) return null
+  let tagged = 0
+  let skipped = 0
+  let lastId = ''
+  for (let round = 0; round < 500; round += 1) {
+    const rows = await env.VAULT_DB.prepare('SELECT id, ciphertext FROM vault_items WHERE id > ? AND account_id IS NULL ORDER BY id ASC LIMIT 40')
+      .bind(lastId)
+      .all()
+    const batch = rows.results ?? []
+    if (!batch.length) break
+    lastId = batch[batch.length - 1].id
+    const statements = []
+    for (const row of batch) {
+      if (!(await openItem(ctx.dek, row.id, row.ciphertext).then(() => true, () => false))) { skipped += 1; continue }
+      // Conditional on the row still being unowned, so two unlocks racing each
+      // other cannot tag the same row twice or overwrite a newer migration.
+      statements.push(env.VAULT_DB.prepare('UPDATE vault_items SET account_id = ?, revision = ?, updated_at = ? WHERE id = ? AND account_id IS NULL')
+        .bind(account, await nextRevision(env), new Date().toISOString(), row.id))
+      tagged += 1
+    }
+    if (statements.length) await env.VAULT_DB.batch(statements)
+  }
+  const remaining = await env.VAULT_DB.prepare('SELECT COUNT(*) AS left FROM vault_items WHERE account_id IS NULL').first()
+  return { account, tagged, skipped, remaining: Number(remaining?.left ?? 0) }
 }
 
 export async function vault2MigratePending(env, options = {}) {
