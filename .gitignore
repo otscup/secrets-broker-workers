@@ -38,6 +38,7 @@ test-*.mjs
 !test-secret-read-by-id.mjs
 !test-v2-unlock-persist.mjs
 !test-version-endpoint.mjs
+!test-api-error-boundary.mjs
 !test-cli.mjs
 !test-cli-backup.mjs
 !test-cli-backup-scheduler.mjs

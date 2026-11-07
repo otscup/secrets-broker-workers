@@ -514,6 +514,11 @@ jobs:
       - name: http_request failure semantics (pure Node)
         shell: bash
         run: npm run test:http-request 2>&1 | tee "$RUNNER_TEMP/ci-logs/http-request.log"
+      # A failed API call must leave as JSON with a code; the console decides the
+      # database banner from that code instead of any opaque 500.
+      - name: API error boundary stays JSON (no runtime)
+        shell: bash
+        run: npm run test:api-error 2>&1 | tee "$RUNNER_TEMP/ci-logs/api-error.log"
       - name: Full security suite (short path)
         shell: bash
         run: npm run test:security:short 2>&1 | tee "$RUNNER_TEMP/ci-logs/security-short.log"

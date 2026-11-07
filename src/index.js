@@ -33,6 +33,16 @@ const securityHeaders = {
 const htmlResponse = (body, status = 200) => new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...securityHeaders } })
 const fail = (message, status = 400) => json({ error: message }, status)
 const failBase = fail
+// A 500 must still be JSON: the console reads the body to decide what went
+// wrong, and a platform error page with no body is indistinguishable from an
+// outage. Only a storage/D1 failure is reported as one; everything else names
+// itself so the UI does not blame the vault for an unrelated bug.
+const DB_ERROR_RX = /D1_ERROR|SQLITE|database is locked|database is busy|Network connection lost|storage operation|Durable Object storage/i
+const storageFailure = (error, status = 500) => {
+  const detail = String(error?.message ?? error).slice(0, 300)
+  const dbDown = DB_ERROR_RX.test(detail)
+  return jsonBase({ error: detail || '服务器内部错误', code: dbDown ? 'db_unavailable' : 'internal' }, status)
+}
 const nowIso = () => new Date().toISOString()
 // Long polls and the CLI helper both need this; Workers exposes setTimeout.
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -6054,7 +6064,12 @@ export default {
   },
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
-
+    // An exception used to escape this handler, and the platform answered with
+    // a body that is not JSON. The console's api() then had no message to show,
+    // so it fell back to "HTTP 500" and painted the database banner even when
+    // the failure had nothing to do with D1. Every API call now leaves here as
+    // JSON with a code, so a failure names itself instead of blaming the vault.
+    try {
     // A browser extension is an executor that runs inside the operator's own
     // browser instead of a container: no Docker, no second process. It calls the
     // executor endpoints cross-origin with its own executor secret, and a browser
@@ -10593,11 +10608,22 @@ const TOOL_META = {
       if (refused) return refused
       // Resolve to an id first, so the decryption reads one row instead of
       // listing and decrypting the whole vault to match a name.
-      const itemId = await ensureItemId(env, env.NODEWARDEN_DB, session, name)
-      const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name, itemId ? { itemId } : undefined)
-      if (!result) return fail('not found', 404)
-      await addAudit(env, { event: 'secret.view', name, via: 'web', totp: true })
-      return json({ value: result.value, username: result.username, totp: result.totp })
+      try {
+        const itemId = await ensureItemId(env, env.NODEWARDEN_DB, session, name)
+        const result = await readSecretFromRows(env, env.NODEWARDEN_DB, session, name, itemId ? { itemId } : undefined)
+        if (!result) return fail('not found', 404)
+        await addAudit(env, { event: 'secret.view', name, via: 'web', totp: true })
+        return json({ value: result.value, username: result.username, totp: result.totp })
+      } catch (error) {
+        // Two items share one name: resolving the id happens before the read, so
+        // the read's own duplicate guard never ran and the error escaped the
+        // route as an opaque platform 500. Answer instead of crashing.
+        if (error?.code === 'ambiguous_item_name') {
+          await addAudit(env, { event: 'secret.view-ambiguous', name, reason: 'duplicate item name' })
+          return fail('存在同名条目，请先重命名其中一个再读取（' + String(error.message ?? '') + '）', 409)
+        }
+        throw error
+      }
     }
     if (url.pathname === '/secret') {
       // Agents only. The panel reads a password through /api/secret/reveal,
@@ -11084,5 +11110,11 @@ const TOOL_META = {
       } catch (error) { return fail(String(error.message ?? error), 400) }
     }
     return fail('not found', 404)
+    } catch (error) {
+      const detail = String(error?.message ?? error).slice(0, 300)
+      console.error('unhandled ' + request.method + ' ' + url.pathname + ': ' + String(error?.stack ?? detail))
+      if (url.pathname.startsWith('/api/')) return storageFailure(error)
+      return new Response('Internal Server Error', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+    }
   },
 }
