@@ -4645,7 +4645,7 @@ function renderPending() {
     return '<div class="ios-row ios-row--stack">' +
       // Multi-select is per row; the batch bar applies one set of settings to
       // every selected request, so approving ten rows is one operator decision.
-      '<span class="ios-pick"><input type="checkbox" data-batch-select data-kind="item" data-id="' + esc(request.id) + '" aria-label="选择此请求"></span>' +
+      '<span class="ios-pick"><input type="checkbox" data-batch-select data-kind="item" data-id="' + esc(request.id) + '" aria-label="选择此请求" onclick="event.stopPropagation()"></span>' +
       '<span class="ios-ico" data-kind="' + (isFill ? 'web' : 'api') + '">' + IOS_PERSON + '</span>' +
       '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(pendingAgentLabel(request)) +
       '</span><span class="ios-tag">' + esc(pendingActionLabel(request)) + '</span></div>' +
@@ -4843,7 +4843,7 @@ function pendingConnectionRowsHtml() {
     const id = esc(entry.id || '')
     const all = (entry.requestedScope || {}).all === true
     return '<div class="ios-row ios-row--stack" data-conn-card="' + id + '" data-conn-expires="' + connExpiresAt(entry) + '">'
-      + '<span class="ios-pick"><input type="checkbox" data-batch-select data-kind="connection" data-id="' + id + '" aria-label="选择此连接申请"></span>'
+      + '<span class="ios-pick"><input type="checkbox" data-batch-select data-kind="connection" data-id="' + id + '" aria-label="选择此连接申请" onclick="event.stopPropagation()"></span>'
       + '<span class="ios-ico" data-kind="api">' + IOS_PERSON + '</span>'
       + '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(entry.agent || 'Agent') + '</span><span class="ios-tag">首次连接</span></div>'
       + '<div class="ios-sub">' + esc(connSourceLabel(entry)) + ' · ' + connPlaintextText(entry) + ' · ' + esc(connScopeText(entry)) + '</div>'
