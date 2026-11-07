@@ -69,6 +69,7 @@ html[data-theme="dark"] .notice-bar .notice-more:hover{background:rgba(255,255,2
 .notice-approve button[data-quick-decide="deny"]{color:var(--danger)}
 .notice-approve button.na-notify{background:var(--brand-soft);border-color:transparent;color:var(--brand-text)}
 .notice-approve button.na-more{padding:2px 4px;background:transparent;border-color:transparent;color:var(--brand-text)}
+.notice-approve a.na-link{flex:0 0 auto;padding:2px 6px;border:1px solid var(--hair);border-radius:8px;background:var(--brand-soft);color:var(--brand-text);font-size:12px;line-height:18px;text-decoration:none}
 .notice-approve .na-blocked{flex:0 0 auto;font-size:12px;color:var(--danger)}
 @media(max-width:720px){
 .notice-approve{max-height:190px;padding:8px 10px}
@@ -990,8 +991,8 @@ nav{grid-area:tabs}
     <h2 id="unlock-title">解锁 Vault</h2><div class="hint">Vault 主密码是初始化 Vault 时设置的密码，不是管理登录密码。它只在本机做 PBKDF2/HKDF，服务器只收到派生出的会话密钥。</div>
     <label class="field" for="master-password">Vault 主密码</label><input id="master-password" type="password" autocomplete="current-password" enterkeyhint="go">
     <div id="unlock-totp-row" class="hidden"><label class="field" for="unlock-totp-code">两步验证码</label><input id="unlock-totp-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位验证码" aria-label="两步验证码：显示条目名称需要输入手机上 6 位验证码"></div>
-    <label class="field" for="ttl">解锁有效期</label><select id="ttl"><option value="12h" selected>12 小时（默认）</option><option value="7d">7 天</option><option value="30d">30 天</option><option value="device">长期（绑定本设备）</option></select>
-    <div class="hint" id="ttl-risk">时间越长，别处拿到这个会话就能读得越久。选「长期」时密钥会封存在本设备的浏览器存储里，不再长期留在服务端；只有撤销设备才会让它失效。</div>
+    <label class="field" for="ttl">解锁有效期</label><select id="ttl"><option value="12h" selected>12 小时（默认）</option><option value="7d">7 天</option><option value="30d">30 天</option><option value="device">长期（绑定本设备）</option><option value="forever">保持解锁（手动锁定前不再要求密码）</option></select>
+    <div class="hint" id="ttl-risk">时间越长，别处拿到这个会话就能读得越久。选「保持解锁」后，服务端会长期保存被 SESSION_KEK 包裹的密钥副本，读、写、明文、导出和审批都不再要求验证码，直到你点「锁定」；锁定会同时销毁副本。这是明确的零知识降级取舍。</div>
     <div class="row"><button class="primary" id="unlock">解锁</button><button id="lock2">锁定</button><button id="unlock-browse">先以锁定状态进入（审批可用）</button></div><div class="status" id="unlock-status" role="status" aria-live="polite"></div>
     <div class="row auth__secondary"><button id="init-v2">初始化 Vault 2.0（至少 12 位）</button></div>
   </section>
@@ -1739,7 +1740,12 @@ function applyTierAvailability() {
   const supported = app.v2?.initialized === true
   option.disabled = !supported
   option.textContent = supported ? '长期（绑定本设备）' : '长期（仅 Vault 2.0 可用）'
-  if (!supported && select.value === 'device') select.value = '12h'
+  const forever = select.querySelector('option[value="forever"]')
+  if (forever) {
+    forever.disabled = !supported
+    forever.textContent = supported ? '保持解锁（手动锁定前不再要求密码）' : '保持解锁（仅 Vault 2.0 可用）'
+  }
+  if (!supported && (select.value === 'device' || select.value === 'forever')) select.value = '12h'
 }
 function legacyTtlSeconds(tier) {
   if (tier === '12h') return 12 * 60 * 60
@@ -1764,12 +1770,14 @@ async function finishUnlock(options = {}) {
 }
 async function unlockV2(password, options = {}) {
   const tier = options.tier || $('ttl')?.value || '12h'
-  // "长期" is not a longer server cache: it pairs this browser, then asks the
-  // server cache for one hour at a time. The other tiers are real expiry values.
-  const ttlMs = tier === '7d' ? 7 * 24 * 60 * 60 * 1000
-    : tier === '30d' ? 30 * 24 * 60 * 60 * 1000
-    : tier === 'device' ? 60 * 60 * 1000
-    : 12 * 60 * 60 * 1000
+  // "保持解锁" is a real server-side permanent slot: reads, writes, plaintext
+  // and exports stop asking until the operator locks. "长期" remains the
+  // device-bound one-hour cache.
+  const ttlMs = tier === 'forever' ? null
+    : tier === '7d' ? 7 * 24 * 60 * 60 * 1000
+      : tier === '30d' ? 30 * 24 * 60 * 60 * 1000
+        : tier === 'device' ? 60 * 60 * 1000
+          : 12 * 60 * 60 * 1000
   const code = String(options.code ?? '').replace(/\s+/g, '')
   const payload = { password, ttlMs, duration: tier, confirm: tier !== '12h' }
   // The code rides along with the password so one submit both opens the vault
@@ -1787,9 +1795,10 @@ async function unlockV2(password, options = {}) {
   await finishUnlock(options)
 }
 async function unlockLegacy(password, ttl = '12h', options = {}) {
-  // No v2 vault means no device to bind to; a "long-term" pick falls back to
-  // the default window instead of quietly expiring after an hour.
+  // No v2 vault means no device to bind to; long-term picks fall back to the
+  // widest legacy window instead of quietly expiring after an hour.
   if (ttl === 'device') ttl = '12h'
+  if (ttl === 'forever') ttl = '30d'
   const info = await api('/api/bootstrap')
   if (info.kdfType !== 0) throw new Error('这个账户使用 Argon2 KDF（常见于从 NodeWarden/Bitwarden 导入），当前控制台只支持 PBKDF2。')
   const masterKey = await pbkdf2(password, String(info.email).toLowerCase(), info.kdfIterations)
@@ -1803,8 +1812,8 @@ async function unlockLegacy(password, ttl = '12h', options = {}) {
 function inlineUnlockSheet(after) {
   openModal('就地解锁', '<p class="hint">解锁只影响名称与明文的可见性，当前页面不会跳转。审批可以继续。</p>'
     + '<label class="field" for="inline-password">Vault 主密码</label><input id="inline-password" type="password" autocomplete="current-password" enterkeyhint="go">'
-    + '<label class="field" for="inline-ttl">解锁有效期</label><select id="inline-ttl"><option value="12h" selected>12 小时（默认）</option><option value="7d">7 天</option><option value="30d">30 天</option><option value="device">长期（绑定本设备）</option></select>'
-    + '<div class="hint">时间越长，别处拿到这个会话就能读得越久；「长期」把密钥封存在本设备，撤销设备才会失效。</div>'
+    + '<label class="field" for="inline-ttl">解锁有效期</label><select id="inline-ttl"><option value="12h" selected>12 小时（默认）</option><option value="7d">7 天</option><option value="30d">30 天</option><option value="device">长期（绑定本设备）</option><option value="forever">保持解锁（手动锁定前不再要求密码）</option></select>'
+    + '<div class="hint">时间越长，别处拿到这个会话就能读得越久；「保持解锁」会在服务端长期保存包裹副本，直到锁定才清除。</div>'
     + '<div class="row"><button class="primary" id="inline-unlock-submit">解锁</button></div><div class="status" id="inline-unlock-status" role="status" aria-live="polite"></div>')
   $('inline-password').focus()
   $('inline-password').onkeydown = (event) => { if (event.key === 'Enter') $('inline-unlock-submit').click() }
@@ -3700,9 +3709,9 @@ async function loadVault2(withItems = true) {
     }
     const initButton = $('init-v2')
     if (initButton) initButton.classList.toggle('hidden', ready)
-    badge.textContent = ready ? (status.unlocked ? '已解锁' : '已锁定') : '未初始化'
+    badge.textContent = ready ? (status.unlocked ? (status.keyExpiresAt == null ? '已解锁 · 长期有效' : '已解锁') : '已锁定') : '未初始化'
     line.textContent = ready
-      ? ('条目 ' + Number(status.items || 0) + ' 条 · revision ' + Number(status.revision || 0) + ' · 已配对设备 ' + devices.length + ' 台' + (status.unlocked && status.keyExpiresAt ? ' · 钥匙有效至 ' + new Date(status.keyExpiresAt).toLocaleTimeString() : ''))
+      ? ('条目 ' + Number(status.items || 0) + ' 条 · revision ' + Number(status.revision || 0) + ' · 已配对设备 ' + devices.length + ' 台' + (status.unlocked ? (status.keyExpiresAt == null ? ' · 长期有效，点「锁定」前不再要求密码' : (status.keyExpiresAt ? ' · 钥匙有效至 ' + new Date(status.keyExpiresAt).toLocaleTimeString() : '')) : ''))
       : '还没有初始化。输入一个至少 12 位的主密码，点「初始化」会新建一个空库；旧条目要初始化后用「从旧库导入」。'
     if (devicesLine) {
       const online = devices.filter((device) => !device.revokedAt && vault2DeviceState(device).label === '在线').length
@@ -4346,6 +4355,7 @@ function noticeApproveHtml(pendingUnread) {
     // request spelled out, so that path opens the form instead.
     const quick = !isConnection || (entry.requestedScope || {}).all === true
     const age = entry.createdAt ? ' · 等了 ' + waitedLabel(entry.createdAt) + (isConnection ? ' · ' + connRemainingLabel(entry) : '') : ''
+    const link = entry.approvalLink ? '<a class="na-link" href="' + esc(entry.approvalLink) + '" target="_blank" rel="noopener" title="打开签名授权页（一次有效）">授权页</a>' : ''
     const button = (decision, label, aria) => '<button type="button" data-quick-decide="' + decision + '" data-quick-kind="' + (isConnection ? 'connection' : '') + '" data-quick-id="' + esc(entry.id || '') + '" aria-label="' + esc(aria + '：' + who + ' ' + action + ' ' + name) + '">' + label + '</button>'
     return '<div class="na-row">'
       + '<span class="na-who" title="' + esc(who) + '">' + esc(who) + '</span>'
@@ -4353,7 +4363,7 @@ function noticeApproveHtml(pendingUnread) {
       + (blocked ? '<span class="na-blocked">目标无效，无法批准</span>'
         : '<span class="na-actions">' + (isConnection
           ? (quick ? button('1h', '批准 1 小时', '批准 1 小时，范围全部条目，不含明文') : button('form', '选择范围', '选择条目后批准')) + button('deny', '拒绝', '拒绝')
-          : button('1h', '批准 1 小时', '批准 1 小时') + button('7d', '批准 7 天', '批准 7 天') + button('deny', '拒绝', '拒绝')) + '</span>')
+          : button('1h', '批准 1 小时', '批准 1 小时') + button('7d', '批准 7 天', '批准 7 天') + button('deny', '拒绝', '拒绝')) + link + '</span>')
       + '</div>'
   }).join('')
   const more = pendingUnread.length > 2 ? '<button type="button" class="na-more" data-notice-approve-more aria-label="查看全部 ' + pendingUnread.length + ' 条待审批">还有 ' + (pendingUnread.length - 2) + ' 条 ›</button>' : ''
@@ -4368,12 +4378,8 @@ async function decideQuickApproval(button) {
   if (!id || button.disabled) return
   // Narrowing scope needs the checkbox list, so that click opens the sheet.
   if (connection && decision === 'form') { openPendingSheet(); return }
-  // Denial never touches the vault key; approval does.
-  if (connection && decision !== 'deny' && !vaultUnlocked()) {
-    toast('批准连接需要先解锁 Vault；拒绝不需要。', true)
-    openPendingSheet()
-    return
-  }
+  // Denial never touches the vault key; approval no longer needs an unlock in
+  // this browser either — a long-term slot on the account covers it.
   button.disabled = true
   button.setAttribute('aria-busy', 'true')
   try {
@@ -4811,11 +4817,6 @@ async function applyPendingBatch(decision) {
   const writeAllowed = Boolean(($('batch-write') || {}).checked)
   const total = selected.length
   if (decision === 'approve') {
-    if (!vaultUnlocked()) {
-      toast('批准需要先解锁 Vault；解锁后会继续这次批量批准。', true)
-      inlineUnlockSheet(() => applyPendingBatch('approve'))
-      return
-    }
     const label = '将按当前设置一次性批准 ' + total + ' 条（时长 ' + (duration === 'once' ? '仅本次' : connectionDurationLabel(duration)) + '）。继续？'
     if (!window.confirm(label)) return
   }
@@ -4871,6 +4872,7 @@ function pendingDetailHtml(entry) {
     + (entry.nameMasked ? ' <button class="small" data-inline-unlock type="button">查看完整内容需要解锁</button>' : '')
     + '</div>' + target
     + '<div class="hint">' + esc(entry.createdAt ? new Date(entry.createdAt).toLocaleString('zh-CN', { hour12: false }) : '') + '</div>'
+    + (entry.approvalLink ? '<div class="hint"><a href="' + esc(entry.approvalLink) + '" target="_blank" rel="noopener">打开授权页（30 分钟有效，单次使用）</a></div>' : '')
 }
 
 // -- Connection admission -----------------------------------------------------
@@ -4881,15 +4883,6 @@ function pendingDetailHtml(entry) {
 function pendingConnections() {
   const data = app.data || {}
   return (data.connections && data.connections.pending) || []
-}
-// Approval needs the vault key; denial never does. Either an unlocked v2 slot
-// or a live legacy session satisfies it, matching consoleVault on the Worker.
-function vaultUnlocked() {
-  // consoleVault on the Worker accepts a live v1 session *or* the cached v2
-  // slot. Reading only the v2 flag made the console refuse approvals the
-  // server would have taken, which is one half of the "locked" dead end.
-  if (app.v2 && app.v2.initialized === true && app.v2.unlocked === true) return true
-  return app.me ? app.me.unlocked === true : false
 }
 function connExpiresAt(entry) {
   const ms = new Date((entry && entry.expiresAt) || 0).getTime()
@@ -4918,7 +4911,7 @@ function connWaitingText(entry) {
   return '请求于 ' + new Date(entry.createdAt).toLocaleString('zh-CN', { hour12: false }) + ' · 等了 ' + waitedLabel(entry.createdAt)
 }
 function connItemChoicesHtml(entry) {
-  const locked = !vaultUnlocked()
+  const locked = false
   const items = app.items || []
   const requested = new Set(((entry && entry.requestedScope && entry.requestedScope.itemIds) || []).map(String))
   const list = items.length
@@ -4932,7 +4925,7 @@ function connItemChoicesHtml(entry) {
 function connectionApprovalHtml(entry) {
   const id = esc(entry.id || '')
   const all = (entry.requestedScope || {}).all === true
-  const locked = !vaultUnlocked()
+  const locked = false
   return '<div class="conn-card" data-conn-card="' + id + '" data-conn-expires="' + connExpiresAt(entry) + '">'
     + '<div class="conn-head"><span class="conn-name">' + esc(entry.agent || 'Agent') + '</span><span class="ios-tag">首次连接</span>'
     + '<span class="ios-pill ' + (entry.requestedPlaintext ? 'warn' : 'plain') + '">' + (entry.requestedPlaintext ? '索要明文' : '不读明文') + '</span></div>'
@@ -4951,7 +4944,7 @@ function connectionApprovalHtml(entry) {
     + '<label class="field" for="conn-ttl-' + id + '">授权时长</label><select id="conn-ttl-' + id + '" data-conn-duration aria-label="授权时长">'
     + '<option value="1h">1 小时</option><option value="24h">24 小时</option><option value="7d">7 天</option><option value="30d">30 天</option><option value="always">永久（直到撤销）</option></select>'
     + '<div class="conn-hint">「永久」只作用于这台机器的连接准入；Agent 自身的令牌/授权到期后仍需要重新授权。</div>'
-    + '<div class="conn-hint" data-conn-status role="status" aria-live="polite">' + (locked ? '批准需要先解锁 Vault；拒绝不需要。 <button type="button" class="small" data-conn-unlock>先解锁并回到审批</button>' : '') + '</div>'
+    + '<div class="conn-hint" data-conn-status role="status" aria-live="polite"></div>'
     + '<div class="conn-actions"><button type="button" class="primary" data-conn-approve="' + id + '" aria-label="批准连接：' + esc(entry.agent || '') + '">批准</button>'
     + '<button type="button" class="danger" data-conn-deny="' + id + '" aria-label="拒绝连接：' + esc(entry.agent || '') + '">拒绝</button></div>'
     + '</div></div>'
@@ -4971,6 +4964,7 @@ function pendingConnectionRowsHtml() {
       + (all ? '<button class="ios-chip primary" data-conn-quick="' + id + '" aria-label="批准 1 小时：' + esc(entry.agent || '') + ' 首次连接，范围全部条目，不含明文">批准 1 小时</button>' : '')
       + '<button class="ios-chip" data-conn-open="' + id + '" aria-label="' + (all ? '展开连接审批表单' : '为 ' + esc(entry.agent || '') + ' 选择条目后批准') + '">' + (all ? '展开审批' : '选择条目后批准') + '</button>'
       + '<button class="ios-chip danger" data-conn-deny="' + id + '" aria-label="拒绝连接：' + esc(entry.agent || '') + '">拒绝</button>'
+      + (entry.approvalLink ? '<a class="ios-chip" style="display:inline-flex;align-items:center;text-decoration:none" href="' + esc(entry.approvalLink) + '" target="_blank" rel="noopener" aria-label="打开签名授权页（一次有效）">授权页</a>' : '')
       + '</div></div></div>'
   }).join('')
 }
@@ -5019,14 +5013,12 @@ async function decideConnection(button, body, card, options = {}) {
       if (card) setConnectionStatus(card, '这条申请已处理或已过期，队列已刷新。', true)
       toast('这条申请已处理或已过期，队列已刷新。', true)
       await loadState()
-    } else if (error.status === 423) {
-      const message = '批准连接需要先解锁 Vault；拒绝不需要。'
-      if (card) setConnectionStatus(card, message + ' 已打开就地解锁，解锁后会继续这次批准。', true)
-      toast(message, true)
-      // A retry that still finds the vault locked must not reopen the sheet on
-      // itself: the operator sees the status line and decides what to do next.
-      if (options.afterUnlock) return
-      inlineUnlockSheet(() => { openPendingSheet(); decideConnection(null, body, null, { afterUnlock: true }) })
+    } else if (error.status === 428) {
+      // The server could not find any unlock for the account. This is the
+      // readable "unlock once, then approvals stop asking" message, not a dead
+      // "vault locked" wall.
+      if (card) setConnectionStatus(card, error.message, true)
+      toast(error.message, true)
     } else {
       if (card) setConnectionStatus(card, error.message, true)
       toast('审批失败：' + error.message, true)
@@ -5052,13 +5044,6 @@ async function submitConnectionForm(card, decision) {
   }
   const body = { id, decision: 'approve', all, plaintextAllowed, writeAllowed, duration }
   if (!all) body.itemIds = itemIds
-  if (!vaultUnlocked()) {
-    // The old copy just ended here and told the operator to unlock somewhere
-    // else. Open the form in place and resubmit the same body once it works.
-    setConnectionStatus(card, '批准需要先解锁 Vault；在这里解锁后会自动继续这次批准。', true)
-    inlineUnlockSheet(() => { openPendingSheet(); decideConnection(null, body, null, { afterUnlock: true }) })
-    return
-  }
   setConnectionStatus(card, '')
   return decideConnection(null, body, card)
 }
@@ -5066,12 +5051,6 @@ async function decideConnectionQuick(button) {
   if (!button || button.disabled) return
   const id = button.dataset.connQuick
   const body = { id, decision: 'approve', all: true, plaintextAllowed: false, duration: '1h' }
-  if (!vaultUnlocked()) {
-    setConnectionStatus(button.closest('[data-conn-card]'), '批准需要先解锁 Vault；解锁后会自动继续这次批准。', true)
-    toast('批准连接需要先解锁 Vault；已打开就地解锁。', true)
-    inlineUnlockSheet(() => { openPendingSheet(); decideConnection(null, body, null, { afterUnlock: true }) })
-    return
-  }
   return decideConnection(button, body, null)
 }
 
