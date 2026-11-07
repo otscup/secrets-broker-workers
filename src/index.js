@@ -2066,6 +2066,22 @@ async function getSession(env) {
   } catch { return null }
 }
 
+// Agent-facing reads and writes may run on either unlock: the legacy session,
+// or a live Vault 2 slot. Requiring the legacy session here is what made an
+// approved write still answer "vault locked" on a v2 deployment.
+async function activeVaultSession(env) {
+  const session = await getSession(env)
+  if (session) return session
+  try {
+    const state = await loadState(env)
+    const account = resolveVaultAccount(state, null, env)
+    const query = '?account=' + encodeURIComponent(account) + '&session='
+    const key = await stateStub(env).fetch('https://state/v2-key' + query).then((response) => response.json())
+    if (key?.ok === true) return { email: key.account || account, v2: true }
+  } catch {}
+  return null
+}
+
 async function putSession(env, session) {
   const plain = encoder.encode(JSON.stringify(session))
   const wrapped = await wrapWithKek(plain, await kekBytes(env))
@@ -7502,7 +7518,7 @@ export default {
     }
     if (url.pathname === '/api/items/update' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
-      const session = await getSession(env)
+      const session = await activeVaultSession(env)
       if (!session) return fail('locked', 423)
       const body = await request.json().catch(() => ({}))
       const name = String(body.name ?? '')
@@ -7644,7 +7660,7 @@ export default {
     }
     if (url.pathname === '/api/items/delete' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
-      const session = await getSession(env)
+      const session = await activeVaultSession(env)
       if (!session) return fail('locked', 423)
       const body = await request.json().catch(() => ({}))
       const name = String(body.name ?? '')
@@ -7659,7 +7675,7 @@ export default {
     }
     if (url.pathname === '/api/items/create' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
-      const session = await getSession(env)
+      const session = await activeVaultSession(env)
       if (!session) return fail('locked', 423)
       const body = await request.json().catch(() => ({}))
       // A new credential born with auto-approval is the same policy change as
@@ -7709,7 +7725,7 @@ export default {
     // takes the same second factor as /api/secret/reveal for that reason.
     if (url.pathname === '/api/items/export' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
-      const session = await getSession(env)
+      const session = await activeVaultSession(env)
       if (!session) return fail('locked', 423)
       const body = await request.json().catch(() => ({}))
       const refused = await confirmSensitive(request, env, body, 'items.export', true)
@@ -10625,8 +10641,8 @@ const TOOL_META = {
             message: 'pending approval: ' + (access.approvalUrl ?? ''),
           })
         }
-        const session = await getSession(env)
-        if (!session) return result(text('vault locked; open the broker page or run unlock.mjs', true))
+        const session = await activeVaultSession(env)
+        if (!session) return result(text('vault locked; open the broker page and unlock it (choose “保持解锁” so approvals never ask again)', true))
         // Per-agent MCP surface. An empty list means "every tool", so agents created
         // before this setting keep working; a non-empty list is an allowlist.
         const allowedTools = Array.isArray(resolved.agent.tools) && resolved.agent.tools.length ? resolved.agent.tools : null
@@ -11158,7 +11174,7 @@ const TOOL_META = {
       const resolved = await resolveAgent(request, env)
       if (!resolved) return fail('unauthorized', 401)
       if (resolved.agent.write !== true) return fail('agent is not allowed to write', 403)
-      const session = await getSession(env)
+      const session = await activeVaultSession(env)
       if (!session) return fail('vault locked', 423)
       if (resolved.agent.account && String(resolved.agent.account).toLowerCase() !== String(session.email).toLowerCase()) return fail('agent is bound to another vault account', 403)
       // Writing also requires an admitted connection: an unapproved device
@@ -11180,19 +11196,28 @@ const TOOL_META = {
         return fail(reason, 403)
       }
       // write=true only permits the write operation; item/group scope still
-      // applies, using the same agentInScope rule as reads.
-      const inWriteScope = (targetName, groupOverride) => agentInScope(resolved.agent, resolved.state.itemGroups, targetName, groupOverride)
+      // applies, unless the operator approved a write admission that covers
+      // this item. An admission with scope "all" is the operator's answer to
+      // the scope question, so an empty creation-time allow list must not veto
+      // it. A narrowed admission (itemIds) still applies.
+      const admittedWrite = (itemId, targetName) => Boolean(admission.record) && admission.record.state === 'approved'
+        && admission.record.writeAllowed === true
+        && (admission.record.scope?.all === true
+          ? connectionAllowsItem(admission.record, itemId ?? resolved.state.itemIds?.[targetName])
+          : connectionAllowsItem(admission.record, itemId))
+      const inWriteScope = (targetName, groupOverride, itemId) => admittedWrite(itemId, targetName)
+        || agentInScope(resolved.agent, resolved.state.itemGroups, targetName, groupOverride)
       try {
         const found = await findCipherRow(env, env.NODEWARDEN_DB, session, name)
         if (found) {
-          if (!inWriteScope(name)) return forbid('agent not allowed to write this item', { name })
+          if (!inWriteScope(name, undefined, found.id)) return forbid('agent not allowed to write this item', { name })
           const rawNewName = typeof body.newName === 'string' ? body.newName.trim() : ''
-          if (rawNewName && rawNewName !== name && !inWriteScope(rawNewName, typeof body.group === 'string' ? body.group.trim() : (resolved.state.itemGroups?.[rawNewName] ?? ''))) return forbid('agent not allowed to write this item', { name: rawNewName })
+          if (rawNewName && rawNewName !== name && !inWriteScope(rawNewName, typeof body.group === 'string' ? body.group.trim() : (resolved.state.itemGroups?.[rawNewName] ?? ''), found.id)) return forbid('agent not allowed to write this item', { name: rawNewName })
           const currentGroup = resolved.state.itemGroups?.[name] ?? ''
           const nextGroup = typeof body.group === 'string' ? body.group.trim() : currentGroup
           if (nextGroup !== currentGroup) {
             const targetForGroup = rawNewName && rawNewName !== name ? rawNewName : name
-            if (!inWriteScope(targetForGroup, nextGroup)) return forbid('agent not allowed to move this item to the target group', { name: targetForGroup })
+            if (!inWriteScope(targetForGroup, nextGroup, found.id)) return forbid('agent not allowed to move this item to the target group', { name: targetForGroup })
           }
           // Explicit field allowlist: never forward Agent-controlled permission
           // or identity keys (allow/allowAll/groups/noApproval/id/...) into
@@ -11229,7 +11254,7 @@ const TOOL_META = {
     // there is nothing to gate on, and the panel tells the operator to enrol it.
     if (url.pathname === '/api/secret/reveal' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
-      const session = await getSession(env)
+      const session = await activeVaultSession(env)
       if (!session) return fail('vault locked', 423)
       const body = await request.json().catch(() => ({}))
       const name = String(body.name ?? '').trim()
@@ -11263,7 +11288,7 @@ const TOOL_META = {
       // README only ever documents the Bearer form for this route.
       const resolved = await resolveAgent(request, env)
       if (!resolved) return fail('unauthorized', 401)
-      const session = await getSession(env)
+      const session = await activeVaultSession(env)
       if (!session) return fail('vault locked', 423)
       const name = url.searchParams.get('name') ?? ''
       if (!name) return fail('name required', 400)
