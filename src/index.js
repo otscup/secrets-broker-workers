@@ -2191,39 +2191,206 @@ function grantSweepNeeded(state, now = Date.now()) {
   return Object.values(state.grants ?? {}).some((grant) => grant && grant.expiresAt && grant.expiresAt <= now)
 }
 
+// Every object the broker mints with a clock has to be swept by the same pass,
+// otherwise the console keeps showing a "永久" row that the authorization path
+// already rejects. Permanent values are 0 / null / missing by design and are
+// never touched here.
+function capabilitySweepNeeded(state, now = Date.now()) {
+  return Object.values(state.capabilities ?? {}).some((cap) => {
+    if (!cap || cap.revokedAt) return false
+    const expires = millisOf(cap.expiresAt)
+    return Number.isFinite(expires) && expires > 0 && expires <= now
+  })
+}
+function writeTicketSweepNeeded(state, now = Date.now()) {
+  return Object.values(state.writeTickets ?? {}).some((ticket) => {
+    if (!ticket) return true
+    const expires = Number(ticket.expiresAt ?? 0)
+    if (expires === 0 && ticket.mode === 'always') return false
+    return expires <= now
+  })
+}
+function tokenSweepNeeded(state, now = Date.now()) {
+  for (const token of Object.values(state.oauthTokens ?? {})) {
+    if (!token) return true
+    const expires = millisOf(token.expiresAt)
+    if (Number.isFinite(expires) && expires <= now) return true
+  }
+  for (const token of Object.values(state.oauthRefreshTokens ?? {})) {
+    if (!token) return true
+    const expires = millisOf(token.expiresAt)
+    const grant = millisOf(token.grantExpiresAt)
+    if (Number.isFinite(expires) && expires <= now) return true
+    if (Number.isFinite(grant) && grant > 0 && grant <= now) return true
+  }
+  for (const code of Object.values(state.oauthCodes ?? {})) {
+    const expires = millisOf(code?.expiresAt)
+    if (Number.isFinite(expires) && expires <= now) return true
+  }
+  return false
+}
+function sessionSweepNeeded(state, now = Date.now()) {
+  return Object.values(state.adminSessions ?? {}).some((record) => {
+    const expires = millisOf(record?.expiresAt)
+    return Number.isFinite(expires) && expires > 0 && expires <= now
+  })
+}
+function resultSweepNeeded(state, now = Date.now()) {
+  return Object.values(state.pendingResults ?? {}).some((value) => Number(value?.expiresAt ?? 0) <= now)
+}
+function stateSweepNeeded(state, now = Date.now()) {
+  return connectionSweepNeeded(state, now) || grantSweepNeeded(state, now)
+    || capabilitySweepNeeded(state, now) || writeTicketSweepNeeded(state, now)
+    || tokenSweepNeeded(state, now) || sessionSweepNeeded(state, now)
+    || resultSweepNeeded(state, now)
+}
+
+// Pure mutation over one state document. Returns what was removed plus the
+// remaining counts, so the audit line can answer "how many before / after"
+// without a second read. Runs inside a transaction (updateState) and therefore
+// cannot double-claim a transition.
+function sweepStateDocument(state, now = Date.now()) {
+  state.connections ??= {}
+  state.grants ??= {}
+  state.capabilities ??= {}
+  state.writeTickets ??= {}
+  state.pendingResults ??= {}
+  state.oauthTokens ??= {}
+  state.oauthRefreshTokens ??= {}
+  state.oauthCodes ??= {}
+  state.adminSessions ??= {}
+  const removed = {
+    connections: [], grants: [], capabilities: [], writeTickets: [],
+    tokens: [], refreshTokens: [], codes: 0, sessions: 0,
+  }
+  removed.connections.push(...sweepConnections(state, now))
+  removed.grants.push(...sweepExpiredGrants(state, now))
+  for (const [key, cap] of Object.entries(state.capabilities)) {
+    if (!cap) { delete state.capabilities[key]; continue }
+    if (cap.revokedAt) continue
+    const expires = millisOf(cap.expiresAt)
+    if (!Number.isFinite(expires) || expires <= 0 || expires > now) continue
+    removed.capabilities.push({ key, agent: cap.subjectId ?? '', name: cap.itemName ?? '', action: cap.action ?? '', expiresAt: expires, uses: cap.usedCount ?? 0 })
+    delete state.capabilities[key]
+  }
+  for (const [key, ticket] of Object.entries(state.writeTickets)) {
+    if (!ticket) { delete state.writeTickets[key]; continue }
+    const expires = Number(ticket.expiresAt ?? 0)
+    if (expires === 0 && ticket.mode === 'always') continue
+    if (expires > now) continue
+    removed.writeTickets.push({ agent: ticket.agent ?? '', name: ticket.name ?? '', mode: ticket.mode ?? '', expiresAt: expires })
+    delete state.writeTickets[key]
+  }
+  for (const [key, value] of Object.entries(state.pendingResults)) {
+    if (Number(value?.expiresAt ?? 0) <= now) delete state.pendingResults[key]
+  }
+  for (const [hash, token] of Object.entries(state.oauthTokens)) {
+    if (!token) { delete state.oauthTokens[hash]; continue }
+    const expires = millisOf(token.expiresAt)
+    if (!Number.isFinite(expires) || expires > now) continue
+    removed.tokens.push({ agent: token.agent ?? '', clientId: token.clientId ?? '', expiresAt: expires })
+    delete state.oauthTokens[hash]
+  }
+  for (const [hash, token] of Object.entries(state.oauthRefreshTokens)) {
+    if (!token) { delete state.oauthRefreshTokens[hash]; continue }
+    const expires = millisOf(token.expiresAt)
+    const grant = millisOf(token.grantExpiresAt)
+    const expired = (Number.isFinite(expires) && expires <= now) || (Number.isFinite(grant) && grant > 0 && grant <= now)
+    if (!expired) continue
+    removed.refreshTokens.push({ agent: token.agent ?? '', expiresAt: Number.isFinite(expires) ? expires : grant })
+    delete state.oauthRefreshTokens[hash]
+  }
+  for (const [code, entry] of Object.entries(state.oauthCodes)) {
+    const expires = millisOf(entry?.expiresAt)
+    if (!Number.isFinite(expires) || expires <= now) { delete state.oauthCodes[code]; removed.codes += 1 }
+  }
+  for (const [id, record] of Object.entries(state.adminSessions)) {
+    const expires = millisOf(record?.expiresAt)
+    if (!record || (Number.isFinite(expires) && expires > 0 && expires <= now)) {
+      delete state.adminSessions[id]
+      removed.sessions += 1
+    }
+  }
+  // Recorded only when a pass actually ran, so "nothing due" polls stay read-only.
+  state.lastSweepAt = new Date(now).toISOString()
+  return {
+    removed,
+    remaining: {
+      connections: Object.keys(state.connections).length,
+      grants: Object.keys(state.grants).length,
+      capabilities: Object.keys(state.capabilities).length,
+      writeTickets: Object.keys(state.writeTickets).length,
+      tokens: Object.keys(state.oauthTokens).length,
+      refreshTokens: Object.keys(state.oauthRefreshTokens).length,
+      codes: Object.keys(state.oauthCodes).length,
+      sessions: Object.keys(state.adminSessions).length,
+    },
+  }
+}
+
 // Lazy sweep: this deployment has no cron (the account's slot limit is full),
 // so expiry is applied the next time anyone reads or uses a connection. It is
 // safe to call often: the snapshot check avoids a write when nothing is due.
-// Expired grants ride along in the same pass instead of needing their own
-// timer. Audits are written after the state write, so the trace outlives the
-// deleted record.
+// Audits are written after the state write, so the trace outlives the deleted
+// record. The audit line carries removed + remaining, which is how the
+// operator can reconstruct before/after counts without opening the console.
 async function sweepExpiredState(env, provided = null) {
   const snapshot = provided ?? await loadState(env)
-  if (!connectionSweepNeeded(snapshot) && !grantSweepNeeded(snapshot)) return []
+  const now = Date.now()
+  if (!stateSweepNeeded(snapshot, now)) return []
   // Throttled: a real sweep is a full state write plus audit rows, and
   // /api/state polls every 30s. One pass per minute is enough; correctness does
   // not depend on it because a row outside its window never authorises a call
   // (connectionLive checks the clock on every request).
   const sweptAt = millisOf(snapshot.lastSweepAt)
-  if (Number.isFinite(sweptAt) && sweptAt > Date.now() - SWEEP_MIN_INTERVAL_MS) return []
-  const expiredConnections = []
-  const expiredGrants = []
+  if (Number.isFinite(sweptAt) && sweptAt > now - SWEEP_MIN_INTERVAL_MS) return []
+  let outcome = null
   await updateState(env, (state) => {
-    const now = Date.now()
-    expiredConnections.push(...sweepConnections(state, now))
-    expiredGrants.push(...sweepExpiredGrants(state, now))
-    // Recorded only when a pass actually ran, so "nothing due" polls stay
-    // read-only.
-    state.lastSweepAt = nowIso()
+    outcome = sweepStateDocument(state, Date.now())
     return state
   })
-  for (const entry of expiredConnections) {
-    await addAudit(env, { event: 'connection.expire', agent: entry.agent, requestId: entry.id, from: entry.from, reasonCode: entry.reasonCode })
+  if (!outcome) return []
+  const counts = { before: {}, after: outcome.remaining }
+  for (const key of Object.keys(outcome.remaining)) {
+    const removedCount = key === 'codes' || key === 'sessions'
+      ? outcome.removed[key]
+      : (outcome.removed[key]?.length ?? 0)
+    counts.before[key] = outcome.remaining[key] + removedCount
   }
-  for (const grant of expiredGrants) {
-    await addAudit(env, { event: 'grant.expire', agent: grant.agent, name: grant.name, mode: grant.mode, expiresAt: grant.expiresAt, reads: grant.reads })
+  for (const entry of outcome.removed.connections) {
+    await addAudit(env, { event: 'connection.expire', agent: entry.agent, requestId: entry.id, from: entry.from, reasonCode: entry.reasonCode, ...counts })
   }
-  return [...expiredConnections, ...expiredGrants]
+  for (const grant of outcome.removed.grants) {
+    await addAudit(env, { event: 'grant.expire', agent: grant.agent, name: grant.name, mode: grant.mode, expiresAt: grant.expiresAt, reads: grant.reads, ...counts })
+  }
+  for (const cap of outcome.removed.capabilities) {
+    await addAudit(env, { event: 'capability.expire', agent: cap.agent, name: cap.name, action: cap.action, expiresAt: cap.expiresAt, uses: cap.uses, ...counts })
+  }
+  for (const ticket of outcome.removed.writeTickets) {
+    await addAudit(env, { event: 'write-ticket.expire', agent: ticket.agent, name: ticket.name, mode: ticket.mode, expiresAt: ticket.expiresAt, ...counts })
+  }
+  for (const token of outcome.removed.tokens) {
+    await addAudit(env, { event: 'oauth.token-expire', agent: token.agent, clientId: token.clientId, expiresAt: token.expiresAt, ...counts })
+  }
+  for (const token of outcome.removed.refreshTokens) {
+    await addAudit(env, { event: 'oauth.refresh-expire', agent: token.agent, expiresAt: token.expiresAt, ...counts })
+  }
+  if (outcome.removed.codes) await addAudit(env, { event: 'oauth.code-expire', count: outcome.removed.codes, ...counts })
+  if (outcome.removed.sessions) await addAudit(env, { event: 'session.expire', count: outcome.removed.sessions, ...counts })
+  return [...outcome.removed.connections, ...outcome.removed.grants, ...outcome.removed.capabilities]
+}
+
+// Any request — including MCP traffic, which never opens the console — may
+// start a pass. The module-level stamp keeps a burst of requests from each
+// loading the state document; the DO-side stamp keeps multiple isolates from
+// all writing in the same minute.
+let expirySweepAttemptAt = 0
+function scheduleExpirySweep(env, ctx) {
+  const now = Date.now()
+  if (now - expirySweepAttemptAt < SWEEP_MIN_INTERVAL_MS) return
+  expirySweepAttemptAt = now
+  const work = sweepExpiredState(env).catch(() => {})
+  if (ctx?.waitUntil) ctx.waitUntil(work)
 }
 
 function connectionAllowsItem(connection, itemId) {
@@ -6075,6 +6242,9 @@ export default {
       // Expire abandoned fill tasks even when no executor ever polls again, so
       // their concurrency slots do not stay occupied forever.
       await stateStub(env).fetch('https://state/fill/task/expire', { method: 'POST', body: '{}' }).catch(() => {})
+      // Same unified pass as the request path; cron is disabled today but this
+      // keeps the trigger correct if a slot frees up.
+      await sweepExpiredState(env).catch(() => {})
       const state = await loadState(env)
       const origin = String(env.PUBLIC_ORIGIN || 'https://sb.otscup.com').replace(/\/$/, '')
       await dispatchReminderBatch(env, state, origin, ctx)
@@ -6084,6 +6254,10 @@ export default {
   },
   async fetch(request, env, ctx) {
     const url = new URL(request.url)
+    // Expiry must not wait for a console tab: every request (including MCP)
+    // may start the throttled pass below. Failures are swallowed so a sweep
+    // problem can never turn an otherwise valid call into a 500.
+    scheduleExpirySweep(env, ctx)
     // An exception used to escape this handler, and the platform answered with
     // a body that is not JSON. The console's api() then had no message to show,
     // so it fell back to "HTTP 500" and painted the database banner even when
