@@ -52,7 +52,9 @@ function seed(extra = {}) {
     agents: { static1: { hash: staticHash, allow: [], groups: [], allowAll: true, write: false, legacy: false, account: ACCT, createdAt: '2024-01-01' } },
     policies: {}, grants: {}, pending: {}, audit: [], settings: { notifications: {}, vaultEmail: ACCT },
     itemGroups: {}, actionGrants: {}, usePolicies: {}, capabilities: {}, itemIds: {},
-    oauthTokens: { [oauthHash]: { hash: oauthHash, agent: 'oauth:client1', clientId: 'client1', account: ACCT, createdAt: '2024-01-01', expiresAt: Date.now() + 3600e3 } },
+    oauthTokens: { [oauthHash]: { hash: oauthHash, agent: 'oauth:client1', clientId: 'client1', account: ACCT, createdAt: '2024-01-01', expiresAt: Date.now() + 3600e3, grantExpiresAt: Date.now() + 3600e3 } },
+    oauthRefreshTokens: { [oauthHash]: { hash: oauthHash, agent: 'oauth:client1', account: ACCT, createdAt: '2024-01-01', expiresAt: Date.now() + 86400e3, grantExpiresAt: Date.now() + 3600e3 } },
+    connections: { c1: { id: 'c1', agent: 'oauth:client1', account: ACCT, expiresAt: new Date(Date.now() + 3600e3).toISOString(), ttlMs: 3600e3 } },
     oauthAgentProfiles: { 'oauth:client1': { alias: '', note: '', allow: [], groups: [], allowAll: true, write: false, legacy: false } },
     ...extra,
   }
@@ -78,9 +80,15 @@ function seed(extra = {}) {
   const r = await post('/api/agents/extend', { name: 'oauth:client1', days: 7 }, { cookie })
   const st = await getState()
   const tok = Object.values(st.oauthTokens)[0]
+  const ref = Object.values(st.oauthRefreshTokens)[0]
+  const conn = Object.values(st.connections || {})[0] || {}
+  // The grant window and the admission must move with the token, otherwise
+  // refresh stops (or the connection reads expired) before the token does.
+  const connOk = Date.parse(conn.expiresAt) > before + 6 * 86400e3
   const ok = r.s === 200 && tok.expiresAt > before + 6 * 86400e3 && tok.expiresAt < before + 8 * 86400e3
-  if (ok) pass('X2 OAuth subject extended to ~7 days')
-  else fail('X2', JSON.stringify({ s: r.s, exp: tok.expiresAt, delta: (tok.expiresAt - before) / 86400e3 }))
+    && tok.grantExpiresAt > before + 6 * 86400e3 && ref.grantExpiresAt > before + 6 * 86400e3 && connOk
+  if (ok) pass('X2 OAuth subject extended to ~7 days (token + grant + admission)')
+  else fail('X2', JSON.stringify({ s: r.s, exp: tok.expiresAt, grant: tok.grantExpiresAt, refreshGrant: ref.grantExpiresAt, conn: conn.expiresAt, delta: (tok.expiresAt - before) / 86400e3 }))
 }
 // X3: permanent
 {

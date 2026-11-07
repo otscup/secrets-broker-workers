@@ -2390,7 +2390,7 @@ async function openAgentDetail(name) {
   const health = agentHealth(agent, last)
   const kind = agent.oauth ? 'OAuth Agent' : 'Token Agent'
   const scope = agent.allowAll ? '全部条目' : (agent.allow && agent.allow.length ? agent.allow.join(', ') : (agent.groups && agent.groups.length ? '分组：' + agent.groups.join(', ') : '无权限'))
-  const expiry = typeof agent.expiresAt === 'number' ? new Date(agent.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '长期有效'
+  const expiry = agentExpiryText(agent)
   const created = agent.createdAt ? new Date(agent.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-'
   // The agent's five latest events come from the full trail; the state slice
   // only holds the 20 newest rows of the whole vault.
@@ -2416,9 +2416,13 @@ async function openAgentDetail(name) {
 async function extendAgent(name, days) {
   try {
     const result = await api('/api/agents/extend', { method: 'POST', body: JSON.stringify({ name, days }) })
+    const agent = (app.data.agents || []).find((entry) => entry.name === name) || {}
     show('modal', false)
     await refreshAll()
-    toast(result.permanent ? '已设为永久' : '已延长到 ' + new Date(result.expiresAt).toLocaleString('zh-CN', { hour12: false }))
+    const scope = agent.oauth ? '（令牌 ' + (result.oauthTokens || 0) + ' · 连接 ' + (result.connections || 0) + '）' : ''
+    toast(result.permanent
+      ? (agent.oauth ? '服务端授权已设为不过期' + scope + '；OAuth 客户端令牌仍按 24 小时续期' : '已设为永久')
+      : '已延长到 ' + new Date(result.expiresAt).toLocaleString('zh-CN', { hour12: false }) + scope)
   } catch (error) {
     // Never leave an empty red banner: if the server sends no usable text,
     // fall back to the status code so the operator can tell what happened.
@@ -2431,9 +2435,17 @@ async function extendAgent(name, days) {
 function openExtendMenu(name) {
   const agent = (app.data.agents || []).find((entry) => entry.name === name)
   if (!agent) return
-  const opts = [['1', '1 天'], ['7', '7 天'], ['30', '30 天'], ['90', '90 天'], ['365', '365 天'], ['permanent', '永久']]
-  const now = typeof agent.expiresAt === 'number' ? new Date(agent.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久'
-  openModal('延长授权 · ' + name, '<div class="hint">当前到期：' + now + (agent.oauth ? '（OAuth 连接）' : '') + '</div><div class="hint" style="margin-top:6px">从<strong>现在</strong>起算，重新计时。</div><div class="row" style="margin-top:12px;flex-wrap:wrap;gap:8px">' + opts.map(([value, label]) => '<button class="small" data-extend-days="' + value + '">' + label + '</button>').join('') + '</div><div id="extend-error" class="extend-error hidden" role="alert" aria-live="assertive"></div>')
+  // No "永久" for OAuth: the server record can be made permanent, but the
+  // client still drops its 24h access token and only a grant >=7d (which mints
+  // a refresh token) lets it renew without walking the consent page again.
+  const opts = agent.oauth
+    ? [['1', '1 天'], ['7', '7 天'], ['30', '30 天'], ['90', '90 天'], ['365', '365 天']]
+    : [['1', '1 天'], ['7', '7 天'], ['30', '30 天'], ['90', '90 天'], ['365', '365 天'], ['permanent', '永久']]
+  const now = agentExpiryText(agent)
+  const hint = agent.oauth
+    ? '访问令牌固定 24 小时。延长只改服务端的令牌/授权/连接准入到期时间，不会给客户端发新令牌；能否自动续期取决于最初授权是否选了 7 天以上（那样才发 refresh token）。'
+    : ''
+  openModal('延长授权 · ' + name, '<div class="hint">当前到期：' + esc(now) + (agent.oauth ? '（OAuth 连接）' : '') + '</div><div class="hint" style="margin-top:6px">从<strong>现在</strong>起算，重新计时。</div>' + (hint ? '<div class="hint" style="margin-top:6px">' + hint + '</div>' : '') + '<div class="row" style="margin-top:12px;flex-wrap:wrap;gap:8px">' + opts.map(([value, label]) => '<button class="small" data-extend-days="' + value + '">' + label + '</button>').join('') + '</div><div id="extend-error" class="extend-error hidden" role="alert" aria-live="assertive"></div>')
   document.querySelectorAll('[data-extend-days]').forEach((button) => {
     button.onclick = () => extendAgent(name, button.dataset.extendDays === 'permanent' ? 'permanent' : Number(button.dataset.extendDays))
   })
@@ -4458,10 +4470,28 @@ function relativeTime(ms) {
   if (diff < 86400e3) return Math.floor(diff / 3600e3) + ' 小时前'
   return Math.floor(diff / 86400e3) + ' 天前'
 }
+// OAuth subjects have two clocks: the access token (24h by design) and the
+// consent grant. Showing only the former as "长期有效" was the misleading
+// part, so the detail spells out both and whether the client can renew itself.
+function agentExpiryText(agent) {
+  if (!agent.oauth) {
+    return typeof agent.expiresAt === 'number' ? new Date(agent.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '长期有效'
+  }
+  const token = typeof agent.expiresAt === 'number'
+    ? '当前令牌 ' + new Date(agent.expiresAt).toLocaleString('zh-CN', { hour12: false })
+    : '服务端令牌未设到期'
+  const grant = typeof agent.grantExpiresAt === 'number' && agent.grantExpiresAt < 8.64e15
+    ? ' · 授权窗口 ' + new Date(agent.grantExpiresAt).toLocaleString('zh-CN', { hour12: false })
+    : ' · 授权窗口 不过期'
+  return token + grant + (agent.hasRefresh ? ' · 可自动续期' : ' · 无 refresh token，到期需重新授权')
+}
 // Health is a UI hint only: authorization still decides access.
 function agentHealth(agent, lastActivity) {
   if (typeof agent.expiresAt === 'number' && agent.expiresAt <= Date.now()) {
     return { level: 'danger', label: '已过期', detail: '授权已过期，需重新延长' }
+  }
+  if (agent.oauth && typeof agent.expiresAt !== 'number' && !agent.hasRefresh) {
+    return { level: 'warn', label: '待续期', detail: '服务端不过期，客户端 OAuth 令牌 24 小时' }
   }
   if (typeof agent.expiresAt === 'number' && agent.expiresAt - Date.now() < 3 * 86400e3) {
     return { level: 'warn', label: '即将到期', detail: expiryLabel(agent.expiresAt) + '后到期' }
@@ -4550,7 +4580,9 @@ function renderAgents() {
     const health = agentHealth(agent, last)
     const kind = agent.oauth ? 'OAuth' : 'Token'
     const dotClass = health.level === 'ok' ? 'ok' : (health.level === 'warn' ? 'warn' : 'bad')
-    const days = typeof agent.expiresAt === 'number' ? Math.max(0, Math.ceil((agent.expiresAt - Date.now()) / 86400e3)) + ' 天后到期' : '长期有效'
+    const days = agent.oauth
+      ? (typeof agent.expiresAt === 'number' ? Math.max(0, Math.ceil((agent.expiresAt - Date.now()) / 86400e3)) + ' 天后令牌到期' : '服务端不过期 · 客户端令牌 24 小时需续期')
+      : (typeof agent.expiresAt === 'number' ? Math.max(0, Math.ceil((agent.expiresAt - Date.now()) / 86400e3)) + ' 天后到期' : '长期有效')
     return '<div class="ios-row" data-agent-open="' + esc(agent.name) + '">' +
       '<span class="ios-ico" data-kind="' + (agent.oauth ? 'oauth' : 'api') + '">' + IOS_PERSON + '</span>' +
       '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(agentDisplayName(agent)) + '</span>' +
@@ -4698,6 +4730,7 @@ function connectionApprovalHtml(entry) {
     + '<div class="conn-meta">默认关闭；开启后，批准范围内的写入不再逐次询问。</div>'
     + '<label class="field" for="conn-ttl-' + id + '">授权时长</label><select id="conn-ttl-' + id + '" data-conn-duration aria-label="授权时长">'
     + '<option value="1h">1 小时</option><option value="24h">24 小时</option><option value="7d">7 天</option><option value="30d">30 天</option><option value="always">永久（直到撤销）</option></select>'
+    + '<div class="conn-hint">「永久」只作用于这台机器的连接准入；Agent 自身的令牌/授权到期后仍需要重新授权。</div>'
     + '<div class="conn-hint" data-conn-status role="status" aria-live="polite">' + (locked ? '批准需要先解锁 Vault；拒绝不需要。 <button type="button" class="small" data-conn-unlock>先解锁并回到审批</button>' : '') + '</div>'
     + '<div class="conn-actions"><button type="button" class="primary" data-conn-approve="' + id + '" aria-label="批准连接：' + esc(entry.agent || '') + '">批准</button>'
     + '<button type="button" class="danger" data-conn-deny="' + id + '" aria-label="拒绝连接：' + esc(entry.agent || '') + '">拒绝</button></div>'

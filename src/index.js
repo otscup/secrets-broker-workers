@@ -3343,7 +3343,22 @@ function publicState(state, options = {}) {
     if (token.expiresAt && token.expiresAt <= now) continue
     seen.add(token.agent)
     const profile = state.oauthAgentProfiles?.[token.agent] ?? {}
-    agents.push({ name: token.agent, alias: profile.alias ?? '', note: profile.note ?? '', allow: profile.allow ?? [], groups: profile.groups ?? [], allowAll: profile.allowAll === true, write: profile.write === true, tools: Array.isArray(profile.tools) ? profile.tools : null, account: token.account ?? '', oauth: true, createdAt: token.createdAt ?? '', expiresAt: typeof token.expiresAt === 'number' ? token.expiresAt : null })
+    // Two clocks, not one: the access token expires at 24h by design while the
+    // consent grant may run longer. Reporting only expiresAt made an extended
+    // token look permanent ("长期有效") even though the client itself drops the
+    // token at 24h unless it holds a refresh token. hasRefresh is the honest
+    // answer to "will this reconnect on its own".
+    const grantExpiresAt = Number(token.grantExpiresAt)
+    const hasRefresh = Object.values(state.oauthRefreshTokens ?? {}).some((record) => record?.agent === token.agent && Number(record.expiresAt ?? 0) > now)
+    agents.push({
+      name: token.agent, alias: profile.alias ?? '', note: profile.note ?? '',
+      allow: profile.allow ?? [], groups: profile.groups ?? [], allowAll: profile.allowAll === true,
+      write: profile.write === true, tools: Array.isArray(profile.tools) ? profile.tools : null,
+      account: token.account ?? '', oauth: true, createdAt: token.createdAt ?? '',
+      expiresAt: typeof token.expiresAt === 'number' ? token.expiresAt : null,
+      grantExpiresAt: Number.isFinite(grantExpiresAt) && grantExpiresAt > 0 ? grantExpiresAt : null,
+      hasRefresh,
+    })
   }
   const view = {
     agents,
@@ -5926,8 +5941,13 @@ function oauthConsentPage(origin, params, client, catalog = { items: [], groups:
     // plaintext door for a month. The operator opts in and picks the window.
     '<label class="row"><input type="checkbox" name="grant_plaintext" value="1"><span>同时允许读取明文值</span></label>' +
     writeRow +
+    // 7 days is the default because a 24h grant cannot issue a refresh token
+    // (refresh is only minted when the grant outlives the 24h access token), so
+    // the client had to walk this page again every day. The operator still sees
+    // and can change the window.
     '<label class="row"><span class="row__label">授权有效期</span>' +
-    '<select name="grant_hours"><option value="1">1 小时</option><option value="24" selected>24 小时</option><option value="168">7 天</option><option value="720">30 天</option></select></label>' +
+    '<select name="grant_hours"><option value="1">1 小时</option><option value="24">24 小时</option><option value="168" selected>7 天</option><option value="720">30 天</option></select></label>' +
+    '<p class="hint">访问令牌固定 24 小时到期。选 7 天或 30 天才会同时发放 refresh token，客户端可以自动续期；选 1 天/24 小时不会发放 refresh token，到期后客户端需要重新授权。</p>' +
     '</div>' +
     '<p class="hint">不勾选明文时，Agent 只能看到条目名称并提交审批申请，读不到值。web 类型的网站登录无论是否勾选都不会给明文。写入同样只在勾选后生效，且仅限上面选中的条目。</p>' +
     '<div class="btn-row"><button class="primary" name="decision" value="allow">允许</button><button class="secondary" name="decision" value="deny">拒绝</button></div></form></div></body></html>'
@@ -8275,26 +8295,58 @@ export default {
       }
       let found = false
       let extendedTokens = 0
+      let extendedRefresh = 0
+      let extendedConnections = 0
+      // The OAuth grant window is a separate number from the access token's
+      // expiresAt. Extending only expiresAt used to leave grantExpiresAt at the
+      // original 24h, so a client holding a refresh token still lost its
+      // authorisation at that moment and re-ran consent. A permanent extension
+      // uses MAX_SAFE_INTEGER because the refresh path compares the field
+      // numerically and treats 0 as already expired.
+      const grantBound = expiresAt === null ? Number.MAX_SAFE_INTEGER : expiresAt
+      const accountKey = String(account ?? '').toLowerCase()
       await updateState(env, (state) => {
         const agent = state.agents?.[name]
         if (agent) {
-          if (agent.account && String(agent.account).toLowerCase() !== account) return state
+          if (agent.account && String(agent.account).toLowerCase() !== accountKey) return state
           agent.expiresAt = expiresAt === null ? null : expiresAt
           found = true
         }
         // OAuth subjects keep their window on the token records.
         for (const token of Object.values(state.oauthTokens ?? {})) {
           if (token.agent !== name) continue
-          if (token.account && String(token.account).toLowerCase() !== account) continue
+          if (token.account && String(token.account).toLowerCase() !== accountKey) continue
           token.expiresAt = expiresAt
+          token.grantExpiresAt = grantBound
           extendedTokens += 1
           found = true
+        }
+        for (const record of Object.values(state.oauthRefreshTokens ?? {})) {
+          if (record?.agent !== name) continue
+          if (record.account && String(record.account).toLowerCase() !== accountKey) continue
+          record.grantExpiresAt = grantBound
+          extendedRefresh += 1
+        }
+        // The admission is checked before the token, so a token extended past
+        // its admission still answered "connection expired". Extend the live
+        // admission too; a permanent (expiresAt null) one is left as it is.
+        for (const record of Object.values(state.connections ?? {})) {
+          if (record?.agent !== name) continue
+          if (record.account && String(record.account).toLowerCase() !== accountKey) continue
+          if (record.expiresAt == null) continue
+          record.expiresAt = expiresAt === null ? null : new Date(expiresAt).toISOString()
+          record.ttlMs = expiresAt === null ? null : Math.max(0, Number(expiresAt) - Date.now())
+          extendedConnections += 1
         }
         return state
       })
       if (!found) return fail('agent not found', 404)
-      await addAudit(env, { event: 'agent.extend', agent: name, expiresAt, days: raw === 'permanent' ? 'permanent' : Number(raw), tokens: extendedTokens })
-      return json({ ok: true, name, expiresAt, permanent: expiresAt === null, oauthTokens: extendedTokens })
+      await addAudit(env, {
+        event: 'agent.extend', agent: name,
+        expiresAt, days: raw === 'permanent' ? 'permanent' : Number(raw),
+        tokens: extendedTokens, refreshTokens: extendedRefresh, connections: extendedConnections,
+      })
+      return json({ ok: true, name, expiresAt, permanent: expiresAt === null, oauthTokens: extendedTokens, refreshTokens: extendedRefresh, connections: extendedConnections })
     }
     if (url.pathname === '/api/agents/token' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
@@ -9604,7 +9656,10 @@ export default {
           next.oauthCodes[code] = { clientId, redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', scope: effectiveScope, account, createdAt: nowIso(), expiresAt: Date.now() + 5 * 60 * 1000, grantItems, grantGroups, grantAll, grantPlaintext, grantWrite, grantHours }
           return next
         })
-        await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId, items: grantItems.length, groups: grantGroups.length, all: grantAll, plaintext: grantPlaintext, write: grantWrite, scope: effectiveScope, hours: grantPlaintext ? grantHours : 0, source: 'console' })
+        // hours is the consent grant, not the plaintext window. Recording it only
+        // when plaintext was ticked made every audit row read "hours:0" and hid
+        // why a client had to re-connect the next day.
+        await addAudit(env, { event: 'oauth.authorize', clientId, agent: 'oauth:' + clientId, items: grantItems.length, groups: grantGroups.length, all: grantAll, plaintext: grantPlaintext, write: grantWrite, scope: effectiveScope, hours: grantHours, refresh: grantHours * 3600e3 > 24 * 3600e3, source: 'console' })
         const target = new URL(redirectUri); target.searchParams.set('code', code); if (params.get('state')) target.searchParams.set('state', params.get('state'))
         return Response.redirect(target.toString(), 302)
       }

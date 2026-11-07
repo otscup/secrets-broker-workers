@@ -214,8 +214,10 @@ const toolPayload = (raw) => JSON.parse(JSON.parse(raw).result.content[0].text)
   }).toString(), { headers: { cookie } })
   const html = await res.text()
   const unchecked = /name="grant_plaintext" value="1">/.test(html) || !/<input[^>]*name="grant_plaintext"[^>]*checked/.test(html)
-  const hasHours = html.includes('name="grant_hours"') && html.includes('value="24" selected')
-  if (res.status === 200 && unchecked && hasHours) pass('N4 plaintext is opt-in and defaults to 24 hours')
+  // 7 days is the default so a refresh token is actually issued (the 24h
+  // access token alone left every client re-consenting daily).
+  const hasHours = html.includes('name="grant_hours"') && html.includes('value="168" selected')
+  if (res.status === 200 && unchecked && hasHours) pass('N4 plaintext is opt-in and defaults to a 7-day grant')
   else fail('N4', JSON.stringify({ status: res.status, unchecked, hasHours }))
 }
 
