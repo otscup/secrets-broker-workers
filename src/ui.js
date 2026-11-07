@@ -2775,9 +2775,7 @@ async function enableWebPush(options = {}) {
       applicationServerKey: b64urlBytes(publicKey),
     })
     await api('/api/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: subscription.toJSON() }) })
-    app.pushSubscriptions = Math.max(1, app.pushSubscriptions || 0)
-    app.pushLastAttempt = null
-    setWebPushStatus()
+    await refreshPushState()
     if (options.fromBar) toast('后台推送已开启：关闭页面也能收到审批请求')
     return true
   } catch (error) {
