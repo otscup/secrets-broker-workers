@@ -1046,7 +1046,7 @@ nav{grid-area:tabs}
     </div>
   </section>
 
-  <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">这里显示同步到本服务器的密钥条目。点开可查看明文、调整免审批或分享给 Agent；勾选多条可批量处理。</div><div class="row" style="margin-top:10px"><input id="item-filter" aria-label="搜索条目" placeholder="搜索名称、分组或网址…"><select id="item-sort" aria-label="排序方式" title="排序方式" style="flex:0 0 auto"><option value="name">按名称</option><option value="activity">按最近活动</option><option value="access">按授权数</option><option value="expiry">按到期时间</option></select><button id="item-density" aria-pressed="false" title="列表行距：在舒适与紧凑之间切换">行距：舒适</button><button id="items-refresh">刷新</button><button id="items-select">选择</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><span id="bulk-progress" class="hint" role="status" aria-live="polite" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
+  <section id="view-items" class="view hidden"><div class="card"><h2>密钥条目</h2><div class="hint">这里显示同步到本服务器的密钥条目。点开可查看明文、调整免审批或分享给 Agent；勾选多条可批量处理。</div><div class="row" style="margin-top:10px"><input id="item-filter" aria-label="搜索条目" placeholder="搜索名称、分组或网址…"><select id="item-sort" aria-label="排序方式" title="排序方式" style="flex:0 0 auto"><option value="activity">按最近活动</option><option value="name">按名称</option><option value="access">按授权数</option><option value="expiry">按到期时间</option></select><button id="item-density" aria-pressed="false" title="列表行距：在舒适与紧凑之间切换">行距：舒适</button><button id="items-refresh">刷新</button><button id="items-select">选择</button><button id="item-create">新增</button><button id="item-import">导入</button><button id="item-export">导出</button><input id="import-file" type="file" accept="application/json,.json" class="hidden"></div><div id="bulk-bar" class="row hidden" style="margin-top:8px;background:var(--btn);padding:8px;border-radius:10px"><span id="bulk-count" class="hint" style="flex:0 0 auto"></span><span id="bulk-progress" class="hint" role="status" aria-live="polite" style="flex:0 0 auto"></span><button id="bulk-share" class="primary">批量分享</button><button id="bulk-kind" title="把选中的凭据标记为 API Key 或网站登录">批量分类</button><button class="danger" id="bulk-delete">批量删除</button><button id="bulk-clear">清除选择</button></div><div id="items-box" class="table-wrap" style="margin-top:10px"></div><div id="item-status" class="status"></div></div>
     <div class="card" id="card-vault2"><div class="row" style="justify-content:space-between;align-items:center"><div><h2 style="margin:0">Vault 2.0</h2><div class="hint" style="margin-top:4px">零知识库放在独立数据库里，和上面这一列密文库互不影响。解锁后这里能读出条目名称，锁上就只剩状态。</div></div><span id="v2-badge" class="kind-tag kind-none" style="flex:0 0 auto">读取中…</span></div><div id="v2-status" class="hint" style="margin-top:10px"></div><div class="row" id="v2-unlock-row" style="margin-top:10px"><input id="v2-password" type="password" placeholder="Vault 2.0 主密码（至少 12 位）"><button id="v2-unlock" class="primary">解锁</button><button id="v2-lock">锁定</button></div><div class="hint" style="margin-top:8px">已配对的电脑、在线状态和撤销按钮都在「电脑」标签页。</div><div class="hint" style="margin-top:6px">风险：解锁时间越长，被盗会话能读的窗口越长。「长期」不会让服务端长期持有钥匙，但本机浏览器会保存解封材料；只有撤销这台设备才会真正失效。</div><details id="v2-advanced" class="v2-advanced hidden"><summary>高级 / 迁移工具</summary><div class="row" style="margin-top:10px"><input id="v2-legacy-password" type="password" placeholder="旧主密码（仅导入用）" autocomplete="off"><button id="v2-import">从旧库导入</button></div><div id="v2-box" class="table-wrap scroll-list hidden" style="margin-top:10px"></div></details><div id="v2-msg" class="status"></div></div>
 <div class="card hidden" id="card-fill-policies" aria-hidden="true"><h2>已分类的凭据</h2><div class="hint">点列表里的 ⋮ 打开条目即可逐个设置，或勾选多个后点「批量分类」。标为 <b>api</b>（API Key）可按需允许 Agent 读取明文；标为 <b>web</b>（网站登录）只能被填充到指定网站，Agent 永远拿不到明文。未分类的凭据默认为拒绝读取。</div><div class="hint" id="fp-exec-note" style="margin-top:6px"></div><div id="fp-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     <div class="card" id="card-denied"><h2>被拦下的请求</h2><div class="hint">Agent 试图读取但没通过权限检查的条目。这里只是记录，没有放行任何东西；点「授权」才会真正放开。</div><div id="denied-list" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
@@ -1069,9 +1069,8 @@ nav{grid-area:tabs}
           <option value="token">Token</option>
         </select>
         <select id="agent-sort" style="flex:0 0 auto">
-          <option value="default">默认排序</option>
+          <option value="activity">最近活跃</option>
           <option value="expiry">按到期时间</option>
-          <option value="activity">按最近活动</option>
           <option value="name">按名称</option>
           <option value="rights">按可读条数</option>
         </select>
@@ -2000,7 +1999,7 @@ $('global-search-results').addEventListener('click', (event) => {
   const view = row.dataset.goto
   const tab = document.querySelector('#nav [data-view=' + view + ']')
   if (tab) tab.click()
-  if ($('item-sort')) $('item-sort').value = localStorage.getItem('sb-item-sort') || 'name'
+  if ($('item-sort')) $('item-sort').value = localStorage.getItem('sb-item-sort') || 'activity'
   if (view === 'items') { const filter = $('item-filter'); if (filter) { filter.value = row.dataset.name || ''; renderItems() } }
   if (view === 'agents') openAgentDetail(row.dataset.name)
 })
@@ -3853,7 +3852,7 @@ function renderItems() {
   // Sorting is a view of the same list: by name, by the last time anything was
   // read, or by how many Agents hold a grant for it (the "who can touch this"
   // question that used to need opening every credential).
-  const sortBy = String(($('item-sort') && $('item-sort').value) || localStorage.getItem('sb-item-sort') || 'name')
+  const sortBy = String(($('item-sort') && $('item-sort').value) || localStorage.getItem('sb-item-sort') || 'activity')
   const rights = readRightsByItem()
   const rightsOf = (item) => (rights.get(item.name) || new Set()).size
   const activityOf = (item) => { const at = Date.parse(item.lastActivityAt || ''); return Number.isNaN(at) ? 0 : at }
@@ -4754,7 +4753,7 @@ function renderAgents() {
   renderAgentStats(all)
   const query = String(($('agent-search') && $('agent-search').value) || '').trim().toLowerCase()
   const typeFilter = String(($('agent-type-filter') && $('agent-type-filter').value) || '')
-  const sortBy = String(($('agent-sort') && $('agent-sort').value) || 'default')
+  const sortBy = String(($('agent-sort') && $('agent-sort').value) || 'activity')
   let agents = all.filter((agent) => {
     if (typeFilter === 'oauth' && !agent.oauth) return false
     if (typeFilter === 'token' && agent.oauth) return false
@@ -4767,8 +4766,10 @@ function renderAgents() {
       const be = typeof b.expiresAt === 'number' ? b.expiresAt : Infinity
       return ae - be
     })
-  } else if (sortBy === 'activity') {
-    agents = agents.slice().sort((a, b) => lastActivityFor(b.name) - lastActivityFor(a.name))
+  } else if (sortBy === 'activity' || sortBy === 'default') {
+    // Most recent activity first; ties fall back to the name so a re-render
+    // never reshuffles rows that share the same timestamp (or have none).
+    agents = agents.slice().sort((a, b) => lastActivityFor(b.name) - lastActivityFor(a.name) || String(a.name).localeCompare(String(b.name)))
   } else if (sortBy === 'name') {
     agents = agents.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))
   } else if (sortBy === 'rights') {
@@ -5424,7 +5425,28 @@ function syncGrantsBulk() {
   if ($('grants-select')) $('grants-select').textContent = grantsSelecting ? '完成' : '选择'
 }
 function renderGrants() {
-  const grants = app.data.grants || []  // Legacy grants with no recorded identity binding are repaired here, in the
+  const grants = (app.data.grants || []).slice()
+  // Most recently used or most recently approved first; whichever is later
+  // wins. Last use comes from the audit rows this page already holds, so this
+  // adds no request and no poll. A tie (or no record at all) falls back to the
+  // name and then the agent so a re-render cannot reshuffle rows.
+  const lastUseByGrant = new Map()
+  const grantKeyOf = (agent, name) => String(agent ?? '') + '\u0000' + String(name ?? '')
+  for (const entry of ((app.data && app.data.audit) || []).concat(app.recentAudit || [])) {
+    if (!/^secret\.(read|view|write|use)/.test(String(entry.event || ''))) continue
+    const name = entry.name || entry.itemName || ''
+    if (!name) continue
+    const at = Date.parse(entry.time || '')
+    if (!Number.isFinite(at)) continue
+    const key = grantKeyOf(entry.agent || '', name)
+    if (at > (lastUseByGrant.get(key) || 0)) lastUseByGrant.set(key, at)
+  }
+  grants.sort((a, b) => {
+    const aAt = Math.max(lastUseByGrant.get(grantKeyOf(a.agent, a.name)) || 0, Date.parse(a.createdAt || '') || 0)
+    const bAt = Math.max(lastUseByGrant.get(grantKeyOf(b.agent, b.name)) || 0, Date.parse(b.createdAt || '') || 0)
+    return bAt - aAt || String(a.name).localeCompare(String(b.name)) || String(a.agent).localeCompare(String(b.agent))
+  })
+  // Legacy grants with no recorded identity binding are repaired here, in the
   // same table: there is no separate screen for them. They cannot be migrated
   // automatically because the name may now denote a different credential, so
   // they are marked and the operator re-grants or deletes them in place.

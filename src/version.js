@@ -9,4 +9,4 @@
 //
 //   npm run sync:version
 export const NAME = "secrets-broker-workers"
-export const VERSION = "0.9.0"
+export const VERSION = "0.9.1"
