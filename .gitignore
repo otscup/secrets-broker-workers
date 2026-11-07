@@ -37,6 +37,7 @@ test-*.mjs
 !test-overview-stats.mjs
 !test-secret-read-by-id.mjs
 !test-v2-unlock-persist.mjs
+!test-session-totp.mjs
 !test-vault2-claim.mjs
 !test-version-endpoint.mjs
 !test-api-error-boundary.mjs
