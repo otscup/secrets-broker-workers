@@ -1938,6 +1938,38 @@ async function recordSessionFactor(env, session, expiresAt) {
   } catch { return 0 }
 }
 
+// An approval is a human decision made in this browser session, so it counts as
+// the second factor for everything that approval authorised. The pass is capped
+// at 30 days unless the vault is in the explicit permanent tier, in which case
+// only an operator lock ends it. A request without a v2 cookie (Telegram, plugin
+// relay, notification link opened in a fresh browser) has no session to stamp.
+async function approvalSessionPass(env, request, { ttlMs = null, grantId = '' } = {}) {
+  if (!request) return 0
+  const session = cookieSessionId(request)
+  if (!session) return 0
+  try {
+    const state = await loadState(env)
+    const account = resolveVaultAccount(state, null, env)
+    // The approval may happen in a different browser from the one that unlocked
+    // (that is the whole point of a remote link), so only the account-wide slot
+    // can answer "is this vault still unlocked?". A session-scoped lookup would
+    // miss the slot the other device wrote and silently skip the pass.
+    const query = '?account=' + encodeURIComponent(account) + '&session='
+    const key = await stateStub(env).fetch('https://state/v2-key' + query).then((response) => response.json()).catch(() => null)
+    if (key?.ok !== true) return 0
+    const permanent = key.expiresAt === null
+    const fromGrant = ttlMs === null ? Number.MAX_SAFE_INTEGER : Date.now() + Math.max(0, Number(ttlMs) || 0)
+    const capped = Math.min(Number.MAX_SAFE_INTEGER, Math.max(Number(key.expiresAt) || 0, fromGrant, Date.now() + 60_000))
+    const until = permanent ? Number.MAX_SAFE_INTEGER : Math.min(capped, Date.now() + 30 * 86400e3)
+    await recordSessionFactor(env, session, until)
+    await addAudit(env, {
+      event: 'session.factor', agent: 'admin', reason: 'approval',
+      ttlMs: permanent ? 'permanent' : Math.max(0, until - Date.now()), grantId,
+    })
+    return until
+  } catch { return 0 }
+}
+
 // Records the pass against the live unlock, not a fixed TTL. Locking, logging
 // out, or unlocking again ends it; an eviction does not, because the DO keeps a
 // wrapped-storage copy. Returns the expiry it recorded (0 when it could not).
@@ -2724,7 +2756,7 @@ function connectionGrantFromPayload(payload = {}) {
 // One admission decision, shared by the console route and the plugin relay so
 // the two cannot drift on scope, plaintext, TTL or the vault gate. Returns the
 // status and body; each caller wraps it in its own envelope.
-async function decideConnectionRequest(env, { id, decision, payload = {}, via = 'web' }) {
+async function decideConnectionRequest(env, { id, decision, payload = {}, via = 'web', request = null }) {
   const cleanId = String(id ?? '').trim()
   const cleanDecision = String(decision ?? '').trim()
   if (!cleanId) return { status: 400, body: { ok: false, reasonCode: 'connection-id-required', error: 'id required' } }
@@ -2758,7 +2790,21 @@ async function decideConnectionRequest(env, { id, decision, payload = {}, via = 
     return { status: 200, body: { ok: true, connection: connectionRecordView(await loadState(env), denied) } }
   }
   const { account, unlocked } = await consoleVault(env)
-  if (!unlocked) return { status: 423, body: { error: 'locked' } }
+  // A lock is not a dead end and must never read as "Vault 已锁定": the
+  // operator can unlock (permanently if they want approvals to never ask
+  // again), then come back. The message names the action instead of the state.
+  if (!unlocked) {
+    return {
+      status: 428,
+      body: {
+        ok: false,
+        code: 'vault-not-unlocked',
+        reasonCode: 'vault-not-unlocked',
+        error: '需要先解锁这个账号：请在受信设备上用主密码解锁一次，解锁时可选「保持解锁」，之后审批与读写都不再要求验证码。',
+        next_step: '打开控制台 → 解锁 Vault → 回到本条连接申请再批准',
+      },
+    }
+  }
   if (existing.account && account && String(existing.account).toLowerCase() !== String(account).toLowerCase()) {
     return { status: 409, body: { ok: false, reasonCode: 'connection-account-mismatch', error: 'connection belongs to another vault account' } }
   }
@@ -2797,6 +2843,10 @@ async function decideConnectionRequest(env, { id, decision, payload = {}, via = 
     all, itemIds: approved.scope.itemIds, itemCount: approved.scope.itemIds.length,
     plaintextAllowed, writeAllowed, grantedReads, grantedWrites, ttlMs, expiresAt: approved.expiresAt, via,
   })
+  // The approval itself is the human presence proof: the same browser session
+  // does not have to type a TOTP code again for the reads, writes, plaintext or
+  // exports this grant just authorised.
+  await approvalSessionPass(env, request, { ttlMs, grantId: cleanId })
   return { status: 200, body: { ok: true, connection: connectionRecordView(await loadState(env), approved) } }
 }
 
@@ -3961,7 +4011,7 @@ function materializeTarget(state, raw) {
   return hit ? { path: normalized, key } : null
 }
 
-async function decidePending(env, id, decision, source = 'web') {
+async function decidePending(env, id, decision, source = 'web', request = null) {
   let outcome = null
   // Captured separately from `outcome`: a denial outcome does not carry the
   // action, and the result record must still match the request it answers.
@@ -4179,6 +4229,16 @@ async function decidePending(env, id, decision, source = 'web') {
     return next
   })
   await addAudit(env, { event: outcome.denied ? 'request.deny' : 'request.approve', ...outcome, source })
+  if (!outcome.denied) {
+    // The approval is the presence proof for this browser session. Its window
+    // follows the duration the operator chose; `once` stays a short pass.
+    const ttlMs = decision === 'always' ? null
+      : decision === '7d' ? 7 * 86400e3
+        : decision === '24h' ? 86400e3
+          : decision === '1h' ? 3600e3
+            : 10 * 60 * 1000
+    await approvalSessionPass(env, request, { ttlMs, grantId: id })
+  }
   return outcome
 }
 
@@ -4313,7 +4373,7 @@ async function handleTelegramMessage(env, message, telegram) {
     if (verb === 'approve' && !['once', '1h', '24h', '7d', 'always'].includes(decision)) {
       return reply('时长只能是 once / 1h / 24h / 7d / always。')
     }
-    const outcome = await decidePending(env, entry.id, decision, 'telegram')
+    const outcome = await decidePending(env, entry.id, decision, 'telegram', request)
     if (!outcome) return reply('这个请求已经处理过了。')
     if (outcome.denied) return reply('已拒绝：' + outcome.agent + ' → ' + outcome.name)
     if (outcome.error) return reply('没能批准：' + outcome.error)
@@ -6865,10 +6925,10 @@ export default {
           else if (!body.duration && ['1h', '24h', '7d', '30d', 'always'].includes(body.decision)) payload.duration = body.decision
           payload.plaintextAllowed = body.plaintextAllowed === true
         }
-        const result = await decideConnectionRequest(env, { id: connectionId, decision, payload, via: 'dsh-plugin' })
+        const result = await decideConnectionRequest(env, { id: connectionId, decision, payload, via: 'dsh-plugin', request })
         return json(result.body, result.status)
       }
-      const outcome = await decidePending(env, String(body.id), String(body.decision ?? 'once'), 'dsh-plugin')
+      const outcome = await decidePending(env, String(body.id), String(body.decision ?? 'once'), 'dsh-plugin', request)
       return json({ ok: true, outcome })
     }
     // Lazily loaded 3D globe island. Served as a static asset so it never
@@ -8796,7 +8856,7 @@ export default {
     if (url.pathname === '/api/pending/decide' && request.method === 'POST') {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const body = await request.json().catch(() => ({}))
-      const outcome = await decidePending(env, String(body.id ?? ''), String(body.decision ?? ''), 'web')
+      const outcome = await decidePending(env, String(body.id ?? ''), String(body.decision ?? ''), 'web', request)
       if (!outcome) return fail('pending request not found', 404)
       return json({ ok: true, outcome })
     }
@@ -8814,7 +8874,7 @@ export default {
       if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
       const body = await request.json().catch(() => ({}))
       const result = await decideConnectionRequest(env, {
-        id: body.id, decision: body.decision, payload: body, via: 'web',
+        id: body.id, decision: body.decision, payload: body, via: 'web', request,
       })
       return json(result.body, result.status)
     }
