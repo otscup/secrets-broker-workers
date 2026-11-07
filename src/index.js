@@ -59,7 +59,7 @@ const AUDIT_EVENT_GROUPS = {
   login: ['admin.login', 'admin.login-fail', 'admin.oidc-login', 'admin.origin-mismatch', 'vault.unlock', 'vault.lock', 'vault.oidc-unlock'],
   item: ['item.create', 'item.update', 'item.delete', 'item.rotate', 'item.rotate.restore', 'item.rotate.purge', 'item.expiry.update', 'fill-policy.update', 'use-policy.update', 'plaintext-read-policy.update'],
   oauth: ['oauth.*', 'fill.*'],
-  connection: ['connection.request', 'connection.approve', 'connection.deny', 'connection.expire', 'connection.access-deny'],
+  connection: ['connection.request', 'connection.approve', 'connection.deny', 'connection.expire', 'connection.access-deny', 'connection.update', 'connection.revoke'],
   risk: AUDIT_RED_EVENTS,
 }
 function auditEventMatches(kinds, event) {
@@ -2636,6 +2636,53 @@ function connectionView(state, { masked = false, limit = 20 } = {}) {
   return { pending, recent: recent.slice(0, limit), count: pending.length }
 }
 
+// The live approval for one agent (optionally one specific record). Only an
+// approved record inside its window speaks for a connection; an expired, denied
+// or revoked row is history.
+function findLiveAdmission(state, { agent, account, id = '' } = {}, now = Date.now()) {
+  const key = String(account ?? '').trim().toLowerCase()
+  const matches = (record) => Boolean(record)
+    && record.agent === String(agent ?? '')
+    && record.state === 'approved'
+    && connectionLive(record, now)
+    && (!key || String(record.account ?? '').trim().toLowerCase() === key)
+  if (id) {
+    const record = state.connections?.[id] ?? null
+    return matches(record) ? record : null
+  }
+  return Object.values(state.connections ?? {})
+    .filter(matches)
+    .sort((a, b) => String(b.decidedAt || b.createdAt).localeCompare(String(a.decidedAt || a.createdAt)))[0] ?? null
+}
+
+// What an approval grants. The first decision and later edits share this
+// parser so validation cannot drift between them.
+function connectionGrantFromPayload(payload = {}) {
+  const all = payload.all === true
+  const itemIds = (Array.isArray(payload.itemIds) ? payload.itemIds : [])
+    .map((value) => String(value ?? '').trim())
+    .filter((value) => value.length > 0 && value.length <= 128)
+  if (!all && itemIds.length === 0) return { error: 'approve needs itemIds or all:true', reasonCode: 'connection-scope-empty' }
+  // Fail closed: only an explicit true may expose values.
+  const plaintextAllowed = payload.plaintextAllowed === true
+  // ttlMs is the precise form; duration is the friendly one. "always" is
+  // the only way to make an admission permanent, so it must be explicit.
+  let ttlMs = null
+  if (Object.prototype.hasOwnProperty.call(payload, 'ttlMs')) {
+    ttlMs = payload.ttlMs === null ? null : Number(payload.ttlMs)
+  } else if (typeof payload.duration === 'string' && payload.duration) {
+    if (payload.duration === 'always') ttlMs = null
+    else if (Object.prototype.hasOwnProperty.call(CONNECTION_TTL_PRESETS, payload.duration)) ttlMs = CONNECTION_TTL_PRESETS[payload.duration]
+    else ttlMs = NaN
+  } else {
+    ttlMs = CONNECTION_TTL_PRESETS['24h']
+  }
+  if (ttlMs !== null && (!Number.isFinite(ttlMs) || ttlMs < 60_000 || ttlMs > CONNECTION_MAX_TTL_MS)) {
+    return { error: 'ttlMs must be 60000..2592000000, or duration 1h/24h/7d/30d/always', reasonCode: 'connection-ttl-invalid' }
+  }
+  return { all, itemIds: all ? [] : [...new Set(itemIds)], plaintextAllowed, writeAllowed: payload.writeAllowed === true, ttlMs }
+}
+
 // One admission decision, shared by the console route and the plugin relay so
 // the two cannot drift on scope, plaintext, TTL or the vault gate. Returns the
 // status and body; each caller wraps it in its own envelope.
@@ -2677,34 +2724,14 @@ async function decideConnectionRequest(env, { id, decision, payload = {}, via = 
   if (existing.account && account && String(existing.account).toLowerCase() !== String(account).toLowerCase()) {
     return { status: 409, body: { ok: false, reasonCode: 'connection-account-mismatch', error: 'connection belongs to another vault account' } }
   }
-  const all = payload.all === true
-  const itemIds = (Array.isArray(payload.itemIds) ? payload.itemIds : [])
-    .map((value) => String(value ?? '').trim())
-    .filter((value) => value.length > 0 && value.length <= 128)
-  if (!all && itemIds.length === 0) return { status: 400, body: { ok: false, reasonCode: 'connection-scope-empty', error: 'approve needs itemIds or all:true' } }
-  // Fail closed: only an explicit true may expose values.
-  const plaintextAllowed = payload.plaintextAllowed === true
-  // ttlMs is the precise form; duration is the friendly one. "always" is
-  // the only way to make an admission permanent, so it must be explicit.
-  let ttlMs = null
-  if (Object.prototype.hasOwnProperty.call(payload, 'ttlMs')) {
-    ttlMs = payload.ttlMs === null ? null : Number(payload.ttlMs)
-  } else if (typeof payload.duration === 'string' && payload.duration) {
-    if (payload.duration === 'always') ttlMs = null
-    else if (Object.prototype.hasOwnProperty.call(CONNECTION_TTL_PRESETS, payload.duration)) ttlMs = CONNECTION_TTL_PRESETS[payload.duration]
-    else ttlMs = NaN
-  } else {
-    ttlMs = CONNECTION_TTL_PRESETS['24h']
-  }
-  if (ttlMs !== null && (!Number.isFinite(ttlMs) || ttlMs < 60_000 || ttlMs > CONNECTION_MAX_TTL_MS)) {
-    return { status: 400, body: { ok: false, reasonCode: 'connection-ttl-invalid', error: 'ttlMs must be 60000..2592000000, or duration 1h/24h/7d/30d/always' } }
-  }
+  const grant = connectionGrantFromPayload(payload)
+  if (grant.error) return { status: 400, body: { ok: false, reasonCode: grant.reasonCode, error: grant.error } }
+  const { all, itemIds, plaintextAllowed, writeAllowed, ttlMs } = grant
   // A connection approval is the operator's one chance to say what this agent
   // may do. Until now it only admitted the agent and every later read/write was
   // asked again, which read as "I already granted this". The approval now
-  // mints read capabilities (and, when ticked, standing write authorisations)
-  // for exactly the approved scope and lifetime.
-  const writeAllowed = payload.writeAllowed === true
+  // applies the approved scope and lifetime, and the write flag it can switch
+  // on is tracked so revoking the admission can switch it back off.
   let approved = null
   let grantedReads = 0
   let grantedWrites = 0
@@ -2747,16 +2774,34 @@ function grantConnectionScope(state, record) {
   const agentName = String(record.agent ?? '')
   if (record.writeAllowed === true) {
     // The write flag is the outer gate in put_secret; the admission decides
-    // which items it applies to.
+    // which items it applies to. Remember whether this admission is what
+    // switched it on, so a later revoke only undoes its own decision and never
+    // a write right the operator granted elsewhere.
     const agent = state.agents?.[agentName]
-    if (agent) agent.write = true
+    if (agent && agent.write !== true) { agent.write = true; record.writeGrantedAgent = true }
     const profile = state.oauthAgentProfiles?.[agentName]
-    if (profile) profile.write = true
+    if (profile && profile.write !== true) { profile.write = true; record.writeGrantedAgent = true }
   }
   const itemIds = record.scope?.all === true
     ? Object.values(state.itemIds ?? {})
     : (record.scope?.itemIds ?? [])
   return { reads: itemIds.length, writes: record.writeAllowed === true ? itemIds.length : 0 }
+}
+
+// Revoking or narrowing an admission must also undo the write flag it switched
+// on, unless another live approval still grants write to the same agent.
+function releaseConnectionWrite(state, record) {
+  if (!record || record.writeGrantedAgent !== true) return false
+  const stillGranted = Object.values(state.connections ?? {}).some((entry) =>
+    entry && entry !== record && entry.agent === record.agent && entry.state === 'approved'
+    && entry.writeAllowed === true && connectionLive(entry))
+  if (stillGranted) return false
+  const agent = state.agents?.[record.agent]
+  if (agent) agent.write = false
+  const profile = state.oauthAgentProfiles?.[record.agent]
+  if (profile) profile.write = false
+  record.writeGrantedAgent = false
+  return true
 }
 
 function connectionDecision(record, now = Date.now()) {
@@ -8763,6 +8808,88 @@ export default {
       })
       return json(result.body, result.status)
     }
+    // An approved admission is editable and revocable, so a mistaken scope does
+    // not have to wait out its TTL (up to 30 days). Revoking ends it now: the
+    // next call from that agent creates a fresh pending request.
+    if (url.pathname === '/api/connections/admission' && request.method === 'GET') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      await sweepExpiredState(env)
+      const state = await loadState(env)
+      const agentName = String(url.searchParams.get('agent') ?? '').trim()
+      if (!agentName) return fail('agent required', 400)
+      const { account } = await consoleVault(env)
+      const record = findLiveAdmission(state, { agent: agentName, account })
+      return json({
+        ok: true,
+        agent: agentName,
+        connection: record ? connectionRecordView(state, record, { masked: await shouldMaskConsole(env) }) : null,
+      })
+    }
+    if (url.pathname === '/api/connections/admission/update' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const { account, unlocked } = await consoleVault(env)
+      if (!unlocked) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const agentName = String(body.agent ?? '').trim()
+      if (!agentName) return fail('agent required', 400)
+      const grant = connectionGrantFromPayload(body)
+      if (grant.error) return fail(grant.error, 400)
+      await sweepExpiredState(env)
+      let updated = null
+      let error = ''
+      let writeReleased = false
+      await updateState(env, (state) => {
+        const record = findLiveAdmission(state, { agent: agentName, account, id: String(body.id ?? '').trim() })
+        if (!record) { error = 'no active admission for this agent'; return state }
+        // Narrowing or turning write off must undo only the flag this admission
+        // switched on, before the record’s own value changes.
+        if (record.writeAllowed === true && grant.writeAllowed !== true) writeReleased = releaseConnectionWrite(state, record)
+        record.scope = { all: grant.all, itemIds: grant.itemIds }
+        record.plaintextAllowed = grant.plaintextAllowed
+        record.writeAllowed = grant.writeAllowed
+        record.ttlMs = grant.ttlMs
+        record.expiresAt = grant.ttlMs === null ? null : new Date(Date.now() + grant.ttlMs).toISOString()
+        record.updatedAt = nowIso()
+        record.reasonCode = null
+        grantConnectionScope(state, record)
+        updated = record
+        return state
+      })
+      if (error) return fail(error, 404)
+      await addAudit(env, {
+        event: 'connection.update', agent: agentName, requestId: updated.id, account: updated.account,
+        all: grant.all, itemIds: grant.itemIds, plaintextAllowed: grant.plaintextAllowed,
+        writeAllowed: grant.writeAllowed, ttlMs: grant.ttlMs, expiresAt: updated.expiresAt, writeReleased,
+      })
+      return json({ ok: true, connection: connectionRecordView(await loadState(env), updated) })
+    }
+    if (url.pathname === '/api/connections/admission/revoke' && request.method === 'POST') {
+      if (!(await adminAuthorized(request, env))) return fail('unauthorized', 401)
+      const { account, unlocked } = await consoleVault(env)
+      if (!unlocked) return fail('locked', 423)
+      const body = await request.json().catch(() => ({}))
+      const agentName = String(body.agent ?? '').trim()
+      if (!agentName) return fail('agent required', 400)
+      await sweepExpiredState(env)
+      let revoked = null
+      let writeReleased = false
+      await updateState(env, (state) => {
+        const record = findLiveAdmission(state, { agent: agentName, account, id: String(body.id ?? '').trim() })
+        if (!record) return state
+        writeReleased = releaseConnectionWrite(state, record)
+        record.state = 'revoked'
+        record.revokedAt = nowIso()
+        record.revokedBy = 'admin'
+        record.reasonCode = 'admin-revoked'
+        // Effective now, not when the old TTL would have ended.
+        record.expiresAt = nowIso()
+        revoked = record
+        return state
+      })
+      if (!revoked) return fail('no active admission for this agent', 404)
+      await addAudit(env, { event: 'connection.revoke', agent: agentName, requestId: revoked.id, account: revoked.account, writeReleased })
+      return json({ ok: true, connection: connectionRecordView(await loadState(env), revoked) })
+    }
     // Agent-side poll, so a client that got "pending" can wait in the same
     // call instead of resubmitting. `wait` is clamped to 30 seconds: one Worker
     // request must never approach its duration limit, so the client loops for
@@ -10464,17 +10591,20 @@ const TOOL_META = {
             for (const key of ['value', 'username', 'totp', 'url', 'notes', 'group']) if (typeof args[key] === 'string') fields[key] = args[key]
             if (!Object.keys(fields).length) return result(text('nothing to write: pass value, username, totp, url, notes or group', true))
             const ticketKey = grantKey(resolved.name, itemName)
-            // Scope is the operator's item-level authorisation, so it has to be
-            // decided before a human is asked: an approval for an item this
-            // agent may not touch can only be wasted.
-            if (!agentInScope(resolved.agent, resolved.state.itemGroups, itemName, fields.group)) return result(text('agent not allowed to write this item: it is outside the agent scope', true))
             const ticket = resolved.state.writeTickets?.[ticketKey] ?? null
             // The approved admission covers writes in its range, so a new item
             // under "all" works without a ticket that could never have been
-            // minted for it.
+            // minted for it. It also replaces the creation-time scope question:
+            // the operator answered scope at admission, and an empty allow list
+            // from the new create form must not veto that answer. A narrowed
+            // admission (itemIds) still applies through connectionAllowsItem.
             const admittedWrite = Boolean(admission.record) && admission.record.state === 'approved'
               && admission.record.writeAllowed === true
               && connectionAllowsItem(admission.record, resolved.state.itemIds?.[itemName])
+            // Scope is the operator's item-level authorisation, so it has to be
+            // decided before a human is asked: an approval for an item this
+            // agent may not touch can only be wasted.
+            if (!admittedWrite && !agentInScope(resolved.agent, resolved.state.itemGroups, itemName, fields.group)) return result(text('agent not allowed to write this item: it is outside the agent scope', true))
             const ticketLive = admittedWrite || writeTicketLive(ticket, session.email)
             if (!ticketLive) {
               // A refusal the operator already made must not be re-asked: the
@@ -10494,7 +10624,6 @@ const TOOL_META = {
               }
               return result(pendingText({ requestId: pendingId, approvalUrl: url.origin + '/#pending' }))
             }
-            if (!agentInScope(resolved.agent, resolved.state.itemGroups, itemName, fields.group)) return result(text('agent not allowed to write this item: it is outside the agent scope', true))
             // The ticket may have been approved for an agent that has since
             // lost write access; a retry must not be the moment it gets it back.
             if (resolved.agent.write !== true) return result(text('this agent is not allowed to write', true))

@@ -2233,17 +2233,14 @@ async function ensureItems() {
   try { const result = await api('/api/items'); app.items = result.items || [] } catch {}
 }
 
-// Creation moved into a modal so it no longer pushes the list down.
+// Creation moved into a modal so it no longer pushes the list down. It only
+// asks who the agent is: scope, plaintext, write and duration are answered once
+// in the first-connection approval, where the operator sees the actual source.
 async function openAgentCreate() {
-  await ensureItems()
-  openModal('新建 Agent', '<div class="hint">Token 只在创建后显示一次。</div>' +
+  openModal('新建 Agent', '<div class="hint">Token 只在创建后显示一次。名称和备注用来认人；可申请范围、明文、写入和时长在它第一次连接时一次批准，创建时不再问。</div>' +
     '<label class="field">名称</label><input id="ac-name" placeholder="如 dsh">' +
     '<label class="field">显示名（可选）</label><input id="ac-alias" placeholder="便于识别的名字">' +
     '<label class="field">备注（可选）</label><input id="ac-note" placeholder="用途说明">' +
-    '<label class="field">可申请条目（勾选，不勾=连申请都会被拒绝）</label>' + pickListHtml('ac-allow', knownItemNames(), [], '密钥库里还没有条目，先去「密钥」页新建。') +
-    '<label class="field">可申请分组（勾选，不勾=不限）</label>' + pickListHtml('ac-groups', knownGroups(), [], '还没有任何分组。分组在新增条目时填写，或在条目菜单里改。') +
-    '<label class="chk" style="margin-top:8px"><input type="checkbox" id="ac-allowall"> 允许全部条目</label>' +
-    '<label class="chk" style="margin-top:8px"><input type="checkbox" id="ac-write"> 允许写入（可调 /agent/items/save）</label>' +
     '<div class="row" style="margin-top:14px"><button class="primary" id="ac-create">创建</button></div>' +
     '<div class="status" id="ac-status"></div><div class="secret hidden" id="ac-token"></div>')
   $('ac-create').onclick = async () => {
@@ -2251,21 +2248,11 @@ async function openAgentCreate() {
     if (!name) return status('ac-status', '请输入名称', 'error')
     try {
       status('ac-status', '创建中…')
-      const allow = pickListValues('ac-allow')
-      const groups = pickListValues('ac-groups')
-      const payload = { name, alias: $('ac-alias').value.trim(), note: $('ac-note').value.trim(), allow, groups, allowAll: $('ac-allowall').checked, write: $('ac-write').checked }
-      // Write is an elevated capability, so it is the one checkbox that asks for
-      // a fresh proof before the token is minted.
-      const result = payload.write
-        ? await sensitivePost('/api/agents/create', payload, '给 Agent 新增写权限')
-        : await api('/api/agents/create', { method: 'POST', body: JSON.stringify(payload) })
+      const payload = { name, alias: $('ac-alias').value.trim(), note: $('ac-note').value.trim() }
+      const result = await api('/api/agents/create', { method: 'POST', body: JSON.stringify(payload) })
       $('ac-token').classList.remove('hidden')
       $('ac-token').textContent = result.token
-      // Least privilege means the create can legitimately end with an empty
-      // requestable set. Say what that implies and where the next step is, so
-      // the agent is not stranded on its first request.
-      const scopeEmpty = !payload.allowAll && !allow.length && !groups.length
-      const nextStep = scopeEmpty ? '。可申请范围为空：请在 Agent 列表点「权限矩阵」给它加入可申请条目，否则它连申请都会被拒绝' : ''
+      const nextStep = '。下一步：让 Agent 连接一次，在「连接」页批准它的范围、明文、写入和时长'
       try { await navigator.clipboard.writeText(result.token); status('ac-status', '已创建，token 已复制到剪贴板' + nextStep, 'ok') } catch { status('ac-status', '已创建，请手动复制 token' + nextStep, 'ok') }
       await refreshAll()
     } catch (error) { status('ac-status', error.message, 'error') }
@@ -2414,6 +2401,10 @@ async function openAgentDetail(name) {
   // only holds the 20 newest rows of the whole vault.
   let recent = ((app.data && app.data.audit) || []).filter((entry) => entry.agent === name).slice(0, 5)
   try { const data = await auditPage({ agent: name, limit: 5 }); recent = data.entries || recent } catch {}
+  // The current approval is editable. Before this, the only way to correct a
+  // mistaken scope was to wait for the TTL (up to 30 days) to run out.
+  let admission = null
+  try { admission = (await api('/api/connections/admission?agent=' + encodeURIComponent(name))).connection || null } catch {}
   const activityRows = recent.length ? recent.map((entry) => '<div class="hint">' + esc(new Date(entry.time).toLocaleString('zh-CN', { hour12: false })) + ' · ' + esc(entry.event || '') + (entry.name ? ' · ' + esc(entry.name) : '') + '</div>').join('') : '<div class="hint">暂无读取记录</div>'
   openModal(agentDisplayName(agent), '<div class="row" style="justify-content:space-between;align-items:center"><div><b>' + esc(agentDisplayName(agent)) + '</b><div class="hint">' + kind + (agentDisplayNote(agent) ? ' · ' + esc(agentDisplayNote(agent)) : '') + '</div></div><span class="agent-health ' + (health.level === 'ok' ? 'ok' : (health.level === 'warn' ? 'warn' : 'bad')) + '">' + esc(health.label) + '</span></div>' +
     '<div class="agent-detail-grid" style="margin-top:14px">' +
@@ -2425,11 +2416,85 @@ async function openAgentDetail(name) {
     '<div><span>最近读取记录</span><b>' + esc(relativeTime(last)) + '</b></div>' +
     '<div><span>创建时间</span><b>' + esc(created) + '</b></div>' +
     '</div>' +
+    '<div class="admission-block" style="margin-top:14px">' + admissionSummaryHtml(admission) + '</div>' +
     '<div style="margin-top:14px"><b>最近活动</b>' + activityRows + '</div>' +
     '<div class="row" style="margin-top:14px"><button class="primary" id="ad-extend">延长授权</button><button id="ad-edit">编辑配置</button><button id="ad-menu">更多操作</button></div>')
   $('ad-extend').onclick = () => openExtendMenu(name)
   $('ad-edit').onclick = () => openAgentMenu(name)
   $('ad-menu').onclick = () => openAgentMenu(name)
+  const admissionEdit = $('ad-adm-edit')
+  if (admissionEdit) admissionEdit.onclick = () => openAdmissionEditor(name, admission)
+  const admissionRevoke = $('ad-adm-revoke')
+  if (admissionRevoke) admissionRevoke.onclick = async () => {
+    if (!(await askYes('撤销后立即失效，该 Agent 下次调用会重新申请准入。确定撤销？', { yes: '撤销' }))) return
+    try {
+      await api('/api/connections/admission/revoke', { method: 'POST', body: JSON.stringify({ agent: name, id: admission.id }) })
+      show('modal', false)
+      await refreshAll()
+      toast('已撤销，该 Agent 下次调用会重新申请')
+    } catch (error) { toast(error.message, true) }
+  }
+}
+
+// The live admission for one agent, shown in its detail sheet.
+function admissionExpiryText(record) {
+  if (record?.expiresAt === null || record?.expiresAt === undefined) return '不过期'
+  const at = new Date(record.expiresAt)
+  return Number.isNaN(at.getTime()) ? '-' : at.toLocaleString('zh-CN', { hour12: false })
+}
+function admissionSummaryHtml(connection) {
+  if (!connection) return '<b>连接准入</b><div class="hint">还没有生效中的准入。该 Agent 下次连接时会请求一次；批准时一次答完范围、明文、写入和时长。</div>'
+  const scope = connection.scope?.all === true
+    ? '全部条目'
+    : ((connection.scope?.itemNames && connection.scope.itemNames.length) ? connection.scope.itemNames.join('、') : '无')
+  return '<b>连接准入</b><div class="hint">范围：' + esc(scope) + ' · 明文：' + (connection.plaintextAllowed ? '允许' : '不允许') + ' · 写入：' + (connection.writeAllowed ? '允许' : '不允许') + ' · 到期：' + esc(admissionExpiryText(connection)) + '</div>' +
+    '<div class="row" style="margin-top:8px"><button class="small" id="ad-adm-edit">修改准入</button><button class="small danger" id="ad-adm-revoke">撤销准入</button></div>'
+}
+
+// Edit the approval in place: scope, plaintext, write and expiry. Saving keeps
+// the same record and re-applies the write flag, so the next agent call uses the
+// new answer immediately instead of the one that was mistaken.
+async function openAdmissionEditor(name, connection) {
+  await ensureItems()
+  const all = connection.scope?.all === true
+  const allowed = new Set(all ? [] : (connection.scope?.itemIds || []))
+  const items = app.items || []
+  const itemRows = items.length
+    ? items.map((item) => '<label class="chk pick-row"><input type="checkbox" class="adm-item" value="' + esc(item.id) + '"' + (allowed.has(item.id) ? ' checked' : '') + (all ? ' disabled' : '') + '> ' + esc(item.name) + '</label>').join('')
+    : '<div class="hint">密钥库里还没有条目；先选「全部条目」，或先去新建。</div>'
+  const presets = [['1h', '1 小时', 3600000], ['24h', '24 小时', 86400000], ['7d', '7 天', 604800000], ['30d', '30 天', 2592000000], ['always', '不过期', null]]
+  const ttl = typeof connection.ttlMs === 'number' ? connection.ttlMs : null
+  const selected = presets.find(([, , value]) => value === ttl)?.[0] ?? '24h'
+  const options = presets.map(([value, label]) => '<option value="' + value + '"' + (value === selected ? ' selected' : '') + '>' + label + '</option>').join('')
+  openModal('修改连接准入 · ' + name, '<div class="hint">按当前 Agent 的这次连接生效；修改后可随时再改或撤销。</div>' +
+    '<label class="chk" style="margin-top:10px"><input type="checkbox" id="adm-all"' + (all ? ' checked' : '') + '> 允许全部条目（含以后新增的）</label>' +
+    '<label class="field">具体条目</label><div class="pick-box" id="adm-items">' + itemRows + '</div>' +
+    '<label class="chk" style="margin-top:8px"><input type="checkbox" id="adm-plain"' + (connection.plaintextAllowed ? ' checked' : '') + '> 允许读取明文</label>' +
+    '<label class="chk" style="margin-top:8px"><input type="checkbox" id="adm-write"' + (connection.writeAllowed ? ' checked' : '') + '> 允许写入</label>' +
+    '<label class="field">到期时长（从现在起算）</label><select id="adm-duration">' + options + '</select>' +
+    '<div class="row" style="margin-top:14px"><button class="primary" id="adm-save">保存</button></div>' +
+    '<div class="status" id="adm-status"></div>')
+  const allBox = $('adm-all')
+  allBox.onchange = () => document.querySelectorAll('.adm-item').forEach((node) => { node.disabled = allBox.checked })
+  $('adm-save').onclick = async () => {
+    const allNow = allBox.checked
+    const itemIds = allNow ? [] : [...document.querySelectorAll('.adm-item:checked')].map((node) => node.value)
+    if (!allNow && !itemIds.length) return status('adm-status', '请至少选一个条目，或勾选全部', 'error')
+    try {
+      status('adm-status', '保存中…')
+      await api('/api/connections/admission/update', {
+        method: 'POST',
+        body: JSON.stringify({
+          agent: name, id: connection.id, all: allNow, itemIds,
+          plaintextAllowed: $('adm-plain').checked, writeAllowed: $('adm-write').checked,
+          duration: $('adm-duration').value,
+        }),
+      })
+      show('modal', false)
+      await refreshAll()
+      toast('准入已更新，下一次调用立即生效')
+    } catch (error) { status('adm-status', error.message, 'error') }
+  }
 }
 async function extendAgent(name, days) {
   try {

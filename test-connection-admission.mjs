@@ -668,6 +668,104 @@ async function main() {
     ok('范围外写入仍然要审批', outside.status === 'pending-approval', outsideText)
   }
 
+  // 20: the create form no longer asks for scope. An agent created with an empty
+  // allow list, approved as all+write, must write without a ticket: the empty
+  // creation-time scope must not veto the approval the operator just gave.
+  {
+    const env = await freshEnv()
+    const seeded = await readState(env)
+    Object.assign(seeded.agents[HARNESS.AGENT], { allow: [], groups: [], allowAll: false, write: false, legacy: false })
+    await writeState(env, seeded)
+    const first = await getSecret(env)
+    const pending = await first.json()
+    const cookie = await login(env)
+    const approved = await decide(env, cookie, {
+      id: pending.requestId, decision: 'approve', all: true, plaintextAllowed: true, writeAllowed: true, duration: '1h',
+    })
+    ok('批准 all+write 时即使创建范围为空也生效',
+      approved.status === 200 && approved.body.connection.writeAllowed === true, JSON.stringify(approved.body))
+    const afterApprove = await readState(env)
+    ok('批准把创建时关闭的写入位打开',
+      afterApprove.agents[HARNESS.AGENT].write === true, JSON.stringify(afterApprove.agents[HARNESS.AGENT]))
+
+    const existing = JSON.parse(mcpText(await mcpCall(env, 'put_secret', { name: HARNESS.ITEM, value: 'EMPTY-SCOPE-OK' })))
+    ok('空创建范围不再反拒已批准范围内的写入', existing.status === 'written', JSON.stringify(existing))
+    const fresh = JSON.parse(mcpText(await mcpCall(env, 'put_secret', { name: 'brand-new-item', value: 'NEW' })))
+    ok('all 范围覆盖批准后新建的条目', fresh.status === 'written', JSON.stringify(fresh))
+
+    // 21: the admission is editable. Narrow it to one item and the other write
+    // must be asked again immediately, without waiting for the TTL.
+    const narrowed = await call(env, '/api/connections/admission/update', {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ agent: HARNESS.AGENT, all: false, itemIds: [HARNESS.ITEM_ID], plaintextAllowed: true, writeAllowed: true, duration: '1h' }),
+    })
+    const narrowedBody = await narrowed.json()
+    ok('修改准入返回 200 并保存新范围',
+      narrowed.status === 200 && narrowedBody.connection.scope.all === false
+      && JSON.stringify(narrowedBody.connection.scope.itemIds) === JSON.stringify([HARNESS.ITEM_ID]),
+      JSON.stringify(narrowedBody))
+    const outsideAfter = mcpText(await mcpCall(env, 'put_secret', { name: 'brand-new-item', value: 'NOW-OUTSIDE' }))
+    ok('缩小范围后立即对范围外写入拒绝', outsideAfter.includes('outside the agent scope') && !outsideAfter.includes('"written"'), outsideAfter)
+    const insideAfter = JSON.parse(mcpText(await mcpCall(env, 'put_secret', { name: HARNESS.ITEM, value: 'STILL-OK' })))
+    ok('缩小范围后范围内写入仍然通过', insideAfter.status === 'written', JSON.stringify(insideAfter))
+
+    // 22: revoking the admission takes effect immediately, and the write flag it
+    // switched on is switched back off.
+    const revoked = await call(env, '/api/connections/admission/revoke', {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ agent: HARNESS.AGENT }),
+    })
+    const revokedBody = await revoked.json()
+    ok('撤销准入返回 200 且状态为 revoked',
+      revoked.status === 200 && revokedBody.connection.state === 'revoked', JSON.stringify(revokedBody))
+    const afterRevoke = await readState(env)
+    ok('撤销立即结束准入而不是等过期',
+      afterRevoke.connections[revokedBody.connection.id].state === 'revoked'
+      && Date.parse(afterRevoke.connections[revokedBody.connection.id].expiresAt) <= Date.now() + 5000,
+      JSON.stringify(afterRevoke.connections[revokedBody.connection.id]))
+    ok('撤销把本次准入打开的写入位关回去',
+      afterRevoke.agents[HARNESS.AGENT].write === false, JSON.stringify(afterRevoke.agents[HARNESS.AGENT]))
+    const nextRead = await getSecret(env)
+    const nextBody = await nextRead.json()
+    ok('撤销后下一次调用重新申请准入，而不是沿用旧批准',
+      nextRead.status === 202 && nextBody.status === 'pending-connection' && nextBody.requestId !== revokedBody.connection.id,
+      JSON.stringify(nextBody))
+    ok('修改与撤销都写入审计',
+      env._vault.auditRows.some((entry) => entry.event === 'connection.update')
+      && env._vault.auditRows.some((entry) => entry.event === 'connection.revoke'))
+  }
+
+  // 23: existing agents keep their creation-time allow list. The new form omits
+  // scope, so an unrelated edit must not clear it.
+  {
+    const env = await freshEnv()
+    const cookie = await login(env)
+    const before = (await readState(env)).agents[HARNESS.AGENT]
+    const edited = await call(env, '/api/agents/update', {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: HARNESS.AGENT, alias: 'renamed' }),
+    })
+    const afterEdit = (await readState(env)).agents[HARNESS.AGENT]
+    ok('不带范围的编辑保留旧的长期范围',
+      edited.status === 200 && JSON.stringify(afterEdit.allow) === JSON.stringify(before.allow)
+      && JSON.stringify(afterEdit.groups) === JSON.stringify(before.groups), JSON.stringify(afterEdit))
+
+    const created = await call(env, '/api/agents/create', {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'new-agent', alias: '', note: '' }),
+    })
+    const createdBody = await created.json()
+    const fresh = (await readState(env)).agents['new-agent'] ?? {}
+    ok('新表单只建身份，不再预置范围或写入',
+      created.status === 200 && Boolean(createdBody.token)
+      && Array.isArray(fresh.allow) && fresh.allow.length === 0 && fresh.write !== true,
+      JSON.stringify(fresh))
+  }
+
   report.finish()
 }
 
