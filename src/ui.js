@@ -1231,7 +1231,12 @@ async function api(path, options = {}) {
     error.status = response.status
     error.data = body
     error.reason = body.reason || body.detail || body.error || ''
-    if (response.status >= 500) setDbDown(message)
+    // Only a storage failure is a database outage. A 500 from anywhere else
+    // keeps its own message (shown as a toast) instead of painting the
+    // "数据库暂时不可用" banner over the whole page. Routes that predate the
+    // code field still say D1_ERROR in the message, so the text is checked too.
+    const dbDown = body.code === 'db_unavailable' || (response.status >= 500 && /D1_ERROR|SQLITE|database|Network connection lost|storage/i.test(message))
+    if (dbDown) setDbDown(message)
     throw error
   }
   const route = path.split('?')[0]
@@ -1530,11 +1535,17 @@ async function tryDeviceOpen() {
     return true
   } catch { return false }
 }
+// The "已解锁" confirmation is a transition, not a fixture. It used to sit on
+// the page forever after unlocking; now it collapses a few seconds later and
+// only the masked names remain as the state indicator.
+let plainGateNoticeAt = 0
+let plainGateTimer = null
 function renderLockedSurface() {
   const bar = $('locked-bar')
   if (!bar) return
   const locked = app.locked === true
   const plainGate = !locked && app.me?.unlocked === true && app.v2?.initialized === true && app.plainOk === false
+  if (!locked && !plainGate) { plainGateNoticeAt = 0; if (plainGateTimer) { clearTimeout(plainGateTimer); plainGateTimer = null } }
   bar.classList.toggle('hidden', !locked && !plainGate)
   if (locked) {
     // Only a zero-knowledge vault has names worth hiding; a legacy vault keeps
@@ -1545,6 +1556,11 @@ function renderLockedSurface() {
     $('locked-unlock').textContent = '就地解锁'
     $('locked-unlock').dataset.mode = 'unlock'
   } else if (plainGate) {
+    if (!plainGateNoticeAt) {
+      plainGateNoticeAt = Date.now()
+      if (!plainGateTimer) plainGateTimer = setTimeout(() => { plainGateTimer = null; renderLockedSurface() }, 4000)
+    }
+    bar.classList.toggle('hidden', Date.now() - plainGateNoticeAt > 4000)
     $('locked-text').textContent = '已解锁 · 显示条目名称需要一次验证码，本次解锁内只问一次'
     $('locked-unlock').textContent = '验证并显示'
     $('locked-unlock').dataset.mode = 'plain'
@@ -2137,7 +2153,7 @@ if (noticeBar) {
   noticeBar.onkeydown = (event) => {
     // Keys pressed on a button inside the bar belong to that button, not to the
     // bar's own open-the-sheet shortcut.
-    if (event.target.closest('[data-quick-decide],[data-notice-notify],[data-notice-push],[data-notice-approve-more]')) return
+    if (event.target.closest('[data-quick-decide],[data-notice-notify],[data-notice-push],[data-notice-approve-more],[data-notice-expand]')) return
     if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openNotices() }
   }
 }
@@ -3999,6 +4015,8 @@ if (globeOpen) globeOpen.onclick = () => {
 // full list in a modal.
 let noticeIndex = 0
 let noticeTimer = null
+// The approval rows live behind 展开: the first screen shows one summary line.
+let noticeExpanded = false
 const NOTICE_READ_KEY = 'sb-notice-read-v1'
 // Read state is per signed-in account, not per browser: two operators sharing
 // one device must not inherit each other's dismissed notices. No server field
@@ -4230,7 +4248,7 @@ function renderNoticeBar() {
   syncPendingTitle()
   const read = noticeReadIds()
   const items = noticeItems().filter((item) => !read.includes(item.id))
-  if (!items.length) { bar.classList.add('hidden'); bar.innerHTML = ''; if (noticeTimer) { clearInterval(noticeTimer); noticeTimer = null }; return }
+  if (!items.length) { noticeExpanded = false; bar.classList.add('hidden'); bar.innerHTML = ''; if (noticeTimer) { clearInterval(noticeTimer); noticeTimer = null }; return }
   bar.classList.remove('hidden')
   const order = { pending: 0, critical: 1, warning: 2, notice: 3 }
   const ranked = items.slice().sort((a, b) => order[a.level] - order[b.level])
@@ -4239,53 +4257,69 @@ function renderNoticeBar() {
   const pendingUnread = ranked.filter((item) => item.kind === 'pending')
   const head = pendingUnread.length ? pendingUnread[0] : ranked[0]
   bar.dataset.level = head.level
+  // Handlers were attached once after render(), but the rotation timer (and the
+  // inline approval buttons) replace bar.innerHTML on every pass. The buttons
+  // then had no handler left, so their clicks bubbled to the bar and did what
+  // 查看全部 does. Wiring inside render() is what keeps 全部已读 its own action.
+  const wire = () => {
+    bar.querySelectorAll('[data-notice-dismiss]').forEach((button) => {
+      button.onclick = (event) => {
+        // Clicking 忽略 must not also open the whole list behind it.
+        event.stopPropagation()
+        markNoticeRead(button.dataset.noticeDismiss)
+        renderNoticeBar()
+      }
+    })
+    bar.querySelectorAll('[data-notice-dismiss-all]').forEach((button) => {
+      button.onclick = (event) => {
+        event.stopPropagation()
+        markAllNoticesRead()
+        renderNoticeBar()
+      }
+    })
+    // Each counter is its own entry point, so a waiting approval can never hide
+    // the reminders behind it.
+    bar.querySelectorAll('[data-notice-open]').forEach((button) => {
+      button.onclick = (event) => {
+        event.stopPropagation()
+        if (button.dataset.noticeOpen === 'reminder') openNoticeModal()
+        else openPendingSheet()
+      }
+    })
+    bar.querySelectorAll('[data-notice-expand]').forEach((button) => {
+      button.onclick = (event) => {
+        event.stopPropagation()
+        noticeExpanded = !noticeExpanded
+        render()
+      }
+    })
+  }
   const render = () => {
     const item = pendingUnread.length ? head : items[noticeIndex % items.length]
     const counts = noticeCounts()
     bar.dataset.level = item.level
     bar.dataset.tone = item.tone
-    // A button cannot contain buttons: with the panel open the bar becomes a
-    // group and the counters/查看全部 keep the queue reachable by keyboard.
+    // A button cannot contain buttons: with approvals waiting the bar is a
+    // group so 展开/计数/查看全部 stay reachable by keyboard.
     if (pendingUnread.length) { bar.setAttribute('role', 'group'); bar.removeAttribute('tabindex') }
     else { bar.setAttribute('role', 'button'); bar.setAttribute('tabindex', '0') }
+    const remindersUnread = items.filter((entry) => entry.kind !== 'pending').length
+    // One summary line instead of a stack of rows: approvals collapse to
+    // "3 条待处理 · 5 条动态" and the detail stays behind 展开.
     const lead = pendingUnread.length
-      ? (pendingUnread.length === 1 ? pendingUnread[0].text : pendingUnread.length + ' 条在等：' + pendingUnread[0].text)
+      ? pendingUnread.length + ' 条待处理' + (remindersUnread ? ' · ' + remindersUnread + ' 条动态' : '')
       : item.text
     bar.innerHTML = '<span class="notice-dot"></span><span class="notice-text">' + esc(lead) + '</span>'
-      + (counts.pending ? '<button type="button" class="notice-count" data-kind="pending" data-notice-open="pending">待审批 ' + counts.pending + '</button>' : '')
-      + (counts.reminders ? '<button type="button" class="notice-count" data-kind="reminder" data-notice-open="reminder">提醒 ' + counts.reminders + '</button>' : '')
+      + (remindersUnread ? '<button type="button" class="notice-count" data-kind="reminder" data-notice-open="reminder">动态 ' + counts.reminders + '</button>' : '')
+      + (pendingUnread.length ? '<button type="button" class="notice-more" data-notice-expand aria-expanded="' + (noticeExpanded ? 'true' : 'false') + '">' + (noticeExpanded ? '收起' : '展开') + '</button>' : '')
       + '<button type="button" class="notice-more" data-notice-dismiss="' + esc(item.id) + '" aria-label="忽略这条提示" title="忽略这条提示（只隐藏提示，不改审批状态）">✕</button>'
       + '<button type="button" class="notice-more" data-notice-dismiss-all aria-label="全部标为已读" title="全部标为已读（只隐藏提示，不改审批状态）">全部已读</button>'
       + '<span class="notice-more">查看全部 ›</span>'
-      + (pendingUnread.length ? noticeApproveHtml(pendingUnread) : '')
+      + (pendingUnread.length && noticeExpanded ? noticeApproveHtml(pendingUnread) : '')
+    wire()
   }
   render()
   if (noticeTimer) clearInterval(noticeTimer)
-  bar.querySelectorAll('[data-notice-dismiss]').forEach((button) => {
-    button.onclick = (event) => {
-      // Clicking 忽略 must not also open the whole list behind it.
-      event.stopPropagation()
-      markNoticeRead(button.dataset.noticeDismiss)
-      renderNoticeBar()
-    }
-  })
-  bar.querySelectorAll('[data-notice-dismiss-all]').forEach((button) => {
-    button.onclick = (event) => {
-      event.stopPropagation()
-      markAllNoticesRead()
-      renderNoticeBar()
-    }
-  })
-  // Each counter is its own entry point, so a waiting approval can never hide
-  // the reminders behind it: the reminder pill opens the reminder sheet even
-  // when the approvals pill (and the bar itself) opens the approvals sheet.
-  bar.querySelectorAll('[data-notice-open]').forEach((button) => {
-    button.onclick = (event) => {
-      event.stopPropagation()
-      if (button.dataset.noticeOpen === 'reminder') openNoticeModal()
-      else openPendingSheet()
-    }
-  })
   if (!pendingUnread.length && items.length > 1) {
     noticeTimer = setInterval(() => { noticeIndex += 1; render() }, 4000)
   }
