@@ -388,12 +388,17 @@ export class BrokerState extends DurableObject {
         // The unscoped slot only matters on a deployment without an account; it
         // costs one more wrapped copy and keeps that case working after eviction.
         if (!account) await this.writeV2KeySlot('', '', entry)
-        // A new unlock starts a new factor window: the previous pass belongs to
-        // the old session lifecycle. The exception is an unlock that verified
-        // the code in the same request (plainOk), which starts the window now.
+        // A new unlock must not silently clear the pass this browser already
+        // earned by logging in or by an earlier verification. The code was
+        // proved once for the session, so the unlock refreshes the same window
+        // instead of deleting it; only locking, logging out, revoking the
+        // session or a different browser starts over. An unlock that verified
+        // the code in this request (plainOk/factorVerified) also starts it.
         if (session) {
-          if (body.plainOk === true) await this.writeFactor(session, entry.expiresAt)
-          else await this.deleteFactor(session)
+          const live = await this.readFactor(session)
+          if (body.plainOk === true || body.factorVerified === true || live > Date.now()) {
+            await this.writeFactor(session, entry.expiresAt)
+          }
         }
         await this.sweepV2KeySlots()
         await this.sweepFactors()
@@ -1883,6 +1888,23 @@ async function sessionFactorExpiresAt(env, request) {
   } catch { return 0 }
 }
 
+// Writes the one-time pass for an admin session. Login uses it directly because
+// it has no unlock slot yet: the code was just proved, so the pass lives as long
+// as the cookie session it is bound to. Everything sensitive later reads it
+// instead of asking for the same code again.
+async function recordSessionFactor(env, session, expiresAt) {
+  const id = String(session ?? '')
+  const until = Number(expiresAt ?? 0)
+  if (!id || !(until > Date.now())) return 0
+  try {
+    await stateStub(env).fetch('https://state/factor', {
+      method: 'POST',
+      body: JSON.stringify({ session: id, expiresAt: until }),
+    }).catch(() => null)
+    return until
+  } catch { return 0 }
+}
+
 // Records the pass against the live unlock, not a fixed TTL. Locking, logging
 // out, or unlocking again ends it; an eviction does not, because the DO keeps a
 // wrapped-storage copy. Returns the expiry it recorded (0 when it could not).
@@ -1898,11 +1920,7 @@ async function markSessionFactor(env, request, state = null) {
     // Without a live v2 unlock there is no window to attach the pass to; the
     // caller keeps asking rather than inventing a duration.
     if (!(expiresAt > Date.now())) return 0
-    await stateStub(env).fetch('https://state/factor', {
-      method: 'POST',
-      body: JSON.stringify({ session, expiresAt }),
-    }).catch(() => null)
-    return expiresAt
+    return await recordSessionFactor(env, session, expiresAt)
   } catch { return 0 }
 }
 
@@ -6859,6 +6877,18 @@ export default {
         await stateStub(env).fetch('https://state/v2-key', { method: 'DELETE' }).catch(() => {})
       }
       const cookie = await createAdminCookie(env, request)
+      // The login just proved presence (including the second factor when it is
+      // enrolled). Record that against the new cookie session so the unlock and
+      // the first plaintext read reuse it instead of asking for the same code
+      // again. The factor stays mandatory: it is bound to this session, and
+      // locking, logging out, revoking the session or using another browser
+      // starts over. A password-only login with TOTP enabled never reaches here
+      // (it was refused above), so this cannot widen the factor.
+      if (state.security?.totpEnabled === true) {
+        const sessionId = cookie.split('.')[1] ?? ''
+        const sessionExpiresAt = Number(cookie.split('.')[2] ?? 0)
+        await recordSessionFactor(env, sessionId, sessionExpiresAt)
+      }
       await addAudit(env, { event: 'admin.login', ip, account: wantedAccount || undefined })
       // Lax covers the panel and the consent page when it is first-party. The
       // /oauth-scoped companion cookie covers an embedded consent form, where
@@ -6901,6 +6931,9 @@ export default {
       const body = await request.json().catch(() => ({}))
       if (!body.id) return fail('session id required', 400)
       await updateState(env, (state) => { if (state.adminSessions?.[body.id]) delete state.adminSessions[body.id]; return state })
+      // Revoking a client also revokes the second-factor pass it carried, so a
+      // revoked session cannot keep answering "presence already proved".
+      await stateStub(env).fetch('https://state/factor?session=' + encodeURIComponent(body.id), { method: 'DELETE' }).catch(() => {})
       await addAudit(env, { event: 'admin.session-revoke', sessionId: body.id })
       return json({ ok: true })
     }
@@ -11208,9 +11241,10 @@ const TOOL_META = {
           const status = await vault2Status(env, { account })
           const cached = await keyCall('GET')
           // plainOk lets the console tell "locked" apart from "unlocked but the
-          // plaintext listing has not passed its TOTP gate yet". They used to be
-          // collapsed into one "未解锁" message.
-          return json({ ...status, unlocked: Boolean(cached.ok), keyExpiresAt: cached.expiresAt ?? null, plainOk: Boolean(cached.plainOk), confirmRequired: Boolean(cached.confirm) })
+          // plaintext listing has not passed its TOTP gate yet". factorOk says
+          // whether this browser session already proved the second factor (at
+          // login or earlier), so the unlock form does not ask again.
+          return json({ ...status, unlocked: Boolean(cached.ok), keyExpiresAt: cached.expiresAt ?? null, plainOk: Boolean(cached.plainOk), factorOk: (await sessionFactorExpiresAt(env, request)) > Date.now(), factorRequired: state.security?.totpEnabled === true, confirmRequired: Boolean(cached.confirm) })
         }
         if (route === 'init' && request.method === 'POST') {
           const body = await request.json().catch(() => ({}))
@@ -11249,16 +11283,23 @@ const TOOL_META = {
           // factor never sees the prompt at all.
           const totpEnabled = state.security?.totpEnabled === true
           const code = String(body.code ?? '').replace(/\s+/g, '')
-          let plainOk = !totpEnabled
+          // This browser may already have proved presence at login or an earlier
+          // sensitive action. Reuse that pass instead of asking twice; a request
+          // that carries a code refreshes the same pass rather than replacing it
+          // with a second, different window.
+          const passAt = await sessionFactorExpiresAt(env, request)
+          let plainOk = !totpEnabled || passAt > Date.now()
+          let factorVerified = false
           if (totpEnabled && code) {
             const refused = await secondFactorWall(request, env, 'vault.plain', code)
             if (refused) return refused
             await addAudit(env, { event: 'vault.plain', via: 'unlock' })
             plainOk = true
+            factorVerified = true
           }
           const duration = ['12h', '7d', '30d', 'device'].includes(body.duration) ? body.duration : '12h'
           const ttlMs = v2UnlockTtlMs(duration, body.ttlMs)
-          const stored = await keyCall('PUT', { dek: [...opened.dek], legacyDek: opened.legacyDek ? [...opened.legacyDek] : null, ttlMs, confirm: body.confirm === true, plainOk })
+          const stored = await keyCall('PUT', { dek: [...opened.dek], legacyDek: opened.legacyDek ? [...opened.legacyDek] : null, ttlMs, confirm: body.confirm === true, plainOk, factorVerified })
           // The tier is part of the audit record: "unlocked for 30 days" is a
           // different risk decision from "unlocked for the default 12 hours".
           // The TTL is the value the Durable Object actually stored (it clamps),
@@ -11277,7 +11318,7 @@ const TOOL_META = {
             console.error('vault claim failed: ' + String(error?.message ?? error))
             await addAudit(env, { event: 'vault.claim-failed', agent: 'admin', reason: String(error?.message ?? error).slice(0, 200) })
           }
-          return json({ ok: true, fingerprint: opened.fingerprint, account: account || null, legacy: opened.legacyOnly === true, duration, ttlMs: actualTtlMs, plainOk, expiresAt: stored.expiresAt ?? null, claimed: claimed ? { tagged: claimed.tagged, remaining: claimed.remaining } : null })
+          return json({ ok: true, fingerprint: opened.fingerprint, account: account || null, legacy: opened.legacyOnly === true, duration, ttlMs: actualTtlMs, plainOk, factorOk: totpEnabled ? Boolean(factorVerified || passAt > Date.now()) : false, expiresAt: stored.expiresAt ?? null, claimed: claimed ? { tagged: claimed.tagged, remaining: claimed.remaining } : null })
         }
         // Long-term tier, step 2: the console has unwrapped the device envelope in
         // the browser and presents the DEK. The DEK itself is checked against the

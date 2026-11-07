@@ -1581,7 +1581,7 @@ function renderLockedSurface() {
     $('locked-unlock').dataset.mode = 'plain'
   }
 }
-async function boot() { try { app.me = await api('/api/me'); show('login-card', false); $('who').textContent = app.me.name || String(app.me.email || '').split('@')[0] || ''; $('site-title').textContent = app.me.siteName || 'Secrets Broker'; renderAvatar(app.me.name || app.me.email, app.me.avatarUrl); show('lock', true); const vault = await api('/api/v2/status').catch(() => null); app.v2 = vault; applyTierAvailability(); app.plainOk = vault?.initialized === true ? vault.plainOk !== false : true; if (!app.me.unlocked && sessionStorage.getItem('broker-lock-intent') !== '1') await tryDeviceOpen().catch(() => false); app.locked = app.me.unlocked !== true; // A vault that exists but is locked opens straight into the console: approvals
+async function boot() { try { app.me = await api('/api/me'); show('login-card', false); $('who').textContent = app.me.name || String(app.me.email || '').split('@')[0] || ''; $('site-title').textContent = app.me.siteName || 'Secrets Broker'; renderAvatar(app.me.name || app.me.email, app.me.avatarUrl); show('lock', true); const vault = await api('/api/v2/status').catch(() => null); app.v2 = vault; app.factorOk = vault?.factorOk === true; applyTierAvailability(); app.plainOk = vault?.initialized === true ? (vault.plainOk !== false || vault.factorOk === true) : true; if (!app.me.unlocked && sessionStorage.getItem('broker-lock-intent') !== '1') await tryDeviceOpen().catch(() => false); app.locked = app.me.unlocked !== true; // A vault that exists but is locked opens straight into the console: approvals
   // and masking work without the key. Only an uninitialized vault needs the
   // entry screen, because it has nothing to browse.
   const canBrowse = app.me.unlocked === true || vault?.initialized === true; show('dashboard', canBrowse); show('unlock-card', !canBrowse); if (canBrowse) { await loadAll(); renderLockedSurface(); if (new URLSearchParams(location.search).get('view') === 'profile') { document.querySelectorAll('.view').forEach((section) => section.classList.toggle('hidden', section.id !== 'view-profile')); syncGlobeToView('profile'); document.querySelectorAll('#nav button').forEach((button) => button.classList.remove('active')); await loadProfile(); history.replaceState({}, '', '/') } } } catch { show('login-card', true); show('dashboard', false); show('unlock-card', false); loadOidcLogin() } }
@@ -1698,7 +1698,9 @@ applyTheme()
 function renderUnlockTotp() {
   const row = $('unlock-totp-row')
   if (!row) return
-  const shown = app.me?.totpEnabled === true
+  // Login already proved the second factor for this browser session. The field
+  // only appears when that pass is missing, so one code is not typed twice.
+  const shown = app.me?.totpEnabled === true && app.factorOk !== true
   row.classList.toggle('hidden', !shown)
   const input = $('unlock-totp-code')
   if (input && !shown) input.value = ''
@@ -1767,6 +1769,7 @@ async function unlockV2(password, options = {}) {
   // The response already says whether the plaintext listing is allowed; use it
   // instead of waiting for the next /api/v2/status poll to agree.
   if (typeof result?.plainOk === 'boolean') app.plainOk = result.plainOk
+  if (result?.factorOk === true) app.factorOk = true
   if (tier === 'device') {
     try { await bindThisDevice() } catch (error) { toast('设备绑定失败：' + error.message, true) }
   }
@@ -1817,7 +1820,10 @@ $('unlock').onclick = async () => {
   const password = $('master-password').value
   const button = $('unlock')
   const codeField = $('unlock-totp-code')
-  const needsCode = app.me?.totpEnabled === true
+  // A pass from login covers the unlock: the code is only required when this
+  // browser session has not proved the second factor yet (a different device or
+  // a session after lock/logout). The factor itself stays mandatory.
+  const needsCode = app.me?.totpEnabled === true && app.factorOk !== true
   const code = needsCode ? String(codeField?.value || '').replace(/\s+/g, '') : ''
   // An empty field used to do literally nothing: no message, no focus, no sign
   // that the click was seen. Say what is missing and put the cursor there.
@@ -3552,9 +3558,13 @@ async function loadVault2(withItems = true) {
   try {
     const status = await api('/api/v2/status')
     app.v2 = status
+    app.factorOk = status.factorOk === true
     // "Unlocked but the plaintext listing has not passed TOTP" is its own state.
-    app.plainOk = status.initialized === true ? status.plainOk === true : true
+    // A live session pass means the listing will answer without asking, so it
+    // must not show the "needs one code" bar either.
+    app.plainOk = status.initialized === true ? (status.plainOk === true || status.factorOk === true) : true
     renderLockedSurface()
+    renderUnlockTotp()
     const list = await api('/api/v2/devices').catch(() => ({ devices: [] }))
     const devices = (list.devices || [])
     const ready = status.initialized === true

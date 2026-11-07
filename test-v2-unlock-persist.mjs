@@ -228,20 +228,30 @@ async function call(durable, path, method = 'GET', body) {
   })
   const plain = (web, cookie) => workerCall(web, '/api/v2/items?plain=1', { headers: { cookie } })
 
-  // 7a/7b: enrolled account, no code. The unlock itself still succeeds, but the
-  // names stay behind the old prompt.
+  // 7a/7b: enrolled account, no code. The login already proved the factor for
+  // this browser, so the unlock reuses that pass: names answer without a second
+  // prompt. This is the one-code-per-session rule, not an optional factor.
   const enrolled = await mount(true)
   const enrolledCookie = await signIn(enrolled, totp(SECRET))
+  const sessionId = String(enrolledCookie.slice(enrolledCookie.indexOf('=') + 1)).split('.')[1] ?? ''
   const noCode = await unlock(enrolled, enrolledCookie)
   const noCodeBody = await noCode.json()
   const noCodePlain = await plain(enrolled, enrolledCookie)
-  if (noCode.status === 200 && noCodeBody.plainOk === false && noCodePlain.status === 428) {
-    pass('7a an enrolled account that sends no code still unlocks, and names still answer 428')
+  if (noCode.status === 200 && noCodeBody.plainOk === true && noCodePlain.status === 200) {
+    pass('7a an enrolled account reuses the login pass: unlock and names both answer with no code')
   } else {
     fail('7a no-code compatibility', `unlock=${noCode.status} plainOk=${noCodeBody.plainOk} plain=${noCodePlain.status}`)
   }
 
-  // 7c: a wrong code must not grant the names, and must not unlock either.
+  // 7c: a wrong code must not grant the names, and must not unlock either. Delete
+  // the login pass and clear the slot's plain flag first so this actually
+  // exercises the code check; otherwise a live pass would (correctly) make the
+  // code irrelevant.
+  await enrolled.BROKER_STATE.get().fetch('https://state/factor?session=' + encodeURIComponent(sessionId), { method: 'DELETE' })
+  await enrolled.BROKER_STATE.get().fetch('https://state/v2-key?account=' + encodeURIComponent(LIVE) + '&session=' + encodeURIComponent(sessionId), {
+    method: 'PUT',
+    body: JSON.stringify({ account: LIVE, session: sessionId, dek: DEK, ttlMs: 12 * 3600 * 1000, plainOk: false }),
+  })
   const wrong = await unlock(enrolled, enrolledCookie, { code: '000000' })
   const afterWrong = await plain(enrolled, enrolledCookie)
   if (wrong.status === 401 && afterWrong.status === 428) pass('7c a wrong code grants nothing and reports 401')
