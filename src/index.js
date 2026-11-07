@@ -2409,7 +2409,7 @@ function connectionDecision(record, now = Date.now()) {
 // Repeats from the same source reuse the pending record, so a retrying or
 // probing client cannot flood the approval list.
 async function connectionAdmission(env, { state, agentName, account, request, origin = '', plaintextRequested = false, ctx = null }) {
-  if (state.connectionPolicy?.required === false) return { ok: true, record: null, disabled: true }
+  const admissionDisabled = state.connectionPolicy?.required === false
   const accountKey = String(account ?? '').trim().toLowerCase()
   const source = await connectionSourceOf(request)
   const sameSource = (record) => {
@@ -2428,7 +2428,15 @@ async function connectionAdmission(env, { state, agentName, account, request, or
   // decides this call.
   const match = (connections, now = Date.now()) => Object.values(connections ?? {}).find((record) => sameSource(record) && connectionLive(record, now))
   const existing = match(state.connections)
-  if (existing) return connectionDecision(existing)
+  // An OAuth consent is the operator's answer, not a prompt: the kill switch
+  // only stops the broker from asking again, it does not erase an answer that
+  // was already given. Honouring it here also matters because a consent that
+  // did not tick plaintext still has to say "no" instead of silently allowing
+  // the read. Any other row in that mode is ignored, as before.
+  if (existing && (!admissionDisabled || (existing.oauth === true && existing.state === 'approved'))) {
+    return connectionDecision(existing)
+  }
+  if (admissionDisabled) return { ok: true, record: null, disabled: true }
   // Apply the transition (and its audit line) before asking again, so the
   // console shows "expired" beside the new request instead of a stale row.
   if (Object.values(state.connections ?? {}).some(sameSource)) await sweepExpiredState(env).catch(() => {})

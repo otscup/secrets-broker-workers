@@ -256,10 +256,14 @@ await db.prepare('INSERT OR REPLACE INTO ciphers (id,user_id,type,folder_id,name
   await exchange(res.headers.get('location') || '')
   const state = (await (await stub.fetch('https://do/state')).json()).state
   const caps = Object.values(state.capabilities || {}).map((cap) => cap.itemId)
-  const policy = (state.plaintextReadPolicies || {})[GHOST_ID]
-  const mintedOwn = caps.includes(API_ID)
-  if (!caps.includes(GHOST_ID) && !policy && mintedOwn) pass("O8 granting every item mints nothing for another vault's credential")
-  else fail('O8', JSON.stringify({ caps, policy, mintedOwn }))
+  const ghostPolicy = (state.plaintextReadPolicies || {})[GHOST_ID]
+  // Consent no longer mints a capability per item: the admission decides at
+  // read time. The proof that the grant did something is therefore the
+  // plaintext policy for the live vault's own item, not a capability row.
+  const ownPolicy = Boolean((state.plaintextReadPolicies || {})[API_ID])
+  const claimedAll = state.oauthAgentProfiles?.['oauth:' + clientId]?.allowAll === true
+  if (!caps.includes(GHOST_ID) && !ghostPolicy && ownPolicy && claimedAll) pass("O8 granting every item mints nothing for another vault's credential")
+  else fail('O8', JSON.stringify({ caps, ghostPolicy: Boolean(ghostPolicy), ownPolicy, claimedAll }))
 }
 
 // O9: unlocking drops grants whose credential belongs to a different vault.
@@ -303,7 +307,10 @@ await db.prepare('INSERT OR REPLACE INTO ciphers (id,user_id,type,folder_id,name
   const state = (await (await stub.fetch('https://do/state')).json()).state
   const caps = Object.keys(state.capabilities || {})
   const policies = Object.keys(state.plaintextReadPolicies || {})
-  const asksLater = /not allowed|没有|缺少/.test(reply) && !/PLAINTEXT/.test(reply)
+  // With the consent admission honoured, a missing plaintext tick is refused
+  // by that gate ("this connection may use the credential but must not show
+  // the value") rather than by the generic "no grant" line.
+  const asksLater = /不允许显示明文|not allowed|没有|缺少/.test(reply) && !/PLAINTEXT/.test(reply)
   if (!caps.length && !policies.length && asksLater) pass('O10 allowing every item without the plaintext tick mints no capability at all')
   else fail('O10', JSON.stringify({ caps, policies, reply: reply.slice(0, 140) }))
 }
