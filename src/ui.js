@@ -95,6 +95,10 @@ html[data-theme="dark"] .notice-bar .notice-more:hover{background:rgba(255,255,2
 .conn-actions{display:flex;gap:8px;flex-wrap:wrap}
 .conn-actions button{min-height:32px;padding:4px 12px}
 .conn-hint{font-size:12px;line-height:18px}
+.batch-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.batch-bar .ios-pick,.ios-pick{display:flex;align-items:center}
+.batch-count{font-size:12px;color:var(--muted)}
+.batch-hint{font-size:12px;line-height:18px;color:var(--muted);padding:0 12px 10px}
 .conn-hint[data-state="error"]{color:var(--danger)}
 @media(max-width:720px){
 .conn-items label{min-height:40px}
@@ -2482,7 +2486,21 @@ document.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-kpi-decide]'); if (!button) return
   try { await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.decision }) }); show('modal', false); await loadAll(); toast('已处理') } catch (error) { toast(error.message, true) }
 })
-$('pending-box').addEventListener('click', async (event) => { const button = event.target.closest('[data-decide]'); if (!button) return; try { await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.decide }) }); await Promise.all([loadState(), loadStats(), loadItems()]); toast('已处理') } catch (error) { toast(error.message, true) } })
+$('pending-box').addEventListener('click', async (event) => {
+  const batchApprove = event.target.closest('#batch-approve')
+  const batchDeny = event.target.closest('#batch-deny')
+  if (batchApprove) { event.preventDefault(); return applyPendingBatch('approve') }
+  if (batchDeny) { event.preventDefault(); return applyPendingBatch('deny') }
+  const button = event.target.closest('[data-decide]')
+  if (!button) return
+  try { await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.decide }) }); await Promise.all([loadState(), loadStats(), loadItems()]); toast('已处理') } catch (error) { toast(error.message, true) }
+})
+$('pending-box').addEventListener('change', (event) => {
+  if (event.target.id === 'batch-all') {
+    document.querySelectorAll('[data-batch-select]').forEach((node) => { node.checked = event.target.checked })
+  }
+  if (event.target.matches('[data-batch-select], #batch-all')) updateBatchCount()
+})
 // Connection controls live in the overview queue, the pending sheet and the
 // banner, so they are delegated once on the document.
 document.addEventListener('click', (event) => {
@@ -4625,6 +4643,9 @@ function renderPending() {
       .map((mode) => '<button class="ios-chip" data-decide="' + mode[0] + '" data-id="' + esc(request.id) + '">' + mode[1] + '</button>').join('')
       + '<button class="ios-chip danger" data-decide="deny" data-id="' + esc(request.id) + '">拒绝</button>'
     return '<div class="ios-row ios-row--stack">' +
+      // Multi-select is per row; the batch bar applies one set of settings to
+      // every selected request, so approving ten rows is one operator decision.
+      '<span class="ios-pick"><input type="checkbox" data-batch-select data-kind="item" data-id="' + esc(request.id) + '" aria-label="选择此请求"></span>' +
       '<span class="ios-ico" data-kind="' + (isFill ? 'web' : 'api') + '">' + IOS_PERSON + '</span>' +
       '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(pendingAgentLabel(request)) +
       '</span><span class="ios-tag">' + esc(pendingActionLabel(request)) + '</span></div>' +
@@ -4636,8 +4657,81 @@ function renderPending() {
   }).join('')
   const total = pending.length + pendingConnections().length
   $('pending-box').innerHTML = total
-    ? '<div class="ios-group"><div class="ios-group-head"><span>等待你决定 · ' + total + '</span></div><div class="ios-card">' + body + '</div></div>'
+    ? '<div class="ios-group"><div class="ios-group-head"><span>等待你决定 · ' + total + '</span></div>' + batchBarHtml() + '<div class="ios-card">' + body + '</div></div>'
     : '<div class="hint">暂无待批准请求</div>'
+}
+// One settings block for the whole selection. Item requests only use the
+// duration; connection requests also use scope/plaintext/write, because the
+// server contract needs those three before it can admit an agent.
+function batchBarHtml() {
+  return '<div class="batch-bar">'
+    + '<label class="chk"><input type="checkbox" id="batch-all"> 全选</label>'
+    + '<span class="batch-count" id="batch-count">已选 0 条</span>'
+    + '<select id="batch-duration" aria-label="批量授权时长"><option value="once">仅本次</option><option value="1h">1 小时</option><option value="24h">24 小时</option><option value="7d">7 天</option><option value="always">永久</option></select>'
+    + '<select id="batch-scope" aria-label="批量连接范围"><option value="requested">按请求范围</option><option value="all">全部条目</option></select>'
+    + '<label class="chk"><input type="checkbox" id="batch-plaintext"> 含明文</label>'
+    + '<label class="chk"><input type="checkbox" id="batch-write"> 含写入</label>'
+    + '<button class="primary" id="batch-approve" type="button">批准所选</button>'
+    + '<button class="danger" id="batch-deny" type="button">拒绝所选</button>'
+    + '</div><div class="batch-hint" id="batch-hint">将按当前设置一次性处理所选请求：连接类共用范围/明文/写入/时长，条目类共用时长。超过 3 天未处理的请求会自动清理并保留审计。</div>'
+}
+function updateBatchCount() {
+  const count = document.querySelectorAll('[data-batch-select]:checked').length
+  const label = document.getElementById('batch-count')
+  if (label) label.textContent = '已选 ' + count + ' 条'
+  const approve = document.getElementById('batch-approve')
+  if (approve) approve.textContent = count ? '批准所选 ' + count + ' 条' : '批准所选'
+  const deny = document.getElementById('batch-deny')
+  if (deny) deny.textContent = count ? '拒绝所选 ' + count + ' 条' : '拒绝所选'
+}
+async function applyPendingBatch(decision) {
+  const selected = Array.from(document.querySelectorAll('[data-batch-select]:checked'))
+  if (!selected.length) return toast('先勾选要处理的请求', true)
+  const duration = ($('batch-duration') || {}).value || 'once'
+  const scopeMode = ($('batch-scope') || {}).value || 'requested'
+  const plaintextAllowed = Boolean(($('batch-plaintext') || {}).checked)
+  const writeAllowed = Boolean(($('batch-write') || {}).checked)
+  const total = selected.length
+  if (decision === 'approve') {
+    if (!vaultUnlocked()) {
+      toast('批准需要先解锁 Vault；解锁后会继续这次批量批准。', true)
+      inlineUnlockSheet(() => applyPendingBatch('approve'))
+      return
+    }
+    const label = '将按当前设置一次性批准 ' + total + ' 条（时长 ' + (duration === 'once' ? '仅本次' : connectionDurationLabel(duration)) + '）。继续？'
+    if (!window.confirm(label)) return
+  }
+  let ok = 0
+  let failed = 0
+  for (const node of selected) {
+    const id = node.dataset.id
+    try {
+      if (node.dataset.kind === 'connection') {
+        if (decision === 'deny') {
+          await api('/api/connections/decide', { method: 'POST', body: JSON.stringify({ id, decision: 'deny' }) })
+        } else {
+          const entry = pendingConnections().find((item) => item.id === id) || {}
+          const requested = entry.requestedScope || { all: true, itemIds: [] }
+          const body = {
+            id, decision: 'approve',
+            // once has no meaning for an admission; the closest is the 1h floor.
+            duration: duration === 'once' ? '1h' : duration,
+            plaintextAllowed, writeAllowed,
+          }
+          if (scopeMode === 'all' || requested.all === true) body.all = true
+          else { body.all = false; body.itemIds = requested.itemIds || [] }
+          await api('/api/connections/decide', { method: 'POST', body: JSON.stringify(body) })
+        }
+      } else {
+        await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id, decision: decision === 'deny' ? 'deny' : duration }) })
+      }
+      ok += 1
+    } catch (error) {
+      failed += 1
+    }
+  }
+  await Promise.all([loadState(), loadStats(), loadItems()])
+  toast('批量' + (decision === 'deny' ? '拒绝' : '批准') + '：成功 ' + ok + ' 条' + (failed ? '，失败 ' + failed + ' 条' : ''), failed > 0)
 }
 
 // -- Web fill policies --------------------------------------------------------
@@ -4749,6 +4843,7 @@ function pendingConnectionRowsHtml() {
     const id = esc(entry.id || '')
     const all = (entry.requestedScope || {}).all === true
     return '<div class="ios-row ios-row--stack" data-conn-card="' + id + '" data-conn-expires="' + connExpiresAt(entry) + '">'
+      + '<span class="ios-pick"><input type="checkbox" data-batch-select data-kind="connection" data-id="' + id + '" aria-label="选择此连接申请"></span>'
       + '<span class="ios-ico" data-kind="api">' + IOS_PERSON + '</span>'
       + '<div class="ios-main"><div class="ios-title"><span class="ios-name">' + esc(entry.agent || 'Agent') + '</span><span class="ios-tag">首次连接</span></div>'
       + '<div class="ios-sub">' + esc(connSourceLabel(entry)) + ' · ' + connPlaintextText(entry) + ' · ' + esc(connScopeText(entry)) + '</div>'

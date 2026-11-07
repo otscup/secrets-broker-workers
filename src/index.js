@@ -2205,6 +2205,11 @@ const SWEEP_MIN_INTERVAL_MS = 60 * 1000
 // tell "approved" from "denied", and a denial is returned instead of turning the
 // retry into a fresh approval request.
 const PENDING_RESULT_TTL_MS = 10 * 60 * 1000
+// An item approval nobody answers should not sit in the queue forever. Three
+// days is separate from the 10-minute first-connection window: that one guards
+// a live handshake, this one is housekeeping for abandoned requests. The sweep
+// removes it and keeps only the audit line.
+const PENDING_REQUEST_TTL_MS = 3 * 86400e3
 // The console's unlock tiers. The server used to read only ttlMs, so a client
 // that sent just `duration` got the 1h default while the audit line (and the
 // UI) promised 12h/7d/30d. A preset now maps to a real TTL; `device` stays at
@@ -2383,11 +2388,17 @@ function sessionSweepNeeded(state, now = Date.now()) {
 function resultSweepNeeded(state, now = Date.now()) {
   return Object.values(state.pendingResults ?? {}).some((value) => Number(value?.expiresAt ?? 0) <= now)
 }
+function pendingSweepNeeded(state, now = Date.now()) {
+  return Object.values(state.pending ?? {}).some((entry) => {
+    const createdAt = millisOf(entry?.createdAt)
+    return Number.isFinite(createdAt) && createdAt > 0 && createdAt <= now - PENDING_REQUEST_TTL_MS
+  })
+}
 function stateSweepNeeded(state, now = Date.now()) {
   return connectionSweepNeeded(state, now) || grantSweepNeeded(state, now)
     || capabilitySweepNeeded(state, now) || writeTicketSweepNeeded(state, now)
     || tokenSweepNeeded(state, now) || sessionSweepNeeded(state, now)
-    || resultSweepNeeded(state, now)
+    || resultSweepNeeded(state, now) || pendingSweepNeeded(state, now)
 }
 
 // Pure mutation over one state document. Returns what was removed plus the
@@ -2404,9 +2415,10 @@ function sweepStateDocument(state, now = Date.now()) {
   state.oauthRefreshTokens ??= {}
   state.oauthCodes ??= {}
   state.adminSessions ??= {}
+  state.pending ??= {}
   const removed = {
     connections: [], grants: [], capabilities: [], writeTickets: [],
-    tokens: [], refreshTokens: [], codes: 0, sessions: 0,
+    tokens: [], refreshTokens: [], codes: 0, sessions: 0, pending: [],
   }
   removed.connections.push(...sweepConnections(state, now))
   removed.grants.push(...sweepExpiredGrants(state, now))
@@ -2428,6 +2440,14 @@ function sweepStateDocument(state, now = Date.now()) {
   }
   for (const [key, value] of Object.entries(state.pendingResults)) {
     if (Number(value?.expiresAt ?? 0) <= now) delete state.pendingResults[key]
+  }
+  // Three days for item approvals nobody answered. Connection handshakes are
+  // handled by sweepConnections (10 minutes) and are not touched here.
+  for (const [id, entry] of Object.entries(state.pending)) {
+    const createdAt = millisOf(entry?.createdAt)
+    if (!entry || !Number.isFinite(createdAt) || createdAt <= 0 || createdAt > now - PENDING_REQUEST_TTL_MS) continue
+    removed.pending.push({ id, agent: entry.agent ?? '', name: entry.name ?? '', action: entry.action ?? '', createdAt })
+    delete state.pending[id]
   }
   for (const [hash, token] of Object.entries(state.oauthTokens)) {
     if (!token) { delete state.oauthTokens[hash]; continue }
@@ -2469,6 +2489,7 @@ function sweepStateDocument(state, now = Date.now()) {
       refreshTokens: Object.keys(state.oauthRefreshTokens).length,
       codes: Object.keys(state.oauthCodes).length,
       sessions: Object.keys(state.adminSessions).length,
+      pending: Object.keys(state.pending).length,
     },
   }
 }
@@ -2519,6 +2540,9 @@ async function sweepExpiredState(env, provided = null) {
   }
   for (const token of outcome.removed.refreshTokens) {
     await addAudit(env, { event: 'oauth.refresh-expire', agent: token.agent, expiresAt: token.expiresAt, ...counts })
+  }
+  for (const entry of outcome.removed.pending) {
+    await addAudit(env, { event: 'pending.expire', id: entry.id, agent: entry.agent, name: entry.name, action: entry.action, createdAt: entry.createdAt, reason: 'unanswered-3d', ...counts })
   }
   if (outcome.removed.codes) await addAudit(env, { event: 'oauth.code-expire', count: outcome.removed.codes, ...counts })
   if (outcome.removed.sessions) await addAudit(env, { event: 'session.expire', count: outcome.removed.sessions, ...counts })
