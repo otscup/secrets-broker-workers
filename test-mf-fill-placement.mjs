@@ -71,13 +71,15 @@ const fail = (n, d) => { results.push({ n, ok: false, d }); console.log('FAIL  '
   else fail('F7', JSON.stringify({ cardGone, inTable, deletable, noBulkRegrant, noPrompt }))
 }
 
-// F8: an expired grant is extended from the grants row, which is the flow the
-// user asked for instead of a second screen.
+// F8: expired grants now leave the table on the lazy sweep, while the remaining
+// rows still edit their duration in place (the flow the user asked for instead
+// of a second screen).
 {
-  const hint = uiHtml.includes('点该行的时长即可延期')
+  const hint = uiHtml.includes('到期的授权会在下次刷新时自动从列表移除')
+  const extend = uiHtml.includes('点该行的时长即可修改时长')
   const pill = uiHtml.includes('data-item-grant')
-  if (hint && pill) pass('F8 an expired grant is extended from its own row')
-  else fail('F8', JSON.stringify({ hint, pill }))
+  if (hint && extend && pill) pass('F8 an expired grant is extended from its own row')
+  else fail('F8', JSON.stringify({ hint, extend, pill }))
 }
 
 const passed = results.filter((r) => r.ok).length

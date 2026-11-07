@@ -56,8 +56,10 @@ const stateOf = () => stub.fetch('https://do/state').then((r) => r.json()).then(
 // E3: an expiring secret reaches the home page reminder
 {
   const view = await mf.dispatchFetch('https://broker.test/api/state', { headers: { cookie } }).then((r) => r.json())
-  const hit = (view.reminders || []).find((r) => r.kind === 'secret-expiring' && r.agent === 'item-a')
-  if (hit && hit.severity === 'critical' && hit.daysLeft === 2) pass('E3 an expiring secret reaches the home page reminder')
+  // The expiry reminder names the item; agent stays empty so an item name is
+  // never mistaken for an Agent in the reminder bar.
+  const hit = (view.reminders || []).find((r) => r.kind === 'secret-expiring' && r.name === 'item-a')
+  if (hit && hit.severity === 'critical' && hit.daysLeft === 2 && hit.agent === '') pass('E3 an expiring secret reaches the home page reminder')
   else fail('E3', JSON.stringify((view.reminders || []).filter((r) => String(r.kind).indexOf('secret') === 0)))
 }
 
@@ -66,8 +68,8 @@ const stateOf = () => stub.fetch('https://do/state').then((r) => r.json()).then(
   const past = new Date(Date.now() - 86400e3).toISOString()
   await update({ name: 'item-a', expiresAt: past })
   const view = await mf.dispatchFetch('https://broker.test/api/state', { headers: { cookie } }).then((r) => r.json())
-  const hit = (view.reminders || []).find((r) => r.kind === 'secret-expired' && r.agent === 'item-a')
-  if (hit && hit.severity === 'critical') pass('E4 an expired secret is critical')
+  const hit = (view.reminders || []).find((r) => r.kind === 'secret-expired' && r.name === 'item-a')
+  if (hit && hit.severity === 'critical' && hit.agent === '') pass('E4 an expired secret is critical')
   else fail('E4', JSON.stringify((view.reminders || []).filter((r) => String(r.kind).indexOf('secret') === 0)))
 }
 
