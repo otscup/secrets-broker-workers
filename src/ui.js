@@ -26,6 +26,13 @@ nav .icon-btn{width:30px;height:30px;margin-left:4px}
 .account-menu button{display:block;width:100%;text-align:left;background:transparent}
 html[data-theme="dark"] .modal{background:rgba(0,0,0,.6)}
 .v2-advanced{margin-top:12px;border-top:1px solid var(--line);padding-top:10px}
+/* First-run checklist: only rendered while the account is empty, so it never
+   competes with daily work. */
+.onboard-steps{margin-top:10px;display:grid;gap:8px}
+.onboard-step{display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:10px}
+.onboard-step[data-done="1"]{opacity:.62}
+.onboard-num{flex:0 0 auto;width:24px;height:24px;border-radius:50%;background:var(--btn);display:flex;align-items:center;justify-content:center;font-weight:600}
+.onboard-body{flex:1;min-width:0}
 .v2-advanced>summary{cursor:pointer;font-size:13px;color:var(--muted);list-style-position:inside}
 .v2-advanced[open]>summary{color:var(--text)}
 label.field{display:block}
@@ -997,6 +1004,11 @@ nav{grid-area:tabs}
 
 <section id="dashboard" class="hidden">
   <div id="locked-bar" class="notice-bar hidden" data-level="notice" role="status" aria-live="polite"><span class="notice-dot"></span><span class="notice-text" id="locked-text">未解锁 · 条目名称已脱敏，审批仍可进行</span><button class="notice-more" id="locked-unlock" type="button">解锁</button></div>
+  <div id="onboarding" class="card hidden" role="region" aria-label="上手三步">
+    <div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">上手三步</h2><button class="mini" id="onboarding-close" type="button" aria-label="关闭上手指引">关闭</button></div>
+    <div class="hint" style="margin-top:4px">完成任意一步即可继续使用；关闭后不再出现。</div>
+    <div id="onboarding-steps" class="onboard-steps"></div>
+  </div>
   <section id="view-overview" class="view">
     <div class="ov-head"><div class="ov-titles"><h2 class="ov-title">概览</h2><div class="ov-sub" id="ov-sub"></div><span class="hint" id="updated"></span></div><div class="ov-controls"><div class="seg" id="range-row"><button data-range="24h" class="on">24 小时</button><button data-range="7d">7 天</button><button data-range="30d">30 天</button></div><input id="global-search" class="gs-input ov-search" placeholder="搜索 Agent、密钥、授权、日志…" autocomplete="off" aria-label="全局搜索"></div></div>
     <div id="global-search-results" class="gs-box hidden"></div>
@@ -1999,6 +2011,7 @@ associateLabels()
 new MutationObserver(() => associateLabels()).observe(document.body, { childList: true, subtree: true })
 $('mcp-url').textContent = location.origin + '/mcp'
 $('pair-command').textContent = 'secrets-broker pair --url ' + location.origin
+$('onboarding-close').onclick = () => { try { localStorage.setItem('sb.onboarded', '1') } catch {}; $('onboarding').classList.add('hidden') }
 const v2Advanced = $('v2-advanced')
 if (v2Advanced) v2Advanced.addEventListener('toggle', () => {
   // The raw v2 listing and the legacy importer live behind this disclosure.
@@ -2007,6 +2020,18 @@ if (v2Advanced) v2Advanced.addEventListener('toggle', () => {
 })
 $('devices-refresh').onclick = () => loadVault2(false)
 $('v2-devices').addEventListener('click', async (event) => {
+  // The empty state should point at the existing pairing card rather than a
+  // bare hint: reuse the same command the CLI prints, so there is only one
+  // pairing path to maintain.
+  const pairSelf = event.target.closest('[data-pair-self]')
+  if (pairSelf) {
+    const command = $('pair-command')
+    if (command) command.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    if (command && navigator.clipboard) {
+      try { await navigator.clipboard.writeText(command.textContent); toast('已复制配对命令，在本机终端运行后会给出批准链接') } catch { toast('请手动复制下面的配对命令') }
+    }
+    return
+  }
   const write = event.target.closest('[data-v2-write]')
   if (write) {
     const on = write.dataset.write === '1'
@@ -2855,7 +2880,44 @@ async function loadStats() { try { app.stats = await api('/api/stats?range=' + a
 // The zero-knowledge listing used to load (and prompt for TOTP) on every boot,
 // even when the operator never opened that card. Status-only now; the explicit
 // refresh/device actions still ask for the second factor.
-async function refreshAll() { await Promise.all([loadState(), loadItems(), loadStats(), loadVault2(false), loadRecent()]) }
+async function refreshAll() { await Promise.all([loadState(), loadItems(), loadStats(), loadVault2(false), loadRecent()]); renderOnboarding() }
+// First run only. The card carries the three things that make the vault useful:
+// an unlock, one secret, one agent. It is dismissible and remembered locally;
+// an account that already has items and agents is marked seen without showing
+// anything, so daily use is untouched.
+function renderOnboarding() {
+  const host = $('onboarding')
+  const steps = $('onboarding-steps')
+  if (!host || !steps) return
+  let seen = false
+  try { seen = localStorage.getItem('sb.onboarded') === '1' } catch {}
+  if (seen) { host.classList.add('hidden'); return }
+  const itemCount = Math.max((app.items || []).length, Number(app.v2?.items ?? 0) || 0)
+  const agentCount = Object.keys((app.data && app.data.agents) || {}).length
+  // An established account is not a first run; remember that quietly instead of
+  // showing onboarding to someone who already knows the product.
+  if (itemCount > 0 && agentCount > 0) {
+    try { localStorage.setItem('sb.onboarded', '1') } catch {}
+    host.classList.add('hidden')
+    return
+  }
+  const unlocked = app.locked !== true
+  const rows = [
+    { n: 1, done: unlocked, title: '解锁 Vault', body: unlocked ? '已解锁，名称和明文可用。' : '输入主密码解锁；锁定时名称会脱敏。', action: 'unlock', label: '去解锁' },
+    { n: 2, done: itemCount > 0, title: '建第一条密钥', body: itemCount > 0 ? '已有 ' + itemCount + ' 条。' : '密钥只保存在这台服务器，Agent 读取要经过批准。', action: 'items', label: '去新建' },
+    { n: 3, done: agentCount > 0, title: '连接第一个 Agent', body: agentCount > 0 ? '已有 ' + agentCount + ' 个 Agent。' : '创建 Agent 后，它首次连接时一次批准范围、明文、写入和时长。', action: 'agents', label: '去创建' },
+  ]
+  steps.innerHTML = rows.map((row) => '<div class="onboard-step" data-done="' + (row.done ? '1' : '0') + '"><span class="onboard-num">' + (row.done ? '✓' : row.n) + '</span><div class="onboard-body"><b>' + row.title + '</b><div class="hint">' + row.body + '</div></div>' + (row.done ? '' : '<button class="small" data-onboard="' + row.action + '">' + row.label + '</button>') + '</div>').join('')
+  steps.querySelectorAll('[data-onboard]').forEach((button) => {
+    button.onclick = () => {
+      const action = button.dataset.onboard
+      if (action === 'unlock') inlineUnlockSheet()
+      else if (action === 'items') { document.querySelector('#nav [data-view="items"]')?.click(); $('item-create')?.click() }
+      else if (action === 'agents') { document.querySelector('#nav [data-view="agents"]')?.click(); $('agent-new')?.click() }
+    }
+  })
+  host.classList.remove('hidden')
+}
 // The OIDC providers. Each one is edited on its own; the client secret is
 // never sent back, so the field starts empty and an empty value keeps the
 // stored one.
@@ -3610,7 +3672,7 @@ function renderVault2Devices(devices) {
         : '<button class="mini" data-v2-write="' + esc(device.id) + '" data-write="' + (device.canWrite ? '1' : '0') + '">' + (device.canWrite ? '可写' : '只读') + '</button><button class="mini" data-v2-revoke="' + esc(device.id) + '">撤销</button>'
       return '<div class="ios-row" data-device="' + esc(device.id) + '"><div class="ios-main"><div class="ios-title"><b>' + esc(device.name) + '</b> <span class="' + state.cls + '">' + state.label + '</span>' + (device.canWrite ? ' <span class="kind-tag kind-api">可写</span>' : '') + '</div><div class="ios-sub">最近活动 ' + esc(seen) + (made ? ' · 配对于 ' + esc(made) : '') + '</div></div>' + actions + '</div>'
     }).join('')
-    : '<div class="hint">还没有配对设备。在另一台机器上运行 secrets-broker pair，打开终端给出的链接批准，它就会出现在这里。</div>') + '</div>'
+    : '<div class="state"><div class="state__title">还没有配对设备</div><div class="state__body">在要接入的电脑上运行下面的配对命令，打开终端给出的链接批准，它就会出现在这里。</div><div class="state__actions"><button class="primary" data-pair-self>配对这台电脑</button></div></div>') + '</div>'
   host.classList.remove('hidden')
 }
 
@@ -3692,7 +3754,7 @@ function itemsStateHtml() {
   if (app.itemsError) return '<div class="state" data-tone="error"><div class="state__title">读取失败</div><div class="state__body">' + esc(app.itemsError) + '</div><div class="state__actions"><button class="primary" data-state-act="retry">重试</button></div></div>'
   if (!app.itemsLoaded) return '<div class="state" data-tone="loading"><div class="state__title">正在读取条目…</div><div class="state__body">清单只从这台服务器读取，不会请求任何第三方。</div></div>'
   if (query) return '<div class="state"><div class="state__title">没有匹配的条目</div><div class="state__body">名称、分组和网址里都没有“' + esc(query) + '”。</div><div class="state__actions"><button data-state-act="clear">清除筛选</button></div></div>'
-  return '<div class="state"><div class="state__title">还没有条目</div><div class="state__body">密钥只保存在这台服务器的 D1 里；Agent 每次读取都要经过策略或你的批准。</div><div class="state__actions"><button class="primary" data-state-act="create">新增条目</button><button data-state-act="import">导入 JSON</button></div></div>'
+  return '<div class="state"><div class="state__title">还没有条目</div><div class="state__body">密钥只保存在这台服务器的 D1 里；Agent 每次读取都要经过策略或你的批准。</div><div class="state__actions"><button class="primary" data-state-act="create">新增条目</button><button data-state-act="import">导入 JSON</button><button data-state-act="agent">连接第一个 Agent</button></div></div>'
 }
 function setItemDensity(dense) {
   const box = $('items-box')
@@ -3814,6 +3876,7 @@ function renderItems() {
       else if (action === 'clear') { const filter = $('item-filter'); if (filter) { filter.value = ''; localStorage.removeItem('sb-item-filter') } renderItems() }
       else if (action === 'create') $('item-create')?.click()
       else if (action === 'import') $('item-import')?.click()
+      else if (action === 'agent') document.querySelector('#nav [data-view="agents"]')?.click()
     }
   })
   $('items-box').querySelectorAll('.item-select').forEach((box) => { box.onchange = () => { if (box.checked) selectedItems.add(box.dataset.name); else selectedItems.delete(box.dataset.name); updateBulkBar() } })

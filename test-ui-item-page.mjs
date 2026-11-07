@@ -526,6 +526,94 @@ logsView.visible && auditLoads - auditBefore === 1 && logsView.rows === 2 && log
   ? pass('A26 the logs tab loads the trail on entry without a refresh click')
   : fail('A26', JSON.stringify({ auditBefore, auditLoads, logsView }).slice(0, 320))
 
+// A28 - onboarding must not intrude on an account that already has data. The
+// stub starts with items and agents, so the card stays hidden and the local
+// flag is set quietly.
+const establishedOnboarding = await evaluate(`(() => ({
+  hidden: document.getElementById('onboarding').classList.contains('hidden'),
+  seen: localStorage.getItem('sb.onboarded'),
+}))()`)
+establishedOnboarding.hidden && establishedOnboarding.seen === '1'
+  ? pass('A28 onboarding stays hidden for an established account')
+  : fail('A28', JSON.stringify(establishedOnboarding))
+
+// A29 - an empty account sees the three-step card; closing it remembers locally
+// and the next refresh keeps it closed.
+state.agents = []
+items.items = []
+// The vault status carries its own item count; an empty account means zero there
+// too, otherwise step 2 would look finished on a brand-new vault.
+routes['/api/v2/status'] = () => ({ initialized: true, revision: 0, items: 0, unlocked: false, keyrings: [{ id: 'k1', kind: 'device' }] })
+const firstRun = await evaluate(`(async () => {
+  localStorage.removeItem('sb.onboarded')
+  await refreshAll()
+  const host = document.getElementById('onboarding')
+  return {
+    shown: !host.classList.contains('hidden'),
+    steps: host.querySelectorAll('.onboard-step').length,
+    actions: [...host.querySelectorAll('[data-onboard]')].map((b) => b.dataset.onboard),
+  }
+})()`)
+firstRun.shown && firstRun.steps === 3 && firstRun.actions.includes('items') && firstRun.actions.includes('agents')
+  ? pass('A29 an empty account sees the three-step checklist')
+  : fail('A29', JSON.stringify(firstRun))
+const closedOnboarding = await evaluate(`(async () => {
+  document.getElementById('onboarding-close').click()
+  const visibleAfterClose = !document.getElementById('onboarding').classList.contains('hidden')
+  await refreshAll()
+  return {
+    visibleAfterClose,
+    seen: localStorage.getItem('sb.onboarded'),
+    hidden: document.getElementById('onboarding').classList.contains('hidden'),
+  }
+})()`)
+!closedOnboarding.visibleAfterClose && closedOnboarding.seen === '1' && closedOnboarding.hidden
+  ? pass('A29b closing it is remembered and it stays closed')
+  : fail('A29b', JSON.stringify(closedOnboarding))
+
+// A30 - an empty secret list offers the next steps instead of blank space.
+await evaluate(`(async () => { await loadItems(); document.querySelector('#nav [data-view=items]').click() })()`)
+await wait(300)
+const emptyCta = await evaluate(`(() => ({
+  text: document.getElementById('items-box').textContent,
+  acts: [...document.querySelectorAll('#items-box [data-state-act]')].map((b) => b.dataset.stateAct),
+}))()`)
+emptyCta.acts.includes('create') && emptyCta.acts.includes('agent')
+  ? pass('A30 an empty secret list has explicit CTAs')
+  : fail('A30', JSON.stringify(emptyCta))
+const agentJump = await evaluate(`(async () => {
+  document.querySelector('#items-box [data-state-act=agent]').click()
+  await new Promise((r) => setTimeout(r, 250))
+  return {
+    agents: !document.getElementById('view-agents').classList.contains('hidden'),
+    items: !document.getElementById('view-items').classList.contains('hidden'),
+  }
+})()`)
+agentJump.agents && !agentJump.items
+  ? pass('A30b the empty-state CTA opens the agents view')
+  : fail('A30b', JSON.stringify(agentJump))
+
+// A31 - a computers page with no devices points at the pairing command that
+// already exists instead of a dead-end hint.
+routes['/api/v2/devices'] = () => ({ devices: [] })
+await evaluate(`(async () => { await loadVault2(false); document.querySelector('#nav [data-view=devices]').click() })()`)
+await wait(300)
+const deviceEmpty = await evaluate(`(() => ({
+  hasPair: Boolean(document.querySelector('#v2-devices [data-pair-self]')),
+  text: document.getElementById('v2-devices').textContent,
+}))()`)
+deviceEmpty.hasPair && deviceEmpty.text.includes('配对这台电脑')
+  ? pass('A31 an empty computers page offers 配对这台电脑')
+  : fail('A31', JSON.stringify(deviceEmpty))
+const pairClick = await evaluate(`(async () => {
+  document.querySelector('#v2-devices [data-pair-self]').click()
+  await new Promise((r) => setTimeout(r, 200))
+  return { toast: document.getElementById('toast').textContent, command: document.getElementById('pair-command').textContent }
+})()`)
+pairClick.toast.includes('配对命令') && /secrets-broker pair --url/.test(pairClick.command)
+  ? pass('A31b 配对这台电脑 reuses the existing pair command')
+  : fail('A31b', JSON.stringify(pairClick))
+
 // A11 - nothing threw while all of that happened.
   problems.length === 0 ? pass('A11 no runtime errors') : fail('A11', problems.slice(0, 3).join(' | '))
 } finally {
