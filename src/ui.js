@@ -961,6 +961,11 @@ nav{grid-area:tabs}
 .seg button{min-height:36px;padding:0 12px}
 .aging-table tbody tr,.health-row{min-height:44px}
 }
+/* Copy confirmation: the button swaps to a tick in place. The pop is purely
+   decorative, so reduced motion gets the icon change without the movement. */
+.copy-ok{color:var(--green)}
+@keyframes copy-pop{0%{transform:scale(.82)}60%{transform:scale(1.1)}100%{transform:scale(1)}}
+@media (prefers-reduced-motion: no-preference){.copy-ok{animation:copy-pop var(--dur-base) var(--ease)}}
 </style></head><body><div class="wrap">
 <div id="db-down" class="notice-bar hidden" data-level="critical"><span class="notice-dot"></span><span class="notice-text"></span></div>
 <header><div class="brand"><img id="site-logo" src="/logo.png" alt="" style="cursor:pointer"><h1 id="site-title" style="cursor:pointer">Secrets Broker</h1><span class="badge">Cloudflare Workers</span><span class="badge" id="header-version" title="应用版本">版本未知</span></div>
@@ -1053,7 +1058,7 @@ nav{grid-area:tabs}
     
   </section>
 
-  <section id="view-devices" class="view hidden"><div class="card"><div class="row" style="justify-content:space-between;align-items:center"><div><h2 style="margin:0">电脑</h2><div class="hint" style="margin-top:4px">每台跑过 secrets-broker pair 的机器都在这里。在线状态按最近 5 分钟内的拉取判断；撤销只停止后续拉取，已经拿到的钥匙要重加密才会失效。</div></div><button id="devices-refresh">刷新</button></div><div id="devices-status" class="hint" style="margin-top:10px"></div><div id="v2-devices" class="hidden" style="margin-top:10px"></div><div id="devices-msg" class="status"></div></div><div class="card"><h2>配对新电脑</h2><div class="hint">在另一台机器的终端（PowerShell / CMD，不是浏览器控制台）运行下面这条命令；它会把批准链接、配对码和公钥指纹打印在终端里，然后等待批准。没有全局 secrets-broker 命令时，在仓库根目录把它换成 node cli/index.mjs。</div><div class="secret" id="pair-command" style="margin-top:8px">secrets-broker pair --url …</div><div class="hint" style="margin-top:8px">打开终端给出的链接，核对公钥指纹一致后点批准。配对码五分钟后失效；批准后设备会出现在上面的列表里，可在这里切换只读/可写或撤销。</div></div></section>
+  <section id="view-devices" class="view hidden"><div class="card"><div class="row" style="justify-content:space-between;align-items:center"><div><h2 style="margin:0">电脑</h2><div class="hint" style="margin-top:4px">每台跑过 secrets-broker pair 的机器都在这里。在线状态按最近 5 分钟内的拉取判断；撤销只停止后续拉取，已经拿到的钥匙要重加密才会失效。</div></div><button id="devices-refresh">刷新</button></div><div id="devices-status" class="hint" style="margin-top:10px"></div><div id="v2-devices" class="hidden" style="margin-top:10px"></div><div id="devices-msg" class="status"></div></div><div class="card"><h2>配对新电脑</h2><div class="hint">在另一台机器的终端（PowerShell / CMD，不是浏览器控制台）运行下面这条命令；它会把批准链接、配对码和公钥指纹打印在终端里，然后等待批准。没有全局 secrets-broker 命令时，在仓库根目录把它换成 node cli/index.mjs。</div><div class="secret" id="pair-command" style="margin-top:8px">secrets-broker pair --url …</div><div class="row" style="margin-top:8px"><button id="pair-copy" type="button">复制配对命令</button></div><div class="hint" style="margin-top:8px">打开终端给出的链接，核对公钥指纹一致后点批准。配对码五分钟后失效；批准后设备会出现在上面的列表里，可在这里切换只读/可写或撤销。</div></div></section>
   <section id="view-agents" class="view hidden">
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:center">
@@ -1200,7 +1205,7 @@ nav{grid-area:tabs}
       </div>
     </div>
     <div class="card"><h2>浏览器通知</h2><div class="hint" id="browser-notify-status"></div><div class="hint" id="webpush-status"></div><div style="margin-top:10px"><button id="enable-browser-notify">启用浏览器通知</button><button id="test-browser-notify">发送测试通知</button><button id="enable-webpush">启用后台推送</button><button id="test-webpush">测试后台推送</button></div></div>
-    <div class="card"><h2>MCP 接入</h2><div class="hint">HTTP MCP 地址（用 Agent Bearer token）：</div><div class="secret" id="mcp-url"></div><div class="hint" style="margin-top:8px">工具：list_secrets / request_access / get_secret。Codex、Hermes 可直接配置 HTTP MCP。</div></div>
+    <div class="card"><h2>MCP 接入</h2><div class="hint">HTTP MCP 地址（用 Agent Bearer token）：</div><div class="secret" id="mcp-url"></div><div class="row" style="margin-top:8px"><button id="mcp-copy" type="button">复制 MCP 地址</button></div><div class="hint" style="margin-top:8px">工具：list_secrets / request_access / get_secret。Codex、Hermes 可直接配置 HTTP MCP。</div></div>
   </section>
 </section>
 
@@ -1378,6 +1383,45 @@ function askCode(message, { type = 'text', inputmode = 'numeric', placeholder = 
     document.body.appendChild(wrap)
     input.focus()
   })
+}
+
+// A copy either happens or it does not: the button itself confirms it for 600ms
+// so the operator does not have to chase a toast, and a failure can never leave
+// the ✓ behind. Text is restored from the button, not from the copied value.
+function flashCopyOk(button) {
+  if (!button) return
+  const original = button.dataset.copyLabel != null ? button.dataset.copyLabel : button.textContent
+  button.dataset.copyLabel = original
+  clearTimeout(Number(button.dataset.copyTimer || 0))
+  button.classList.remove('copy-ok')
+  void button.offsetWidth
+  button.textContent = '✓'
+  button.classList.add('copy-ok')
+  button.dataset.copyTimer = String(setTimeout(() => {
+    button.textContent = button.dataset.copyLabel || original
+    delete button.dataset.copyLabel
+    delete button.dataset.copyTimer
+    button.classList.remove('copy-ok')
+  }, 600))
+}
+async function copyFeedback(button, text, options = {}) {
+  const value = String(text == null ? '' : text)
+  if (!value) { toast('没有可复制的内容', true); return false }
+  if (button && button.dataset.copyBusy === '1') return false
+  if (button) button.dataset.copyBusy = '1'
+  try {
+    await navigator.clipboard.writeText(value)
+    flashCopyOk(button)
+    if (options.toastOk) toast(options.toastOk)
+    return true
+  } catch {
+    // Failures stay failures: no tick, and the manual-copy hint still stands.
+    if (button) button.classList.remove('copy-ok')
+    toast(options.toastFail || '复制失败，请手动选择文本', true)
+    return false
+  } finally {
+    if (button) delete button.dataset.copyBusy
+  }
 }
 
 // Sensitive actions ask once, here, regardless of the unlock tier. The server
@@ -2017,6 +2061,10 @@ associateLabels()
 new MutationObserver(() => associateLabels()).observe(document.body, { childList: true, subtree: true })
 $('mcp-url').textContent = location.origin + '/mcp'
 $('pair-command').textContent = 'secrets-broker pair --url ' + location.origin
+// Both values are fixed strings shown on the page, so the button copies what the
+// operator can see instead of recomputing it from a different source.
+$('mcp-copy').onclick = () => copyFeedback($('mcp-copy'), $('mcp-url').textContent, { toastOk: '已复制 MCP 地址' })
+$('pair-copy').onclick = () => copyFeedback($('pair-copy'), $('pair-command').textContent, { toastOk: '已复制配对命令，在本机终端运行后会给出批准链接' })
 $('onboarding-close').onclick = () => { try { localStorage.setItem('sb.onboarded', '1') } catch {}; $('onboarding').classList.add('hidden') }
 const v2Advanced = $('v2-advanced')
 if (v2Advanced) v2Advanced.addEventListener('toggle', () => {
@@ -2034,7 +2082,7 @@ $('v2-devices').addEventListener('click', async (event) => {
     const command = $('pair-command')
     if (command) command.scrollIntoView({ block: 'center', behavior: 'smooth' })
     if (command && navigator.clipboard) {
-      try { await navigator.clipboard.writeText(command.textContent); toast('已复制配对命令，在本机终端运行后会给出批准链接') } catch { toast('请手动复制下面的配对命令') }
+      await copyFeedback(pairSelf, command.textContent, { toastOk: '已复制配对命令，在本机终端运行后会给出批准链接', toastFail: '请手动复制下面的配对命令' })
     }
     return
   }
@@ -2281,10 +2329,17 @@ async function openAgentCreate() {
       status('ac-status', '创建中…')
       const payload = { name, alias: $('ac-alias').value.trim(), note: $('ac-note').value.trim() }
       const result = await api('/api/agents/create', { method: 'POST', body: JSON.stringify(payload) })
-      $('ac-token').classList.remove('hidden')
-      $('ac-token').textContent = result.token
+      // Keep the token readable after the automatic copy: the button remains a
+      // manual fallback, and it is also the place the in-place ✓ appears.
+      const box = $('ac-token')
+      box.classList.remove('hidden')
+      box.innerHTML = '<code id="ac-token-value"></code> <button type="button" class="small" id="ac-token-copy">复制 token</button>'
+      $('ac-token-value').textContent = result.token
+      const tokenCopy = $('ac-token-copy')
+      tokenCopy.onclick = () => copyFeedback(tokenCopy, result.token, { toastOk: '已复制 token' })
       const nextStep = '。下一步：让 Agent 连接一次，在「连接」页批准它的范围、明文、写入和时长'
-      try { await navigator.clipboard.writeText(result.token); status('ac-status', '已创建，token 已复制到剪贴板' + nextStep, 'ok') } catch { status('ac-status', '已创建，请手动复制 token' + nextStep, 'ok') }
+      const copied = await copyFeedback(tokenCopy, result.token)
+      status('ac-status', '已创建，' + (copied ? 'token 已复制到剪贴板' : '请手动复制 token') + nextStep, 'ok')
       await refreshAll()
     } catch (error) { status('ac-status', error.message, 'error') }
   }
@@ -6090,9 +6145,7 @@ function renderRevealed(data) {
     '<div class="kv"><span>密钥</span><b><code>' + esc(data.value || '') + '</code></b></div>' +
     (data.totp ? '<div class="kv"><span>验证码</span><b><code>' + esc(data.totp) + '</code></b></div>' : '') +
     '<div class="row"><button class="primary" id="rv-copy" type="button">复制密钥</button></div>'
-  $('rv-copy').onclick = async () => {
-    try { await navigator.clipboard.writeText(data.value || ''); toast('已复制') } catch { toast('复制失败，请手动选择密钥文本', true) }
-  }
+  $('rv-copy').onclick = () => copyFeedback($('rv-copy'), data.value || '', { toastOk: '已复制', toastFail: '复制失败，请手动选择密钥文本' })
 }
 async function revealItemSecret(item) {
   // The server keeps one successful second factor for this unlock session. Try
