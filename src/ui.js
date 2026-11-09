@@ -5,37 +5,159 @@
 export const DURATION_SLIDER_CSS = `
 .dur{position:relative;display:block;margin:6px 0 2px;flex:1 1 auto;min-width:0}
 .dur-native{position:absolute!important;left:0;top:0;width:1px!important;height:1px!important;min-width:0!important;opacity:0;pointer-events:none;overflow:hidden}
-.dur-head{display:flex;align-items:baseline;gap:8px;margin:0 0 2px;min-height:20px}
-.dur-value{font-size:14px;font-weight:600;line-height:20px;color:var(--ink-1,var(--label))}
+.dur-head{display:flex;align-items:baseline;gap:8px;margin:0 2px 4px;min-height:20px}
+.dur-value{font-size:14px;font-weight:600;line-height:20px;color:var(--label,#1f2328);transition:color 180ms ease}
 .dur-value[data-special="1"]{color:var(--orange,#c2760b)}
-.dur-hint{font-size:11px;line-height:16px;color:var(--muted,var(--label-2))}
-.dur-track{position:relative;height:34px;margin:0 12px;touch-action:none;cursor:pointer}
-.dur-rail,.dur-fill{position:absolute;top:50%;height:4px;margin-top:-2px;border-radius:999px}
-.dur-rail{left:0;right:0;background:var(--hair,var(--separator))}
-.dur-fill{left:0;width:0;background:var(--brand-strong,var(--blue))}
-.dur-tick{position:absolute;top:50%;width:2px;height:10px;margin:-5px 0 0 -1px;border-radius:1px;background:var(--muted,var(--label-2));opacity:.45;pointer-events:none}
-.dur-tick[data-on="1"]{background:var(--brand-strong,var(--blue));opacity:1}
-.dur-tick[data-special="1"]{height:14px;margin-top:-7px;width:3px;background:var(--orange,#c2760b);opacity:.9}
-.dur-thumb{position:absolute;top:50%;left:0;width:24px;height:24px;margin:-12px 0 0 -12px;border-radius:50%;background:var(--card,#fff);border:2px solid var(--brand-strong,var(--blue));box-shadow:0 1px 4px rgba(0,0,0,.28);outline:none;transition:left .12s ease,box-shadow .12s ease}
-.dur-thumb::after{content:"";position:absolute;inset:-10px;border-radius:50%}
-.dur-thumb:focus-visible{box-shadow:0 0 0 4px color-mix(in srgb,var(--brand-strong,var(--blue)) 28%,transparent)}
-.dur-thumb[data-special="1"]{border-color:var(--orange,#c2760b)}
-.dur-ends{display:flex;justify-content:space-between;margin:0 12px;font-size:11px;line-height:15px;color:var(--muted,var(--label-2))}
-.dur-ends span[data-special="1"]{color:var(--orange,#c2760b)}
-@media(max-width:720px){.dur-track{height:40px}}
-@media(prefers-reduced-motion:reduce){.dur-thumb{transition:none}}
+.dur-hint{font-size:11px;line-height:16px;color:var(--label-2,rgba(60,60,67,.6))}
+.dur-track{position:relative;height:34px;border-radius:999px;background:var(--fill,rgba(118,118,128,.12));background:color-mix(in srgb,var(--label,#000) 10%,var(--card,#fff));touch-action:none;cursor:grab;outline:none}
+.dur-track[data-dragging="1"]{cursor:grabbing}
+.dur-fill{position:absolute;inset:0;pointer-events:none;clip-path:inset(0 calc((100% - 32px) * (1 - var(--dur-ratio,0))) 0 0 round 999px)}
+.dur-canvas{display:block;width:100%;height:100%}
+.dur-dots{position:absolute;inset:0 16px;display:flex;align-items:center;justify-content:space-between;pointer-events:none;transition:opacity 300ms}
+.dur-dots i{width:4px;height:4px;border-radius:50%;background:var(--label-3,rgba(60,60,67,.3))}
+.dur-dots i[data-special="1"]{width:5px;height:5px;background:var(--orange,#c2760b)}
+.dur[data-maximum="1"] .dur-dots{opacity:0}
+.dur-thumb{position:absolute;top:4px;left:calc((100% - 32px) * var(--dur-ratio,0) + 3px);width:26px;height:26px;border-radius:var(--dur-radius-left,50%) var(--dur-radius-right,50%) var(--dur-radius-right,50%) var(--dur-radius-left,50%)/50%;border:1px solid var(--label-3,rgba(60,60,67,.3));border:1px solid color-mix(in srgb,var(--label,#000) 10%,transparent);background:#fafafa;box-shadow:0 1px 3px rgba(0,0,0,.2);pointer-events:none;outline:none;transform-origin:center;transform:translateX(var(--dur-lean-x,0px)) skewX(var(--dur-lean-skew,0deg)) scale(var(--dur-jelly-x,1),var(--dur-jelly-y,1));scale:var(--dur-press,1);transition:border-color 180ms,box-shadow 180ms}
+.dur-thumb:focus-visible{box-shadow:0 0 0 3px color-mix(in srgb,var(--blue,#007aff) 35%,transparent),0 1px 3px rgba(0,0,0,.2)}
+.dur-track:has(.dur-thumb:focus-visible){outline:2px solid color-mix(in srgb,var(--label,#000) 55%,transparent);outline-offset:2px}
+.dur-track:hover .dur-thumb{border-color:color-mix(in srgb,var(--label,#000) 20%,transparent)}
+.dur-thumb[data-special="1"],.dur-track:hover .dur-thumb[data-special="1"]{border-color:var(--orange,#c2760b)}
+.dur[data-dragging="1"] .dur-thumb{transition-duration:0ms;box-shadow:0 2px 5px rgba(0,0,0,.25)}
+.dur-stops{display:grid;grid-template-columns:repeat(var(--dur-stops,3),minmax(0,1fr));align-items:center;margin-top:6px;font-size:11px;line-height:15px}
+.dur-stops button{min-width:0;max-width:100%;justify-self:center;padding:3px 2px;border:0;background:transparent;color:var(--label-2,rgba(60,60,67,.6));font:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;border-radius:4px}
+.dur-stops button:first-child{justify-self:start}
+.dur-stops button:last-child{justify-self:end}
+.dur-stops button[aria-pressed="true"]{color:hsl(var(--dur-hue,210) 75% 43%);font-weight:600}
+html[data-theme="dark"] .dur-stops button[aria-pressed="true"]{color:hsl(var(--dur-hue,210) 75% 70%)}
+.dur-stops button[data-special="1"]{color:var(--orange,#c2760b)}
+.dur-stops button:focus-visible{outline:2px solid var(--label,#000);outline-offset:2px}
+.dur[data-disabled="1"]{opacity:.5;pointer-events:none}
+@media(max-width:720px){.dur-track{height:40px}.dur-thumb{top:7px}.dur-stops{font-size:10px}}
+@media(prefers-reduced-motion:reduce){.dur-thumb,.dur-value,.dur-dots{transition:none}}
 `
 export const DURATION_SLIDER_JS = `
 ;(function () {
   var SPECIAL = { '0': '永久', always: '永久', permanent: '永久', device: '本设备长期', forever: '保持解锁' }
+  var media = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null
+  var reduced = !!(media && media.matches)
+  var items = []
+  var looping = false
   var scheduled = false
-  function labelOf(opt) {
-    var key = String(opt.value)
-    var text = String(opt.textContent || '').replace(/（[^）]*）/g, '').trim()
+
+  function clamp(value, min, max) { return Math.max(min, Math.min(max, value)) }
+  function power2Out(progress) { return 1 - (1 - progress) * (1 - progress) }
+  function springEase(stiffness, damping, duration) {
+    var decay = damping / 2
+    var frequency = Math.sqrt(stiffness - decay * decay)
+    return function (progress) {
+      if (progress === 0 || progress === 1) return progress
+      var time = progress * duration
+      return 1 - Math.exp(-decay * time) * (Math.cos(frequency * time) + decay / frequency * Math.sin(frequency * time))
+    }
+  }
+  // The same sampled glide curve LeiBox uses for the snap: it approaches 1
+  // without overshoot, so the thumb lands on the stop instead of bouncing past.
+  var GLIDE = [[0, 0], [0.02, 0.015], [0.04, 0.0532], [0.06, 0.1065], [0.08, 0.1686], [0.1, 0.2351], [0.13, 0.3363], [0.16, 0.4332], [0.2, 0.5495], [0.24, 0.648], [0.28, 0.7287], [0.33, 0.807], [0.38, 0.8646], [0.44, 0.9128], [0.5, 0.9447], [0.57, 0.968], [0.65, 0.9834], [0.74, 0.9924], [0.85, 0.9975], [1, 1]]
+  function glideEase(progress) {
+    if (progress <= 0) return 0
+    if (progress >= 1) return 1
+    var end = 1
+    while (end < GLIDE.length - 1 && GLIDE[end][0] < progress) end++
+    var a = GLIDE[end - 1], b = GLIDE[end]
+    return a[1] + (b[1] - a[1]) * (progress - a[0]) / (b[0] - a[0])
+  }
+  // springEase(400, 23, 0.72) is underdamped: about 11% overshoot on the return.
+  var RETURN_EASE = springEase(400, 23, 0.72)
+
+  // Canvas star field: the flow, hue shift, bands and glow follow the original
+  // component, drawn with native Canvas 2D instead of a renderer dependency.
+  function createField(canvas, getRatio) {
+    var ctx = canvas.getContext('2d')
+    var width = 0
+    var height = 0
+    var phase = 0
+    var last = 0
+    var stars = []
+    for (var i = 0; i < 64; i++) {
+      stars.push({ x: i * 0.61803398875 % 1, y: i * 0.754877666 % 1, size: 0.35 + i % 5 * 0.13, speed: 0.3 + i % 7 * 0.1 })
+    }
+    function resize() {
+      width = canvas.clientWidth
+      height = canvas.clientHeight
+      var dpr = Math.min(window.devicePixelRatio || 1, 2)
+      canvas.width = Math.max(1, Math.round(width * dpr))
+      canvas.height = Math.max(1, Math.round(height * dpr))
+      if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    }
+    function draw(time, still, boost) {
+      if (!ctx || width <= 0 || height <= 0) return
+      var ratio = clamp(getRatio(), 0, 1)
+      if (!still) phase += clamp(time - last, 0, 0.05) * (0.16 + ratio * 0.85) * Math.max(1, boost || 1)
+      last = time
+      var hue = 210 + ratio * ratio * 63
+      var fill = 32 + (width - 32) * ratio
+      ctx.clearRect(0, 0, width, height)
+      var base = ctx.createLinearGradient(0, 0, Math.max(fill, 32), 0)
+      base.addColorStop(0, '#30343a')
+      base.addColorStop(0.28, 'hsl(' + (hue - 12) + ' 38% 47%)')
+      base.addColorStop(0.65, 'hsl(' + hue + ' 79% 70%)')
+      base.addColorStop(1, 'hsl(' + (hue + 5) + ' 88% 70%)')
+      ctx.fillStyle = base
+      ctx.fillRect(0, 0, width, height)
+      ctx.save()
+      ctx.globalCompositeOperation = 'screen'
+      for (var band = 0; band < 7; band++) {
+        ctx.beginPath()
+        for (var x = 0; x <= width + 4; x += 4) {
+          var y = height * (0.12 + band * 0.15) + Math.sin(x * 0.034 + phase + band * 1.8) * 5 + Math.sin(x * 0.079 - phase * 0.6 + band) * 2 - x * 0.035
+          if (x === 0) ctx.moveTo(x, y)
+          else ctx.lineTo(x, y)
+        }
+        ctx.lineWidth = 2 + band % 3 * 2
+        ctx.strokeStyle = 'hsla(' + (hue + band * 2) + ' 90% 87% / ' + (0.06 + ratio * 0.025) + ')'
+        ctx.stroke()
+      }
+      var glowX = fill * (0.6 + Math.sin(phase * 0.7) * 0.12)
+      var glow = ctx.createRadialGradient(glowX, height * 0.7, 0, glowX, height * 0.7, 46)
+      glow.addColorStop(0, 'hsla(' + (hue - 12) + ' 100% 88% / .35)')
+      glow.addColorStop(1, 'hsla(' + hue + ' 100% 80% / 0)')
+      ctx.fillStyle = glow
+      ctx.fillRect(0, 0, width, height)
+      for (var s = 0; s < stars.length; s++) {
+        var star = stars[s]
+        var sx = (star.x + phase * star.speed * 0.08) % 1 * width
+        var sy = ((star.y - phase * star.speed * 0.04) % 1 + 1) % 1 * height
+        var fade = Math.min(1, sx / 55)
+        var twinkle = 0.45 + Math.sin(phase * 2 + s * 1.9) * 0.25
+        ctx.fillStyle = 'rgba(255,255,255,' + fade * twinkle * (0.4 + ratio * 0.6) + ')'
+        ctx.beginPath()
+        ctx.ellipse(sx, sy, star.size * (1 + ratio * 0.5), star.size * 0.65, -0.45, 0, Math.PI * 2)
+        ctx.fill()
+      }
+      ctx.restore()
+      var shade = ctx.createLinearGradient(0, 0, Math.max(fill, 32), 0)
+      shade.addColorStop(0, 'rgba(36,39,44,.8)')
+      shade.addColorStop(0.45, 'rgba(36,39,44,0)')
+      ctx.fillStyle = shade
+      ctx.fillRect(0, 0, width, height)
+    }
+    if (typeof ResizeObserver === 'function') {
+      new ResizeObserver(function () { resize(); draw(last, true) }).observe(canvas)
+    } else {
+      window.addEventListener('resize', function () { resize(); draw(last, true) })
+    }
+    resize()
+    return { draw: draw, resize: resize }
+  }
+
+  function labelOf(option) {
+    var key = String(option.value)
+    var text = String(option.textContent || '').replace(/（[^）]*）/g, '').trim()
     if (key === 'device' || key === 'forever') return SPECIAL[key]
     return text || SPECIAL[key] || key
   }
-  function isSpecial(opt) { return Object.prototype.hasOwnProperty.call(SPECIAL, String(opt.value)) }
+  function isSpecial(option) { return Object.prototype.hasOwnProperty.call(SPECIAL, String(option.value)) }
+
   function enhance(select) {
     var wrap = document.createElement('div')
     wrap.className = 'dur'
@@ -50,126 +172,417 @@ export const DURATION_SLIDER_JS = `
     head.appendChild(hint)
     var track = document.createElement('div')
     track.className = 'dur-track'
-    var rail = document.createElement('div')
-    rail.className = 'dur-rail'
     var fill = document.createElement('div')
     fill.className = 'dur-fill'
-    var thumb = document.createElement('div')
+    var canvas = document.createElement('canvas')
+    canvas.className = 'dur-canvas'
+    fill.appendChild(canvas)
+    var dots = document.createElement('div')
+    dots.className = 'dur-dots'
+    var thumb = document.createElement('span')
     thumb.className = 'dur-thumb'
     thumb.setAttribute('role', 'slider')
     thumb.tabIndex = 0
-    track.appendChild(rail)
     track.appendChild(fill)
+    track.appendChild(dots)
     track.appendChild(thumb)
-    var ends = document.createElement('div')
-    ends.className = 'dur-ends'
-    var first = document.createElement('span')
-    var last = document.createElement('span')
-    ends.appendChild(first)
-    ends.appendChild(last)
+    var stopsRow = document.createElement('div')
+    stopsRow.className = 'dur-stops'
     select.parentNode.insertBefore(wrap, select)
     wrap.appendChild(select)
     wrap.appendChild(head)
     wrap.appendChild(track)
-    wrap.appendChild(ends)
+    wrap.appendChild(stopsRow)
     select.classList.add('dur-native')
     select.tabIndex = -1
     select.setAttribute('aria-hidden', 'true')
+
     var stops = []
-    var ticks = []
+    var buttons = []
     var current = 0
-    function build() {
-      stops = []
-      for (var i = 0; i < select.options.length; i++) if (!select.options[i].disabled) stops.push({ opt: select.options[i], index: i })
-      while (ticks.length) track.removeChild(ticks.pop())
-      for (var j = 0; j < stops.length; j++) {
-        var tick = document.createElement('i')
-        tick.className = 'dur-tick'
-        tick.setAttribute('data-special', isSpecial(stops[j].opt) ? '1' : '0')
-        track.appendChild(tick)
-        ticks.push(tick)
-      }
+    var ratio = 0
+    var targetRatio = 0
+    var press = 1
+    var body = 0
+    var lean = 0
+    var boost = 1
+    var posTween = null
+    var pressTween = null
+    var boostTween = null
+    var shape = null
+    var dragging = false
+    var pointerId = null
+    var startX = 0
+    var lastX = 0
+    var lastStamp = 0
+    var moved = false
+    var suppress = false
+    var visible = true
+    var field = createField(canvas, function () { return ratio })
+
+    function paint() {
+      wrap.style.setProperty('--dur-ratio', ratio.toFixed(5))
+      wrap.style.setProperty('--dur-hue', String(Math.round(210 + ratio * ratio * 63)))
+      wrap.style.setProperty('--dur-press', press.toFixed(4))
+      wrap.style.setProperty('--dur-jelly-x', (1 + body).toFixed(4))
+      wrap.style.setProperty('--dur-jelly-y', (1 - body * 0.3).toFixed(4))
+      wrap.style.setProperty('--dur-lean-x', (-lean * 9).toFixed(2) + 'px')
+      wrap.style.setProperty('--dur-lean-skew', (-lean * 12).toFixed(2) + 'deg')
+      wrap.style.setProperty('--dur-radius-left', (50 + lean * 32).toFixed(2) + '%')
+      wrap.style.setProperty('--dur-radius-right', (50 - lean * 24).toFixed(2) + '%')
     }
-    function sync() {
-      if (!select.options.length) return
-      var enabled = 0
-      for (var i = 0; i < select.options.length; i++) if (!select.options[i].disabled) enabled++
-      if (!enabled) return
-      if (ticks.length !== enabled) build()
-      var at = -1
-      for (var k = 0; k < stops.length; k++) if (stops[k].index === select.selectedIndex) at = k
-      if (at < 0) { at = 0; select.selectedIndex = stops[0].index }
-      current = at
-      var n = stops.length
-      var pct = n > 1 ? (at * 100) / (n - 1) : 0
-      thumb.style.left = pct + '%'
-      fill.style.width = pct + '%'
-      var label = labelOf(stops[at].opt)
-      value.textContent = label
-      value.setAttribute('data-special', isSpecial(stops[at].opt) ? '1' : '0')
-      thumb.setAttribute('data-special', isSpecial(stops[at].opt) ? '1' : '0')
-      thumb.setAttribute('aria-valuemin', '1')
-      thumb.setAttribute('aria-valuemax', String(n))
-      thumb.setAttribute('aria-valuenow', String(at + 1))
-      thumb.setAttribute('aria-valuetext', label)
-      thumb.setAttribute('aria-label', select.getAttribute('aria-label') || '时长')
-      first.textContent = labelOf(stops[0].opt)
-      last.textContent = labelOf(stops[n - 1].opt)
-      last.setAttribute('data-special', isSpecial(stops[n - 1].opt) ? '1' : '0')
-      for (var t = 0; t < ticks.length; t++) {
-        ticks[t].style.left = (n > 1 ? (t * 100) / (n - 1) : 0) + '%'
-        ticks[t].setAttribute('data-on', t <= at ? '1' : '0')
-      }
-    }
-    function pick(index) {
-      if (!stops.length) return
-      var next = Math.max(0, Math.min(stops.length - 1, index))
-      if (select.selectedIndex !== stops[next].index) {
-        select.selectedIndex = stops[next].index
-        select.dispatchEvent(new Event('change', { bubbles: true }))
-      }
-      current = next
-      sync()
-    }
+
     function indexFromX(clientX) {
       var rect = track.getBoundingClientRect()
-      var ratio = rect.width ? (clientX - rect.left) / rect.width : 0
-      return Math.round(ratio * (stops.length - 1))
+      if (!rect.width) return 0
+      return clamp((clientX - rect.left) / rect.width, 0, 1)
     }
-    var dragging = false
+    function nearestIndex(value) { return stops.length > 1 ? Math.round(value * (stops.length - 1)) : 0 }
+
+    function setPreview(index) {
+      if (!stops.length) return
+      var stop = stops[index]
+      var label = labelOf(stop.option)
+      var special = isSpecial(stop.option) ? '1' : '0'
+      value.textContent = label
+      value.setAttribute('data-special', special)
+      thumb.setAttribute('data-special', special)
+      thumb.setAttribute('aria-valuenow', String(index + 1))
+      thumb.setAttribute('aria-valuetext', label)
+      wrap.setAttribute('data-maximum', index === stops.length - 1 ? '1' : '0')
+      for (var i = 0; i < buttons.length; i++) buttons[i].setAttribute('aria-pressed', i === index ? 'true' : 'false')
+    }
+
+    function buildStops() {
+      stops = []
+      buttons = []
+      dots.innerHTML = ''
+      stopsRow.innerHTML = ''
+      for (var i = 0; i < select.options.length; i++) {
+        if (select.options[i].disabled) continue
+        stops.push({ option: select.options[i], index: i })
+      }
+      wrap.style.setProperty('--dur-stops', String(Math.max(1, stops.length)))
+      for (var k = 0; k < stops.length; k++) {
+        var dot = document.createElement('i')
+        dot.setAttribute('data-special', isSpecial(stops[k].option) ? '1' : '0')
+        dots.appendChild(dot)
+        var button = document.createElement('button')
+        button.type = 'button'
+        button.textContent = labelOf(stops[k].option)
+        button.setAttribute('data-special', isSpecial(stops[k].option) ? '1' : '0')
+        button.setAttribute('aria-pressed', 'false')
+        ;(function (index) {
+          button.addEventListener('click', function (event) {
+            event.preventDefault()
+            event.stopPropagation()
+            commit(index)
+            thumb.focus({ preventScroll: true })
+          })
+        })(k)
+        stopsRow.appendChild(button)
+        buttons.push(button)
+      }
+    }
+
+    function moveTo(next, immediate) {
+      targetRatio = clamp(next, 0, 1)
+      if (immediate || reduced) {
+        posTween = null
+        ratio = targetRatio
+        paint()
+        return
+      }
+      posTween = { from: ratio, to: targetRatio, start: performance.now(), duration: 500 }
+    }
+
+    function sync(animate) {
+      if (!stops.length) return
+      var at = -1
+      for (var i = 0; i < stops.length; i++) if (stops[i].index === select.selectedIndex) at = i
+      if (at < 0) {
+        at = 0
+        select.selectedIndex = stops[0].index
+      }
+      current = at
+      setPreview(at)
+      thumb.setAttribute('aria-valuemin', '1')
+      thumb.setAttribute('aria-valuemax', String(stops.length))
+      thumb.setAttribute('aria-label', select.getAttribute('aria-label') || '时长')
+      wrap.setAttribute('data-disabled', stops.length < 2 ? '1' : '0')
+      var next = stops.length > 1 ? at / (stops.length - 1) : 0
+      if (animate) moveTo(next, false)
+      else {
+        posTween = null
+        ratio = next
+        targetRatio = next
+        paint()
+      }
+    }
+
+    function commit(index) {
+      if (!stops.length) return
+      var next = clamp(index, 0, stops.length - 1)
+      var stop = stops[next]
+      current = next
+      setPreview(next)
+      if (select.selectedIndex !== stop.index) {
+        suppress = true
+        select.selectedIndex = stop.index
+        suppress = false
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+      if (!wrap.isConnected) return
+      moveTo(stops.length > 1 ? next / (stops.length - 1) : 0, false)
+    }
+
+    function pressTo(next, duration) {
+      if (reduced || duration <= 0) {
+        pressTween = null
+        press = next
+        paint()
+        return
+      }
+      pressTween = { from: press, to: next, start: performance.now(), duration: duration }
+    }
+    function boostTo(next, duration) {
+      if (reduced || duration <= 0) {
+        boostTween = null
+        boost = next
+        return
+      }
+      boostTween = { from: boost, to: next, start: performance.now(), duration: duration }
+    }
+    function releaseShape() {
+      if (reduced) {
+        shape = null
+        body = 0
+        lean = 0
+        paint()
+        return
+      }
+      shape = { start: performance.now(), bodyFrom: body, leanFrom: lean, bodyTo: 0, leanTo: 0, returning: true }
+    }
+    function dragMove(velocity) {
+      if (reduced) return
+      var speed = Math.min(3.5, Math.abs(velocity))
+      var deformation = Math.min(0.46, 0.045 + speed * 0.17)
+      var direction = velocity < 0 ? -1 : velocity > 0 ? 1 : 0
+      shape = { start: performance.now(), bodyFrom: body, leanFrom: lean, bodyTo: deformation, leanTo: direction * deformation, returning: false }
+      boostTo(1 + Math.min(2.2, 0.55 + speed * 0.6), 120)
+    }
+    function shapeStep(now) {
+      var elapsed = now - shape.start
+      if (shape.returning) {
+        var back = elapsed / 720
+        if (back >= 1) {
+          shape = null
+          body = 0
+          lean = 0
+        } else {
+          var settle = RETURN_EASE(back)
+          body = shape.bodyFrom * (1 - settle)
+          lean = shape.leanFrom * (1 - settle)
+        }
+        return
+      }
+      if (elapsed < 90) {
+        var attack = power2Out(elapsed / 90)
+        body = shape.bodyFrom + (shape.bodyTo - shape.bodyFrom) * attack
+        lean = shape.leanFrom + (shape.leanTo - shape.leanFrom) * attack
+      } else if (elapsed < 160) {
+        body = shape.bodyTo
+        lean = shape.leanTo
+      } else {
+        var release = (elapsed - 160) / 720
+        if (release >= 1) {
+          shape = null
+          body = 0
+          lean = 0
+        } else {
+          var ease = RETURN_EASE(release)
+          body = shape.bodyTo * (1 - ease)
+          lean = shape.leanTo * (1 - ease)
+        }
+      }
+    }
+    function tick(now) {
+      if (!wrap.isConnected || !visible) return false
+      var changed = false
+      if (posTween) {
+        var position = (now - posTween.start) / posTween.duration
+        if (position >= 1) {
+          ratio = posTween.to
+          posTween = null
+        } else if (position <= 0) {
+          ratio = posTween.from
+        } else {
+          ratio = posTween.from + (posTween.to - posTween.from) * glideEase(position)
+        }
+        changed = true
+      }
+      if (pressTween) {
+        var pressProgress = (now - pressTween.start) / pressTween.duration
+        if (pressProgress >= 1) {
+          press = pressTween.to
+          pressTween = null
+        } else {
+          press = pressTween.from + (pressTween.to - pressTween.from) * power2Out(Math.max(0, pressProgress))
+        }
+        changed = true
+      }
+      if (boostTween) {
+        var boostProgress = (now - boostTween.start) / boostTween.duration
+        if (boostProgress >= 1) {
+          boost = boostTween.to
+          boostTween = null
+        } else {
+          boost = boostTween.from + (boostTween.to - boostTween.from) * power2Out(Math.max(0, boostProgress))
+        }
+      }
+      if (shape) {
+        shapeStep(now)
+        changed = true
+      }
+      if (changed) paint()
+      if (reduced) return false
+      field.draw(now / 1000, false, boost)
+      return true
+    }
+
     track.addEventListener('pointerdown', function (event) {
+      if (stops.length < 2) return
       if (event.button !== undefined && event.button !== 0) return
       dragging = true
-      try { track.setPointerCapture(event.pointerId) } catch (e) {}
+      pointerId = event.pointerId
+      startX = event.clientX
+      lastX = event.clientX
+      lastStamp = event.timeStamp
+      moved = false
+      try { track.setPointerCapture(event.pointerId) } catch (error) {}
+      wrap.setAttribute('data-dragging', '1')
+      track.setAttribute('data-dragging', '1')
       thumb.focus({ preventScroll: true })
-      pick(indexFromX(event.clientX))
+      pressTo(0.96, 80)
+      posTween = null
+      ratio = indexFromX(event.clientX)
+      paint()
+      setPreview(nearestIndex(ratio))
       event.preventDefault()
     })
-    track.addEventListener('pointermove', function (event) { if (dragging) pick(indexFromX(event.clientX)) })
-    function stop(event) {
+    track.addEventListener('pointermove', function (event) {
+      if (!dragging || event.pointerId !== pointerId) return
+      if (!moved && Math.abs(event.clientX - startX) < 4) return
+      moved = true
+      var stamp = event.timeStamp
+      var delta = Math.max(8, stamp - lastStamp)
+      dragMove((event.clientX - lastX) / delta)
+      lastX = event.clientX
+      lastStamp = stamp
+      posTween = null
+      ratio = indexFromX(event.clientX)
+      paint()
+      setPreview(nearestIndex(ratio))
+    })
+    function endDrag(cancel) {
       if (!dragging) return
       dragging = false
-      try { track.releasePointerCapture(event.pointerId) } catch (e) {}
+      try { track.releasePointerCapture(pointerId) } catch (error) {}
+      wrap.removeAttribute('data-dragging')
+      track.removeAttribute('data-dragging')
+      pressTo(1, 320)
+      releaseShape()
+      if (cancel) {
+        setPreview(current)
+        moveTo(stops.length > 1 ? current / (stops.length - 1) : 0, false)
+      } else {
+        commit(nearestIndex(ratio))
+      }
     }
-    track.addEventListener('pointerup', stop)
-    track.addEventListener('pointercancel', stop)
+    track.addEventListener('pointerup', function (event) {
+      if (event.pointerId === pointerId) endDrag(false)
+    })
+    track.addEventListener('pointercancel', function (event) {
+      if (event.pointerId === pointerId) endDrag(true)
+    })
+    track.addEventListener('lostpointercapture', function () {
+      if (dragging) endDrag(true)
+    })
     thumb.addEventListener('keydown', function (event) {
-      var key = event.key
-      if (key === 'ArrowRight' || key === 'ArrowUp' || key === 'PageUp') { event.preventDefault(); pick(current + 1) }
-      else if (key === 'ArrowLeft' || key === 'ArrowDown' || key === 'PageDown') { event.preventDefault(); pick(current - 1) }
-      else if (key === 'Home') { event.preventDefault(); pick(0) }
-      else if (key === 'End') { event.preventDefault(); pick(stops.length - 1) }
+      if (stops.length < 2) return
+      var next = current
+      if (event.key === 'ArrowRight' || event.key === 'ArrowUp' || event.key === 'PageUp') next++
+      else if (event.key === 'ArrowLeft' || event.key === 'ArrowDown' || event.key === 'PageDown') next--
+      else if (event.key === 'Home') next = 0
+      else if (event.key === 'End') next = stops.length - 1
+      else return
+      event.preventDefault()
+      event.stopPropagation()
+      commit(next)
     })
     // A label that points at the hidden select would otherwise open the native
     // dropdown; route that click to the slider instead.
     if (select.labels) for (var li = 0; li < select.labels.length; li++) {
       select.labels[li].addEventListener('click', function (event) { event.preventDefault(); thumb.focus() })
     }
-    wrap.addEventListener('click', function (event) { event.preventDefault() })
-    select.addEventListener('change', sync)
-    new MutationObserver(sync).observe(select, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['disabled'] })
+    wrap.addEventListener('click', function (event) {
+      if (event.target && event.target.closest && event.target.closest('.dur-stops')) return
+      event.preventDefault()
+    })
+    select.addEventListener('change', function () { if (!suppress) sync(true) })
+    new MutationObserver(function () { buildStops(); sync(false) }).observe(select, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['disabled'] })
     select.dataset.durReady = '1'
-    sync()
+    buildStops()
+    sync(false)
+    field.draw(0, true)
+
+    items.push({
+      wrap: wrap,
+      tick: tick,
+      reset: function () {
+        posTween = null
+        ratio = targetRatio
+        press = 1
+        body = 0
+        lean = 0
+        boost = 1
+        shape = null
+        paint()
+        field.draw(0, true)
+      }
+    })
+    if (typeof IntersectionObserver === 'function' && !reduced) {
+      var observer = new IntersectionObserver(function (entries) {
+        for (var i = 0; i < entries.length; i++) {
+          if (entries[i].target !== track) continue
+          visible = entries[i].isIntersecting
+          if (visible) {
+            field.draw(performance.now() / 1000, true)
+            ensureLoop()
+          }
+        }
+      })
+      observer.observe(track)
+    }
+    if (!reduced) ensureLoop()
+  }
+
+  function ensureLoop() {
+    if (looping) return
+    looping = true
+    requestAnimationFrame(frame)
+  }
+  function frame(now) {
+    looping = false
+    var any = false
+    for (var i = items.length - 1; i >= 0; i--) {
+      if (!items[i].wrap.isConnected) {
+        items.splice(i, 1)
+        continue
+      }
+      if (items[i].tick(now)) any = true
+    }
+    if (any) ensureLoop()
   }
   function scan() {
     if (scheduled) return
@@ -179,6 +592,15 @@ export const DURATION_SLIDER_JS = `
       var list = document.querySelectorAll('select[data-duration]')
       for (var i = 0; i < list.length; i++) if (list[i].dataset.durReady !== '1') enhance(list[i])
     })
+  }
+  if (media) {
+    var onMotionChange = function () {
+      reduced = media.matches
+      for (var i = 0; i < items.length; i++) if (items[i].wrap.isConnected) items[i].reset()
+      if (!reduced) ensureLoop()
+    }
+    if (media.addEventListener) media.addEventListener('change', onMotionChange)
+    else if (media.addListener) media.addListener(onMotionChange)
   }
   scan()
   new MutationObserver(scan).observe(document.body, { childList: true, subtree: true })
