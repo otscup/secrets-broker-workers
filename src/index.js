@@ -1,5 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
-import { uiHtml } from './ui.js'
+import { uiHtml, DURATION_SLIDER_CSS, DURATION_SLIDER_JS } from './ui.js'
 import { aiSnapshot, askAi, aiInsights, aiModelCatalog } from './ai.js'
 import { parseCommand, TELEGRAM_HELP, formatPendingList, formatGrants, formatStatus, resolvePending, autoRuleActive, describeAutoRule } from './telegram.js'
 import { LOGO_PNG_B64, FAVICON_ICO_B64 } from './logo.js'
@@ -6539,7 +6539,7 @@ function oauthConsentPage(origin, params, client, catalog = { items: [], groups:
   const writeRow = wantsWrite
     ? '<label class="row"><input type="checkbox" name="grant_write" value="1"><span>同时允许写入（新增或修改条目）</span></label>'
     : ''
-  return '<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>MCP 授权 · Secrets Broker</title><style>' + consolePageCss() + '</style>' + consoleThemeBoot() + '</head><body><div class="wrap wrap--wide">' +
+  return '<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/favicon.ico"><title>MCP 授权 · Secrets Broker</title><style>' + consolePageCss() + DURATION_SLIDER_CSS + '</style>' + consoleThemeBoot() + '</head><body><div class="wrap wrap--wide">' +
     '<div class="brand"><img src="/logo.png" alt=""><div><h1>MCP 授权</h1><p class="sub">客户端 <code>' + escape(client?.clientName ?? params.get('client_id')) + '</code> 请求访问你的密钥库</p></div></div>' +
     '<form method="post" action="/oauth/authorize">' + field('client_id') + field('redirect_uri') + field('state') + field('code_challenge') + field('code_challenge_method') +
     firstVisit + field('scope') +
@@ -6561,11 +6561,11 @@ function oauthConsentPage(origin, params, client, catalog = { items: [], groups:
     // the client had to walk this page again every day. The operator still sees
     // and can change the window.
     '<label class="row"><span class="row__label">授权有效期</span>' +
-    '<select name="grant_hours"><option value="1">1 小时</option><option value="24">24 小时</option><option value="168" selected>7 天</option><option value="720">30 天</option></select></label>' +
+    '<select name="grant_hours" data-duration aria-label="授权有效期"><option value="1">1 小时</option><option value="24">24 小时</option><option value="168" selected>7 天</option><option value="720">30 天</option></select></label>' +
     '<p class="hint">访问令牌固定 24 小时到期。选 7 天或 30 天才会同时发放 refresh token，客户端可以自动续期；选 1 天/24 小时不会发放 refresh token，到期后客户端需要重新授权。</p>' +
     '</div>' +
     '<p class="hint">不勾选明文时，Agent 只能看到条目名称并提交审批申请，读不到值。web 类型的网站登录无论是否勾选都不会给明文。写入同样只在勾选后生效，且仅限上面选中的条目。</p>' +
-    '<div class="btn-row"><button class="primary" name="decision" value="allow">允许</button><button class="secondary" name="decision" value="deny">拒绝</button></div></form></div></body></html>'
+    '<div class="btn-row"><button class="primary" name="decision" value="allow">允许</button><button class="secondary" name="decision" value="deny">拒绝</button></div></form></div><script>' + DURATION_SLIDER_JS + '</script></body></html>'
 }
 
 function standaloneLoginPage(next, providers = []) {

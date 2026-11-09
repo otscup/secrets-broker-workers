@@ -1,3 +1,189 @@
+// The duration picker shared by the console and the OAuth consent page. The
+// native <select> stays in the DOM as the hidden value holder, so every caller
+// keeps reading .value and the server contract is untouched; the slider only
+// ever selects one of its existing options, never a value in between.
+export const DURATION_SLIDER_CSS = `
+.dur{position:relative;display:block;margin:6px 0 2px;flex:1 1 auto;min-width:0}
+.dur-native{position:absolute!important;left:0;top:0;width:1px!important;height:1px!important;min-width:0!important;opacity:0;pointer-events:none;overflow:hidden}
+.dur-head{display:flex;align-items:baseline;gap:8px;margin:0 0 2px;min-height:20px}
+.dur-value{font-size:14px;font-weight:600;line-height:20px;color:var(--ink-1,var(--label))}
+.dur-value[data-special="1"]{color:var(--orange,#c2760b)}
+.dur-hint{font-size:11px;line-height:16px;color:var(--muted,var(--label-2))}
+.dur-track{position:relative;height:34px;margin:0 12px;touch-action:none;cursor:pointer}
+.dur-rail,.dur-fill{position:absolute;top:50%;height:4px;margin-top:-2px;border-radius:999px}
+.dur-rail{left:0;right:0;background:var(--hair,var(--separator))}
+.dur-fill{left:0;width:0;background:var(--brand-strong,var(--blue))}
+.dur-tick{position:absolute;top:50%;width:2px;height:10px;margin:-5px 0 0 -1px;border-radius:1px;background:var(--muted,var(--label-2));opacity:.45;pointer-events:none}
+.dur-tick[data-on="1"]{background:var(--brand-strong,var(--blue));opacity:1}
+.dur-tick[data-special="1"]{height:14px;margin-top:-7px;width:3px;background:var(--orange,#c2760b);opacity:.9}
+.dur-thumb{position:absolute;top:50%;left:0;width:24px;height:24px;margin:-12px 0 0 -12px;border-radius:50%;background:var(--card,#fff);border:2px solid var(--brand-strong,var(--blue));box-shadow:0 1px 4px rgba(0,0,0,.28);outline:none;transition:left .12s ease,box-shadow .12s ease}
+.dur-thumb::after{content:"";position:absolute;inset:-10px;border-radius:50%}
+.dur-thumb:focus-visible{box-shadow:0 0 0 4px color-mix(in srgb,var(--brand-strong,var(--blue)) 28%,transparent)}
+.dur-thumb[data-special="1"]{border-color:var(--orange,#c2760b)}
+.dur-ends{display:flex;justify-content:space-between;margin:0 12px;font-size:11px;line-height:15px;color:var(--muted,var(--label-2))}
+.dur-ends span[data-special="1"]{color:var(--orange,#c2760b)}
+@media(max-width:720px){.dur-track{height:40px}}
+@media(prefers-reduced-motion:reduce){.dur-thumb{transition:none}}
+`
+export const DURATION_SLIDER_JS = `
+;(function () {
+  var SPECIAL = { '0': '永久', always: '永久', permanent: '永久', device: '本设备长期', forever: '保持解锁' }
+  var scheduled = false
+  function labelOf(opt) {
+    var key = String(opt.value)
+    var text = String(opt.textContent || '').replace(/（[^）]*）/g, '').trim()
+    if (key === 'device' || key === 'forever') return SPECIAL[key]
+    return text || SPECIAL[key] || key
+  }
+  function isSpecial(opt) { return Object.prototype.hasOwnProperty.call(SPECIAL, String(opt.value)) }
+  function enhance(select) {
+    var wrap = document.createElement('div')
+    wrap.className = 'dur'
+    var head = document.createElement('div')
+    head.className = 'dur-head'
+    var value = document.createElement('span')
+    value.className = 'dur-value'
+    var hint = document.createElement('span')
+    hint.className = 'dur-hint'
+    hint.textContent = '拖动或按方向键'
+    head.appendChild(value)
+    head.appendChild(hint)
+    var track = document.createElement('div')
+    track.className = 'dur-track'
+    var rail = document.createElement('div')
+    rail.className = 'dur-rail'
+    var fill = document.createElement('div')
+    fill.className = 'dur-fill'
+    var thumb = document.createElement('div')
+    thumb.className = 'dur-thumb'
+    thumb.setAttribute('role', 'slider')
+    thumb.tabIndex = 0
+    track.appendChild(rail)
+    track.appendChild(fill)
+    track.appendChild(thumb)
+    var ends = document.createElement('div')
+    ends.className = 'dur-ends'
+    var first = document.createElement('span')
+    var last = document.createElement('span')
+    ends.appendChild(first)
+    ends.appendChild(last)
+    select.parentNode.insertBefore(wrap, select)
+    wrap.appendChild(select)
+    wrap.appendChild(head)
+    wrap.appendChild(track)
+    wrap.appendChild(ends)
+    select.classList.add('dur-native')
+    select.tabIndex = -1
+    select.setAttribute('aria-hidden', 'true')
+    var stops = []
+    var ticks = []
+    var current = 0
+    function build() {
+      stops = []
+      for (var i = 0; i < select.options.length; i++) if (!select.options[i].disabled) stops.push({ opt: select.options[i], index: i })
+      while (ticks.length) track.removeChild(ticks.pop())
+      for (var j = 0; j < stops.length; j++) {
+        var tick = document.createElement('i')
+        tick.className = 'dur-tick'
+        tick.setAttribute('data-special', isSpecial(stops[j].opt) ? '1' : '0')
+        track.appendChild(tick)
+        ticks.push(tick)
+      }
+    }
+    function sync() {
+      if (!select.options.length) return
+      var enabled = 0
+      for (var i = 0; i < select.options.length; i++) if (!select.options[i].disabled) enabled++
+      if (!enabled) return
+      if (ticks.length !== enabled) build()
+      var at = -1
+      for (var k = 0; k < stops.length; k++) if (stops[k].index === select.selectedIndex) at = k
+      if (at < 0) { at = 0; select.selectedIndex = stops[0].index }
+      current = at
+      var n = stops.length
+      var pct = n > 1 ? (at * 100) / (n - 1) : 0
+      thumb.style.left = pct + '%'
+      fill.style.width = pct + '%'
+      var label = labelOf(stops[at].opt)
+      value.textContent = label
+      value.setAttribute('data-special', isSpecial(stops[at].opt) ? '1' : '0')
+      thumb.setAttribute('data-special', isSpecial(stops[at].opt) ? '1' : '0')
+      thumb.setAttribute('aria-valuemin', '1')
+      thumb.setAttribute('aria-valuemax', String(n))
+      thumb.setAttribute('aria-valuenow', String(at + 1))
+      thumb.setAttribute('aria-valuetext', label)
+      thumb.setAttribute('aria-label', select.getAttribute('aria-label') || '时长')
+      first.textContent = labelOf(stops[0].opt)
+      last.textContent = labelOf(stops[n - 1].opt)
+      last.setAttribute('data-special', isSpecial(stops[n - 1].opt) ? '1' : '0')
+      for (var t = 0; t < ticks.length; t++) {
+        ticks[t].style.left = (n > 1 ? (t * 100) / (n - 1) : 0) + '%'
+        ticks[t].setAttribute('data-on', t <= at ? '1' : '0')
+      }
+    }
+    function pick(index) {
+      if (!stops.length) return
+      var next = Math.max(0, Math.min(stops.length - 1, index))
+      if (select.selectedIndex !== stops[next].index) {
+        select.selectedIndex = stops[next].index
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+      current = next
+      sync()
+    }
+    function indexFromX(clientX) {
+      var rect = track.getBoundingClientRect()
+      var ratio = rect.width ? (clientX - rect.left) / rect.width : 0
+      return Math.round(ratio * (stops.length - 1))
+    }
+    var dragging = false
+    track.addEventListener('pointerdown', function (event) {
+      if (event.button !== undefined && event.button !== 0) return
+      dragging = true
+      try { track.setPointerCapture(event.pointerId) } catch (e) {}
+      thumb.focus({ preventScroll: true })
+      pick(indexFromX(event.clientX))
+      event.preventDefault()
+    })
+    track.addEventListener('pointermove', function (event) { if (dragging) pick(indexFromX(event.clientX)) })
+    function stop(event) {
+      if (!dragging) return
+      dragging = false
+      try { track.releasePointerCapture(event.pointerId) } catch (e) {}
+    }
+    track.addEventListener('pointerup', stop)
+    track.addEventListener('pointercancel', stop)
+    thumb.addEventListener('keydown', function (event) {
+      var key = event.key
+      if (key === 'ArrowRight' || key === 'ArrowUp' || key === 'PageUp') { event.preventDefault(); pick(current + 1) }
+      else if (key === 'ArrowLeft' || key === 'ArrowDown' || key === 'PageDown') { event.preventDefault(); pick(current - 1) }
+      else if (key === 'Home') { event.preventDefault(); pick(0) }
+      else if (key === 'End') { event.preventDefault(); pick(stops.length - 1) }
+    })
+    // A label that points at the hidden select would otherwise open the native
+    // dropdown; route that click to the slider instead.
+    if (select.labels) for (var li = 0; li < select.labels.length; li++) {
+      select.labels[li].addEventListener('click', function (event) { event.preventDefault(); thumb.focus() })
+    }
+    wrap.addEventListener('click', function (event) { event.preventDefault() })
+    select.addEventListener('change', sync)
+    new MutationObserver(sync).observe(select, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['disabled'] })
+    select.dataset.durReady = '1'
+    sync()
+  }
+  function scan() {
+    if (scheduled) return
+    scheduled = true
+    requestAnimationFrame(function () {
+      scheduled = false
+      var list = document.querySelectorAll('select[data-duration]')
+      for (var i = 0; i < list.length; i++) if (list[i].dataset.durReady !== '1') enhance(list[i])
+    })
+  }
+  scan()
+  new MutationObserver(scan).observe(document.body, { childList: true, subtree: true })
+})()
+`
 export const uiHtml = String.raw`<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="icon" type="image/x-icon" href="/favicon.ico?v=2">
@@ -989,7 +1175,7 @@ nav{grid-area:tabs}
 #bulk-bar.hidden .dm-dot,#batch-progress.hidden .dm-dot{animation-play-state:paused}
 .batch-progress{display:inline-flex;align-items:center;font-size:12px;color:var(--muted)}
 @media (prefers-reduced-motion: reduce){.dots-matrix .dm-dot{animation:none!important;opacity:.55}}
-</style></head><body><div class="wrap">
+${DURATION_SLIDER_CSS}</style></head><body><div class="wrap">
 <div id="db-down" class="notice-bar hidden" data-level="critical"><span class="notice-dot"></span><span class="notice-text"></span></div>
 <header><div class="brand"><img id="site-logo" src="/logo.png" alt="" style="cursor:pointer"><h1 id="site-title" style="cursor:pointer">Secrets Broker</h1><span class="badge">Cloudflare Workers</span><span class="badge" id="header-version" title="应用版本">版本未知</span></div>
 <div class="hdr-actions">
@@ -1019,7 +1205,7 @@ nav{grid-area:tabs}
     <h2 id="unlock-title">解锁 Vault</h2><div class="hint">Vault 主密码是初始化 Vault 时设置的密码，不是管理登录密码。它只在本机做 PBKDF2/HKDF，服务器只收到派生出的会话密钥。</div>
     <label class="field" for="master-password">Vault 主密码</label><input id="master-password" type="password" autocomplete="current-password" enterkeyhint="go">
     <div id="unlock-totp-row" class="hidden"><label class="field" for="unlock-totp-code">两步验证码</label><input id="unlock-totp-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6 位验证码" aria-label="两步验证码：显示条目名称需要输入手机上 6 位验证码"></div>
-    <label class="field" for="ttl">解锁有效期</label><select id="ttl"><option value="12h" selected>12 小时（默认）</option><option value="7d">7 天</option><option value="30d">30 天</option><option value="device">长期（绑定本设备）</option><option value="forever">保持解锁（手动锁定前不再要求密码）</option></select>
+    <label class="field" for="ttl">解锁有效期</label><select id="ttl" data-duration aria-label="解锁有效期"><option value="12h" selected>12 小时（默认）</option><option value="7d">7 天</option><option value="30d">30 天</option><option value="device">长期（绑定本设备）</option><option value="forever">保持解锁（手动锁定前不再要求密码）</option></select>
     <div class="hint" id="ttl-risk">时间越长，别处拿到这个会话就能读得越久。选「保持解锁」后，服务端会长期保存被 SESSION_KEK 包裹的密钥副本，读、写、明文、导出和审批都不再要求验证码，直到你点「锁定」；锁定会同时销毁副本。这是明确的零知识降级取舍。</div>
     <div class="row"><button class="primary" id="unlock">解锁</button><button id="lock2">锁定</button><button id="unlock-browse">先以锁定状态进入（审批可用）</button></div><div class="status" id="unlock-status" role="status" aria-live="polite"></div>
     <div class="row auth__secondary"><button id="init-v2">初始化 Vault 2.0（至少 12 位）</button></div>
@@ -1111,7 +1297,7 @@ nav{grid-area:tabs}
   <section id="view-grants" class="view hidden">
     <div class="card" id="transfers-card"><h2>待复制到其他账户</h2><div class="hint">主账户分享后先进入队列；切回目标账户并解锁后自动复制到指定文件夹并生成授权。</div><div id="transfers-box" class="table-wrap scroll-list" style="margin-top:10px"></div></div>
     <div class="card"><h2>待批准请求</h2><div class="hint">点按钮即授权；同 Docker 版的 once/1h/24h/7d/永久。</div><div id="pending-box" class="scroll-list" style="margin-top:10px"></div></div>
-    <div class="card"><h2>有效授权</h2><div class="hint">到期的授权会在下次刷新时自动从列表移除（审计仍保留）；点该行的时长即可修改时长；「选择」可以批量删除或按时长批量恢复。</div><div class="row" style="margin-top:8px"><button id="grants-select">选择</button></div><div id="grants-bulk" class="row hidden" style="margin-top:8px;background:var(--fill);padding:8px;border-radius:10px;flex-wrap:wrap"><span id="grants-bulk-count" class="hint" style="flex:0 0 auto"></span><select id="grants-bulk-seconds" title="恢复后的时长（从现在起算）" style="flex:0 0 auto"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800" selected>7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><button id="grants-bulk-restore" class="primary">批量恢复</button><button class="danger" id="grants-bulk-delete">批量删除</button><button id="grants-bulk-clear">清除选择</button></div><div id="grants-box" class="scroll-list" style="margin-top:10px"></div></div>
+    <div class="card"><h2>有效授权</h2><div class="hint">到期的授权会在下次刷新时自动从列表移除（审计仍保留）；点该行的时长即可修改时长；「选择」可以批量删除或按时长批量恢复。</div><div class="row" style="margin-top:8px"><button id="grants-select">选择</button></div><div id="grants-bulk" class="row hidden" style="margin-top:8px;background:var(--fill);padding:8px;border-radius:10px;flex-wrap:wrap"><span id="grants-bulk-count" class="hint" style="flex:0 0 auto"></span><select id="grants-bulk-seconds" data-duration aria-label="批量恢复的授权时长" title="恢复后的时长（从现在起算）" style="flex:0 0 auto"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800" selected>7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><button id="grants-bulk-restore" class="primary">批量恢复</button><button class="danger" id="grants-bulk-delete">批量删除</button><button id="grants-bulk-clear">清除选择</button></div><div id="grants-box" class="scroll-list" style="margin-top:10px"></div></div>
   </section>
 
   <section id="view-logs" class="view hidden"><div class="card"><h2>审计日志</h2><div class="hint">最近 500 条，数据在 Durable Object 中。</div>
@@ -2017,7 +2203,7 @@ async function unlockLegacy(password, ttl = '12h', options = {}) {
 function inlineUnlockSheet(after) {
   openModal('就地解锁', '<p class="hint">解锁只影响名称与明文的可见性，当前页面不会跳转。审批可以继续。</p>'
     + '<label class="field" for="inline-password">Vault 主密码</label><input id="inline-password" type="password" autocomplete="current-password" enterkeyhint="go">'
-    + '<label class="field" for="inline-ttl">解锁有效期</label><select id="inline-ttl"><option value="12h" selected>12 小时（默认）</option><option value="7d">7 天</option><option value="30d">30 天</option><option value="device">长期（绑定本设备）</option><option value="forever">保持解锁（手动锁定前不再要求密码）</option></select>'
+    + '<label class="field" for="inline-ttl">解锁有效期</label><select id="inline-ttl" data-duration aria-label="解锁有效期"><option value="12h" selected>12 小时（默认）</option><option value="7d">7 天</option><option value="30d">30 天</option><option value="device">长期（绑定本设备）</option><option value="forever">保持解锁（手动锁定前不再要求密码）</option></select>'
     + '<div class="hint">时间越长，别处拿到这个会话就能读得越久；「保持解锁」会在服务端长期保存包裹副本，直到锁定才清除。</div>'
     + '<div class="row"><button class="primary" id="inline-unlock-submit">解锁</button></div><div class="status" id="inline-unlock-status" role="status" aria-live="polite"></div>')
   $('inline-password').focus()
@@ -2722,7 +2908,7 @@ async function openAdmissionEditor(name, connection) {
     '<label class="field">具体条目</label><div class="pick-box" id="adm-items">' + itemRows + '</div>' +
     '<label class="chk" style="margin-top:8px"><input type="checkbox" id="adm-plain"' + (connection.plaintextAllowed ? ' checked' : '') + '> 允许读取明文</label>' +
     '<label class="chk" style="margin-top:8px"><input type="checkbox" id="adm-write"' + (connection.writeAllowed ? ' checked' : '') + '> 允许写入</label>' +
-    '<label class="field">到期时长（从现在起算）</label><select id="adm-duration">' + options + '</select>' +
+    '<label class="field">到期时长（从现在起算）</label><select id="adm-duration" data-duration aria-label="到期时长">' + options + '</select>' +
     '<div class="row" style="margin-top:14px"><button class="primary" id="adm-save">保存</button></div>' +
     '<div class="status" id="adm-status"></div>')
   const allBox = $('adm-all')
@@ -2780,10 +2966,13 @@ function openExtendMenu(name) {
   const hint = agent.oauth
     ? '访问令牌固定 24 小时。延长只改服务端的令牌/授权/连接准入到期时间，不会给客户端发新令牌；能否自动续期取决于最初授权是否选了 7 天以上（那样才发 refresh token）。'
     : ''
-  openModal('延长授权 · ' + name, '<div class="hint">当前到期：' + esc(now) + (agent.oauth ? '（OAuth 连接）' : '') + '</div><div class="hint" style="margin-top:6px">从<strong>现在</strong>起算，重新计时。</div>' + (hint ? '<div class="hint" style="margin-top:6px">' + hint + '</div>' : '') + '<div class="row" style="margin-top:12px;flex-wrap:wrap;gap:8px">' + opts.map(([value, label]) => '<button class="small" data-extend-days="' + value + '">' + label + '</button>').join('') + '</div><div id="extend-error" class="extend-error hidden" role="alert" aria-live="assertive"></div>')
-  document.querySelectorAll('[data-extend-days]').forEach((button) => {
-    button.onclick = () => extendAgent(name, button.dataset.extendDays === 'permanent' ? 'permanent' : Number(button.dataset.extendDays))
-  })
+  openModal('延长授权 · ' + name, '<div class="hint">当前到期：' + esc(now) + (agent.oauth ? '（OAuth 连接）' : '') + '</div><div class="hint" style="margin-top:6px">从<strong>现在</strong>起算，重新计时。</div>' + (hint ? '<div class="hint" style="margin-top:6px">' + hint + '</div>' : '') + '<label class="field" for="extend-days">延长时间</label><select id="extend-days" data-duration aria-label="延长时间">' + opts.map(([value, label]) => '<option value="' + value + '"' + (value === '30' ? ' selected' : '') + '>' + label + '</option>').join('') + '</select><div class="row" style="margin-top:12px"><button class="primary" id="extend-go">延长</button></div><div id="extend-error" class="extend-error hidden" role="alert" aria-live="assertive"></div>')
+  // The slider only picks one of the same presets; the click still does the
+  // work, so a drag can be reconsidered before anything is sent.
+  $('extend-go').onclick = () => {
+    const value = $('extend-days').value
+    extendAgent(name, value === 'permanent' ? 'permanent' : Number(value))
+  }
 }
 $('kpis').addEventListener('click', (event) => {
   const card = event.target.closest('[data-kpi]'); if (!card) return
@@ -5102,7 +5291,7 @@ function batchBarHtml() {
   return '<div class="batch-bar">'
     + '<label class="chk"><input type="checkbox" id="batch-all"> 全选</label>'
     + '<span class="batch-count" id="batch-count">已选 0 条</span>'
-    + '<select id="batch-duration" aria-label="批量授权时长"><option value="once">仅本次</option><option value="1h">1 小时</option><option value="24h">24 小时</option><option value="7d">7 天</option><option value="always">永久</option></select>'
+    + '<select id="batch-duration" data-duration aria-label="批量授权时长"><option value="once">仅本次</option><option value="1h">1 小时</option><option value="24h">24 小时</option><option value="7d">7 天</option><option value="always">永久</option></select>'
     + '<select id="batch-scope" aria-label="批量连接范围"><option value="requested">按请求范围</option><option value="all">全部条目</option></select>'
     + '<label class="chk"><input type="checkbox" id="batch-plaintext"> 含明文</label>'
     + '<label class="chk"><input type="checkbox" id="batch-write"> 含写入</label>'
@@ -5262,7 +5451,7 @@ function connectionApprovalHtml(entry) {
     + '<div class="conn-meta">默认关闭；开启后，这次授权会允许 Agent 读取明文密码。</div>'
     + '<label class="chk"><input type="checkbox" data-conn-write> 允许它写入/更新该范围内的条目</label>'
     + '<div class="conn-meta">默认关闭；开启后，批准范围内的写入不再逐次询问。</div>'
-    + '<label class="field" for="conn-ttl-' + id + '">授权时长</label><select id="conn-ttl-' + id + '" data-conn-duration aria-label="授权时长">'
+    + '<label class="field" for="conn-ttl-' + id + '">授权时长</label><select id="conn-ttl-' + id + '" data-conn-duration data-duration aria-label="授权时长">'
     + '<option value="1h">1 小时</option><option value="24h">24 小时</option><option value="7d">7 天</option><option value="30d">30 天</option><option value="always">永久（直到撤销）</option></select>'
     + '<div class="conn-hint">「永久」只作用于这台机器的连接准入；Agent 自身的令牌/授权到期后仍需要重新授权。</div>'
     + '<div class="conn-hint" data-conn-status role="status" aria-live="polite"></div>'
@@ -5593,7 +5782,7 @@ function openAllowDenied(agent, name, action) {
       + '<label class="field">允许的方法</label><select id="ad-methods"><option value="GET,POST">GET + POST</option><option value="GET">仅 GET</option><option value="GET,POST,PUT,PATCH,DELETE">全部</option></select>'
       + '<label class="field">端口</label><input id="ad-ports" value="443" placeholder="443">'
     : '<div class="hint">让「' + esc(agent) + '」可以读取「' + esc(name) + '」的明文值。</div>'
-      + '<label class="field">明文有效期</label><select id="ad-hours"><option value="1">1 小时</option><option value="24" selected>24 小时</option><option value="168">7 天</option><option value="720">30 天</option><option value="0">永久</option></select>'
+      + '<label class="field">明文有效期</label><select id="ad-hours" data-duration aria-label="明文有效期"><option value="1">1 小时</option><option value="24" selected>24 小时</option><option value="168">7 天</option><option value="720">30 天</option><option value="0">永久</option></select>'
       + '<div class="hint">未指定时长的 API 调用按「永久」处理；这个对话框默认 24 小时，选「永久」才会给无限期。</div>'
       + '<div class="hint" style="margin-top:4px;color:var(--danger)">允许后该 Agent 能拿到这条凭据的真实值。确认这是你信任的 Agent。</div>'
   openModal('授权「' + agent + ' → ' + name + '」', body + '<div class="row" style="margin-top:12px"><button class="primary" id="ad-go">授权</button></div><div class="status" id="ad-status"></div>')
@@ -6086,7 +6275,7 @@ function openBulkShare() {
     const checked = single ? (app.data.grants || []).some((grant) => !grant.revokedAt && grant.agent === agent.name && grant.name === names[0]) : names.every((name) => (app.data.grants || []).some((grant) => !grant.revokedAt && grant.agent === agent.name && grant.name === name))
     return '<label class="chk" style="display:flex;width:100%"><input type="checkbox" class="bulk-agent" value="' + esc(agent.name) + '" ' + (checked ? 'checked' : '') + '> ' + esc(agent.alias || agent.name) + (agent.oauth ? ' <span class="pill">OAuth</span>' : '') + '</label>'
   }).join('')
-  openModal('批量分享 / 同步（' + names.length + ' 个条目）', '<div class="hint">勾选的 Agent 会获得这些条目；勾选“取消未勾选分享”后，未勾选 Agent 的现有分享会被撤销。</div><div style="max-height:220px;overflow:auto;margin-top:8px">' + (boxes || '<div class="hint">没有 Agent</div>') + '</div><label class="field">跨账户目标文件夹（跨账户时必填）</label><input id="bulk-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="bulk-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="bulk-reads" type="number" min="1"><label class="chk"><input type="checkbox" id="bulk-scope" checked> 同时把这些条目加入 Agent 的可申请范围</label><div class="hint" style="margin:2px 0 0 22px">分享本身只产生一次「授权」。Agent 还要在范围内才看得到这个条目，所以默认一起勾上；取消勾选就只授权、不改范围。</div><label class="chk"><input type="checkbox" id="bulk-revoke" ' + (single ? 'checked' : '') + '> 取消未勾选 Agent 的分享</label><div class="row" style="margin-top:12px"><button class="primary" id="bulk-confirm">确定</button></div>')
+  openModal('批量分享 / 同步（' + names.length + ' 个条目）', '<div class="hint">勾选的 Agent 会获得这些条目；勾选“取消未勾选分享”后，未勾选 Agent 的现有分享会被撤销。</div><div style="max-height:220px;overflow:auto;margin-top:8px">' + (boxes || '<div class="hint">没有 Agent</div>') + '</div><label class="field">跨账户目标文件夹（跨账户时必填）</label><input id="bulk-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="bulk-seconds" data-duration aria-label="批量分享的有效期"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="bulk-reads" type="number" min="1"><label class="chk"><input type="checkbox" id="bulk-scope" checked> 同时把这些条目加入 Agent 的可申请范围</label><div class="hint" style="margin:2px 0 0 22px">分享本身只产生一次「授权」。Agent 还要在范围内才看得到这个条目，所以默认一起勾上；取消勾选就只授权、不改范围。</div><label class="chk"><input type="checkbox" id="bulk-revoke" ' + (single ? 'checked' : '') + '> 取消未勾选 Agent 的分享</label><div class="row" style="margin-top:12px"><button class="primary" id="bulk-confirm">确定</button></div>')
   $('bulk-confirm').onclick = async () => {
     const agentsSelected = [...document.querySelectorAll('.bulk-agent:checked')].map((box) => box.value)
     try {
@@ -6431,7 +6620,7 @@ async function openItemMenu(name) {
     '<div class="kv"><span>上次轮换</span><b>' + (item.lastRotatedAt ? relativeTime(Date.parse(item.lastRotatedAt)) + (item.rotatedBy ? ' · ' + esc(item.rotatedBy) : '') : '无记录') + '</b></div>' +
     (item.backupUntil ? '<div class="kv"><span>旧值备份</span><b>保留至 ' + new Date(item.backupUntil).toLocaleString('zh-CN', { hour12: false }) + ' <button class="small" id="mi-restore" type="button">恢复旧值</button> <button class="small danger" id="mi-purge" type="button" title="立即清除旧值备份，不可恢复">清除备份</button></b></div>' : '') +
     '</div>' +
-    fillEditorHtml(item) + '<div class="card edit-only"><label class="field">名称</label><input id="mi-name" value="' + esc(item.name) + '"><label class="field">用户名（留空不改）</label><input id="mi-username" value="' + esc(item.username || '') + '"><label class="field">TOTP Secret（留空不改）</label><input id="mi-totp" value="' + esc(item.totp || '') + '"><label class="field">分组</label><input id="mi-group" value="' + esc(item.group || '') + '" placeholder="例如 blog/prod"><label class="field">网址</label><input id="mi-url" value="' + esc(item.url || '') + '"><label class="field">备注（留空不改）</label><input id="mi-notes" placeholder="新的备注"><label class="field">新密钥值（留空不改；填写即轮换并记录 item.rotate）</label><input id="mi-value" type="password" placeholder="留空保留原值"><label class="field">轮换时保留旧值</label><select id="mi-keepold"><option value="0" selected>不保留（默认，最安全）</option><option value="7">7 天（可回滚）</option><option value="14">14 天（可回滚）</option><option value="30">30 天（可回滚）</option></select><div class="hint">开启后服务端只保存旧的<strong>密文行</strong>，不存明文；窗口内可一键恢复，窗口结束自动丢弃。保留越久，被撤销/泄露旧密钥仍可被取回的风险越久。</div><label class="chk" style="margin-top:8px"><input type="checkbox" id="mi-noapproval" ' + (item.noApproval ? 'checked' : '') + '> 免审批（自动读取，仍记录）</label><div class="row editor-zone" style="margin-top:14px"><button class="primary" id="mi-save" aria-label="保存修改（无改动）">保存修改</button><button id="mi-discard" aria-label="放弃修改，恢复进入编辑时的值">放弃</button><button id="mi-share">分享 / 跨账户复制</button></div></div><div class="card edit-only danger-zone" role="group" aria-label="删除条目"><div class="danger-zone__text"><b>删除这个条目</b><span class="hint">删除后无法恢复，正在使用它的 Agent 会立刻失去访问。</span></div><button class="danger" id="mi-delete">删除</button></div><div class="card edit-only share-zone"><div class="hint">分享给 Agent（同账户直接授权；跨账户会先复制到目标账户文件夹，切回目标账户解锁后自动完成）</div><label class="field">分享给（可多选）</label><div class="pick-list">' + agents.map((agent) => '<label class="pick-row"><input type="checkbox" class="ios-check" data-share-agent value="' + esc(agent.name) + '"><span>' + esc(agentDisplayName(agent)) + '</span></label>').join('') + '</div><label class="field">跨账户目标文件夹（同账户可留空）</label><input id="mi-share-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="mi-share-seconds"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mi-share-reads" type="number" min="1"></div>' + expiresField(item) + '</div>')
+    fillEditorHtml(item) + '<div class="card edit-only"><label class="field">名称</label><input id="mi-name" value="' + esc(item.name) + '"><label class="field">用户名（留空不改）</label><input id="mi-username" value="' + esc(item.username || '') + '"><label class="field">TOTP Secret（留空不改）</label><input id="mi-totp" value="' + esc(item.totp || '') + '"><label class="field">分组</label><input id="mi-group" value="' + esc(item.group || '') + '" placeholder="例如 blog/prod"><label class="field">网址</label><input id="mi-url" value="' + esc(item.url || '') + '"><label class="field">备注（留空不改）</label><input id="mi-notes" placeholder="新的备注"><label class="field">新密钥值（留空不改；填写即轮换并记录 item.rotate）</label><input id="mi-value" type="password" placeholder="留空保留原值"><label class="field">轮换时保留旧值</label><select id="mi-keepold"><option value="0" selected>不保留（默认，最安全）</option><option value="7">7 天（可回滚）</option><option value="14">14 天（可回滚）</option><option value="30">30 天（可回滚）</option></select><div class="hint">开启后服务端只保存旧的<strong>密文行</strong>，不存明文；窗口内可一键恢复，窗口结束自动丢弃。保留越久，被撤销/泄露旧密钥仍可被取回的风险越久。</div><label class="chk" style="margin-top:8px"><input type="checkbox" id="mi-noapproval" ' + (item.noApproval ? 'checked' : '') + '> 免审批（自动读取，仍记录）</label><div class="row editor-zone" style="margin-top:14px"><button class="primary" id="mi-save" aria-label="保存修改（无改动）">保存修改</button><button id="mi-discard" aria-label="放弃修改，恢复进入编辑时的值">放弃</button><button id="mi-share">分享 / 跨账户复制</button></div></div><div class="card edit-only danger-zone" role="group" aria-label="删除条目"><div class="danger-zone__text"><b>删除这个条目</b><span class="hint">删除后无法恢复，正在使用它的 Agent 会立刻失去访问。</span></div><button class="danger" id="mi-delete">删除</button></div><div class="card edit-only share-zone"><div class="hint">分享给 Agent（同账户直接授权；跨账户会先复制到目标账户文件夹，切回目标账户解锁后自动完成）</div><label class="field">分享给（可多选）</label><div class="pick-list">' + agents.map((agent) => '<label class="pick-row"><input type="checkbox" class="ios-check" data-share-agent value="' + esc(agent.name) + '"><span>' + esc(agentDisplayName(agent)) + '</span></label>').join('') + '</div><label class="field">跨账户目标文件夹（同账户可留空）</label><input id="mi-share-folder" placeholder="例如 笔记"><label class="field">时长</label><select id="mi-share-seconds" data-duration aria-label="分享有效期"><option value="3600">1 小时</option><option value="86400">24 小时</option><option value="604800">7 天</option><option value="2592000">30 天</option><option value="0">永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mi-share-reads" type="number" min="1"></div>' + expiresField(item) + '</div>')
   // Purging is the one irreversible action on a backup, so it asks for the
   // second factor rather than a click-through confirm; the warning is in the
   // prompt itself because the button alone cannot carry it.
@@ -6528,7 +6717,7 @@ function agentActionFields(agent) {
     + '<div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap">'
     + '<select id="aa-item" style="flex:1;min-width:140px">' + knownItemNames().map((name) => '<option value="' + esc(name) + '">' + esc(name) + '</option>').join('') + '</select>'
     + '<select id="aa-action" style="flex:0 0 auto"><option value="secret.read">读取明文</option><option value="secret.use">代持调用</option><option value="secret.fill">网页填充</option></select>'
-    + '<select id="aa-days" style="flex:0 0 auto"><option value="1">1 天</option><option value="7">7 天</option><option value="30" selected>30 天</option><option value="permanent">永久</option></select>'
+    + '<select id="aa-days" data-duration aria-label="授权天数" style="flex:0 0 auto"><option value="1">1 天</option><option value="7">7 天</option><option value="30" selected>30 天</option><option value="permanent">永久</option></select>'
     + '<button class="small primary" id="aa-grant">授予</button></div>'
     + '<div class="status" id="aa-status"></div></div>'
 }
@@ -6668,7 +6857,7 @@ async function openGrantMenu(agent, name) {
   let usage = (app.data.audit || []).filter((entry) => entry.agent === agent && entry.name === name).slice(0, 15)
   try { const data = await auditPage({ agent, item: name, limit: 15 }); usage = data.entries || usage } catch {}
   const usageHtml = '<div class="hint" style="margin-bottom:8px">创建：' + (grant.createdAt ? new Date(grant.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-') + ' · 已读：' + (grant.reads ?? 0) + ' 次 · 到期：' + (grant.expiresAt ? new Date(grant.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</div><div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:12px"><b>使用记录</b>' + (usage.length ? '<table><tr><th>时间</th><th>动作</th><th>方式</th></tr>' + usage.map((entry) => '<tr><td>' + esc(entry.time ? new Date(entry.time).toLocaleString('zh-CN', { hour12: false }) : '') + '</td><td>' + esc(describeEvent(entry)) + '</td><td>' + esc(entry.mode || entry.source || '') + '</td></tr>').join('') + '</table>' : '<div class="hint">暂无记录</div>') + '</div>'
-  openModal('授权「' + agent + ' → ' + name + '」', usageHtml + '<label class="field">时长</label><select id="mg-seconds"><option value="3600" ' + (nearest === 3600 ? 'selected' : '') + '>1 小时</option><option value="86400" ' + (nearest === 86400 ? 'selected' : '') + '>24 小时</option><option value="604800" ' + (nearest === 604800 ? 'selected' : '') + '>7 天</option><option value="2592000" ' + (nearest === 2592000 ? 'selected' : '') + '>30 天</option><option value="0" ' + (nearest === 0 ? 'selected' : '') + '>永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mg-max" type="number" min="1" value="' + (grant.maxReads ?? '') + '"><div class="row" style="margin-top:14px"><button class="primary" id="mg-save">保存授权</button>' + (grant.revokedAt || (grant.expiresAt && grant.expiresAt <= Date.now()) || (grant.maxReads && (grant.reads ?? 0) >= grant.maxReads) ? '<button id="mg-restore">恢复授权</button>' : '') + '<button class="danger" id="mg-revoke">撤销</button><button class="danger" id="mg-delete">删除记录</button></div>')
+  openModal('授权「' + agent + ' → ' + name + '」', usageHtml + '<label class="field">时长</label><select id="mg-seconds" data-duration aria-label="授权时长"><option value="3600" ' + (nearest === 3600 ? 'selected' : '') + '>1 小时</option><option value="86400" ' + (nearest === 86400 ? 'selected' : '') + '>24 小时</option><option value="604800" ' + (nearest === 604800 ? 'selected' : '') + '>7 天</option><option value="2592000" ' + (nearest === 2592000 ? 'selected' : '') + '>30 天</option><option value="0" ' + (nearest === 0 ? 'selected' : '') + '>永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mg-max" type="number" min="1" value="' + (grant.maxReads ?? '') + '"><div class="row" style="margin-top:14px"><button class="primary" id="mg-save">保存授权</button>' + (grant.revokedAt || (grant.expiresAt && grant.expiresAt <= Date.now()) || (grant.maxReads && (grant.reads ?? 0) >= grant.maxReads) ? '<button id="mg-restore">恢复授权</button>' : '') + '<button class="danger" id="mg-revoke">撤销</button><button class="danger" id="mg-delete">删除记录</button></div>')
   $('mg-save').onclick = async () => { try { await api('/api/grants/update', { method: 'POST', body: JSON.stringify({ agent, name, seconds: Number($('mg-seconds').value), maxReads: $('mg-max').value || null }) }); show('modal', false); await refreshAll(); toast('已更新授权') } catch (error) { toast(errorText(error, '更新授权'), true) } }
   if ($('mg-restore')) $('mg-restore').onclick = async () => { try { await api('/api/grants/restore', { method: 'POST', body: JSON.stringify({ agent, name, seconds: Number($('mg-seconds').value) }) }); show('modal', false); await refreshAll(); toast('已恢复授权') } catch (error) { toast(errorText(error, '恢复授权'), true) } }
   $('mg-revoke').onclick = async () => { try { await api('/api/grants/revoke', { method: 'POST', body: JSON.stringify({ agent, name }) }); show('modal', false); await refreshAll(); toast('已撤销') } catch (error) { toast(errorText(error, '撤销授权'), true) } }
@@ -6764,4 +6953,5 @@ async function disable2fa() {
 async function createAgent() { openAgentCreate() }
 boot()
 loadVersion()
+${DURATION_SLIDER_JS}
 </script></body></html>`
