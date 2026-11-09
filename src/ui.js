@@ -966,6 +966,14 @@ nav{grid-area:tabs}
 .copy-ok{color:var(--green)}
 @keyframes copy-pop{0%{transform:scale(.82)}60%{transform:scale(1.1)}100%{transform:scale(1)}}
 @media (prefers-reduced-motion: no-preference){.copy-ok{animation:copy-pop var(--dur-base) var(--ease)}}
+/* Approval rows answer in place: 处理中, then the outcome, then the row folds
+   away. A failure puts its reason back into the same row. */
+.row-collapsing{overflow:hidden;transition:height var(--dur-base) var(--ease),opacity var(--dur-base) var(--ease),padding var(--dur-base) var(--ease),margin var(--dur-base) var(--ease)}
+.row-state{font-size:12px;line-height:18px;color:var(--ink-2);white-space:nowrap}
+.row-state[data-tone="ok"]{color:var(--green);font-weight:600}
+.row-state[data-tone="bad"]{color:var(--red);white-space:normal}
+.notice-approve .na-actions{flex-wrap:wrap}
+.notice-approve .na-actions .row-state{flex:1 1 100%}
 </style></head><body><div class="wrap">
 <div id="db-down" class="notice-bar hidden" data-level="critical"><span class="notice-dot"></span><span class="notice-text"></span></div>
 <header><div class="brand"><img id="site-logo" src="/logo.png" alt="" style="cursor:pointer"><h1 id="site-title" style="cursor:pointer">Secrets Broker</h1><span class="badge">Cloudflare Workers</span><span class="badge" id="header-version" title="应用版本">版本未知</span></div>
@@ -1422,6 +1430,62 @@ async function copyFeedback(button, text, options = {}) {
   } finally {
     if (button) delete button.dataset.copyBusy
   }
+}
+
+// An approval row is its own progress indicator. The first click claims the
+// row (a second one is ignored), the buttons are replaced by 处理中, and only
+// the real response turns that into 已批准/已拒绝. On failure the original
+// buttons come back with the reason in the same row.
+function beginRowDecision(row, text) {
+  if (!row) return null
+  if (row.dataset.deciding === '1') return null
+  row.dataset.deciding = '1'
+  row.setAttribute('aria-busy', 'true')
+  const actions = row.querySelector('.na-actions, .ios-actions, .conn-actions')
+  const saved = actions ? actions.innerHTML : ''
+  if (actions) actions.innerHTML = '<span class="row-state" data-tone="busy" role="status">' + esc(text || '处理中…') + '</span>'
+  row.querySelectorAll('button').forEach((button) => { button.disabled = true })
+  return { actions, saved }
+}
+function settleRowDecision(row, handle, text) {
+  if (!row) return
+  row.removeAttribute('aria-busy')
+  if (handle && handle.actions) handle.actions.innerHTML = '<span class="row-state" data-tone="ok" role="status">' + esc(text) + '</span>'
+  collapseDecidedRow(row)
+}
+function failRowDecision(row, handle, text) {
+  if (!row) return
+  delete row.dataset.deciding
+  row.removeAttribute('aria-busy')
+  if (handle && handle.actions) {
+    handle.actions.innerHTML = handle.saved + (text ? '<span class="row-state" data-tone="bad" role="status">' + esc(text) + '</span>' : '')
+  }
+  row.querySelectorAll('button').forEach((button) => { button.disabled = false })
+}
+// Pin the current height, then fold to zero. Inside the absolute notice sheet
+// this only ever shrinks content, so the 132px cap is never pushed outward.
+function collapseDecidedRow(row, delay) {
+  const run = () => {
+    if (!row.isConnected) return
+    const height = row.getBoundingClientRect().height
+    row.classList.add('row-collapsing')
+    row.style.height = height + 'px'
+    row.style.minHeight = '0'
+    requestAnimationFrame(() => {
+      row.style.height = '0px'
+      row.style.opacity = '0'
+      row.style.paddingTop = '0'
+      row.style.paddingBottom = '0'
+      row.style.marginTop = '0'
+      row.style.marginBottom = '0'
+    })
+    setTimeout(() => row.remove(), 320)
+  }
+  if (delay) setTimeout(run, delay)
+  else run()
+}
+function rowFailureText(error) {
+  return String((error && (error.message || error.reason)) || '未知错误').slice(0, 120)
 }
 
 // Sensitive actions ask once, here, regardless of the unlock tier. The server
@@ -2650,7 +2714,21 @@ $('pending-box').addEventListener('click', async (event) => {
   if (batchDeny) { event.preventDefault(); return applyPendingBatch('deny') }
   const button = event.target.closest('[data-decide]')
   if (!button) return
-  try { await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision: button.dataset.decide }) }); await Promise.all([loadState(), loadStats(), loadItems()]); toast('已处理') } catch (error) { toast(error.message, true) }
+  const row = button.closest('.ios-row')
+  const decision = button.dataset.decide
+  const handle = beginRowDecision(row, decision === 'deny' ? '正在拒绝…' : '正在批准…')
+  if (row && !handle) return
+  if (!row) { button.disabled = true; button.setAttribute('aria-busy', 'true') }
+  try {
+    await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id: button.dataset.id, decision }) })
+    settleRowDecision(row, handle, decision === 'deny' ? '已拒绝' : '已批准')
+    toast('已处理')
+    setTimeout(() => { Promise.all([loadState(), loadStats(), loadItems()]).catch(() => {}) }, 460)
+  } catch (error) {
+    failRowDecision(row, handle, '失败：' + rowFailureText(error))
+    if (!row) { button.disabled = false; button.removeAttribute('aria-busy') }
+    toast(error.message, true)
+  }
 })
 $('pending-box').addEventListener('change', (event) => {
   if (event.target.id === 'batch-all') {
@@ -4501,26 +4579,34 @@ async function decideQuickApproval(button) {
   if (connection && decision === 'form') { openPendingSheet(); return }
   // Denial never touches the vault key; approval no longer needs an unlock in
   // this browser either — a long-term slot on the account covers it.
-  button.disabled = true
-  button.setAttribute('aria-busy', 'true')
+  const row = button.closest('.na-row')
+  const handle = beginRowDecision(row, decision === 'deny' ? '正在拒绝…' : '正在批准…')
+  if (row && !handle) return
+  if (!row) { button.disabled = true; button.setAttribute('aria-busy', 'true') }
   try {
+    let done = ''
     if (connection) {
       const body = decision === 'deny'
         ? { id, decision: 'deny' }
         : { id, decision: 'approve', all: true, plaintextAllowed: false, duration: '1h' }
       await api('/api/connections/decide', { method: 'POST', body: JSON.stringify(body) })
+      done = decision === 'deny' ? '已拒绝' : '已批准 · 1 小时'
       toast(decision === 'deny' ? '已拒绝连接申请' : '已批准连接 · 1 小时（不含明文）')
     } else {
       await api('/api/pending/decide', { method: 'POST', body: JSON.stringify({ id, decision }) })
-      toast(decision === 'deny' ? '已拒绝' : decision === '7d' ? '已批准 7 天' : '已批准 1 小时')
+      done = decision === 'deny' ? '已拒绝' : decision === '7d' ? '已批准 7 天' : '已批准 1 小时'
+      toast(done)
     }
-    await Promise.all([loadState(), loadStats(), loadItems()])
+    settleRowDecision(row, handle, done)
+    // Re-read after the fold finishes, so the refresh does not erase the
+    // confirmation the operator is looking at.
+    setTimeout(() => { Promise.all([loadState(), loadStats(), loadItems()]).catch(() => {}) }, 460)
   } catch (error) {
-    button.disabled = false
-    button.removeAttribute('aria-busy')
+    failRowDecision(row, handle, '失败：' + rowFailureText(error))
+    if (!row) { button.disabled = false; button.removeAttribute('aria-busy') }
     const stale = /not-pending|已处理|不存在|not-found/i.test((error.reason || '') + ' ' + (error.message || ''))
     toast(stale ? '这条申请已处理或已过期，队列已刷新。' : '审批失败：' + error.message, true)
-    if (stale) await loadState()
+    if (stale) setTimeout(() => { loadState().catch(() => {}) }, 460)
   }
 }
 async function enableWebPushFromBar() {
@@ -5120,22 +5206,31 @@ function setConnectionStatus(card, text, isError) {
   else delete el.dataset.state
 }
 async function decideConnection(button, body, card, options = {}) {
-  const buttons = card ? Array.from(card.querySelectorAll('button')) : (button ? [button] : [])
-  buttons.forEach((entry) => { entry.disabled = true; entry.setAttribute('aria-busy', 'true') })
+  if (!card && !button) return
+  const row = card
+  const handle = beginRowDecision(row, body.decision === 'deny' ? '正在拒绝…' : '正在批准…')
+  if (row && !handle) return
+  if (!row) { button.disabled = true; button.setAttribute('aria-busy', 'true') }
   try {
     await api('/api/connections/decide', { method: 'POST', body: JSON.stringify(body) })
     toast(body.decision === 'deny' ? '已拒绝连接申请' : '已批准连接 · ' + connectionDurationLabel(body.duration) + (body.plaintextAllowed ? '（含明文）' : '（不含明文）') + (body.writeAllowed ? '（含写入）' : ''))
-    await Promise.all([loadState(), loadStats(), loadItems()])
+    settleRowDecision(row, handle, body.decision === 'deny' ? '已拒绝' : '已批准 · ' + connectionDurationLabel(body.duration))
     // A resumed approval re-opened the sheet from the unlock callback, so it
-    // has to be rebuilt here too or the stale row stays on screen.
-    if (options.afterUnlock || (card && card.closest('#modal-body'))) openPendingSheet()
+    // has to be rebuilt here too or the stale row stays on screen. The short
+    // delay keeps the row's confirmation visible before the rebuild.
+    setTimeout(() => {
+      Promise.all([loadState(), loadStats(), loadItems()]).then(() => {
+        if (options.afterUnlock || (row && row.closest('#modal-body'))) openPendingSheet()
+      }).catch(() => {})
+    }, 460)
   } catch (error) {
-    buttons.forEach((entry) => { entry.disabled = false; entry.removeAttribute('aria-busy') })
+    failRowDecision(row, handle)
+    if (!row) { button.disabled = false; button.removeAttribute('aria-busy') }
     const stale = [404, 409].includes(error.status) || /not-pending|not-found/i.test(String(error.reason || '') + ' ' + String(error.message || ''))
     if (stale) {
       if (card) setConnectionStatus(card, '这条申请已处理或已过期，队列已刷新。', true)
       toast('这条申请已处理或已过期，队列已刷新。', true)
-      await loadState()
+      setTimeout(() => { loadState().catch(() => {}) }, 460)
     } else if (error.status === 428) {
       // The server could not find any unlock for the account. This is the
       // readable "unlock once, then approvals stop asking" message, not a dead
@@ -5174,7 +5269,9 @@ async function decideConnectionQuick(button) {
   if (!button || button.disabled) return
   const id = button.dataset.connQuick
   const body = { id, decision: 'approve', all: true, plaintextAllowed: false, duration: '1h' }
-  return decideConnection(button, body, null)
+  // The pending row is the local feedback surface: without it the click looks
+  // inert until the whole queue reloads.
+  return decideConnection(button, body, button.closest('[data-conn-card]'))
 }
 
 // The web fill policy card. Every call goes through the admin API, which
