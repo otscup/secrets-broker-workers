@@ -981,6 +981,14 @@ nav{grid-area:tabs}
 @keyframes code-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-5px)}40%{transform:translateX(4px)}60%{transform:translateX(-3px)}80%{transform:translateX(2px)}}
 .code-shake{animation:code-shake var(--dur-base) var(--ease)}
 @media (prefers-reduced-motion: reduce){.code-shake{animation:none}}
+/* Batch progress is a 3x3 dot matrix driven entirely by CSS. No timer runs in
+   JS, so the queue poll keeps the main thread; display:none stops it. */
+.dots-matrix{display:inline-grid;grid-template-columns:repeat(3,3px);grid-auto-rows:3px;gap:2px;margin-right:6px;vertical-align:-1px}
+.dots-matrix .dm-dot{width:3px;height:3px;border-radius:50%;background:currentColor;opacity:.22;animation:dot-pulse .9s var(--ease) infinite;animation-delay:calc(var(--i) * 90ms)}
+@keyframes dot-pulse{0%,100%{opacity:.22;transform:scale(.8)}45%{opacity:1;transform:scale(1)}}
+#bulk-bar.hidden .dm-dot,#batch-progress.hidden .dm-dot{animation-play-state:paused}
+.batch-progress{display:inline-flex;align-items:center;font-size:12px;color:var(--muted)}
+@media (prefers-reduced-motion: reduce){.dots-matrix .dm-dot{animation:none!important;opacity:.55}}
 </style></head><body><div class="wrap">
 <div id="db-down" class="notice-bar hidden" data-level="critical"><span class="notice-dot"></span><span class="notice-text"></span></div>
 <header><div class="brand"><img id="site-logo" src="/logo.png" alt="" style="cursor:pointer"><h1 id="site-title" style="cursor:pointer">Secrets Broker</h1><span class="badge">Cloudflare Workers</span><span class="badge" id="header-version" title="应用版本">版本未知</span></div>
@@ -1528,6 +1536,19 @@ function shakeCode(input) {
   input.setAttribute('aria-invalid', 'true')
   input.focus()
   setTimeout(() => input.classList.remove('code-shake'), 260)
+}
+
+// Batch progress markup: nine 3px dots, each delayed by --i. The label still
+// carries the count; the dots only say "working". CSS owns the motion, so no
+// extra frame loop competes with the pending poll.
+function dotsProgressHtml(label) {
+  let dots = ''
+  for (let index = 0; index < 9; index++) dots += '<span class="dm-dot" style="--i:' + index + '"></span>'
+  return '<span class="dots-matrix" aria-hidden="true">' + dots + '</span>' + (label ? '<span>' + esc(label) + '</span>' : '')
+}
+function setDotsProgress(el, label) {
+  if (!el) return
+  el.innerHTML = label ? dotsProgressHtml(label) : ''
 }
 
 // Sensitive actions ask once, here, regardless of the unlock tier. The server
@@ -4135,7 +4156,7 @@ function renderItems() {
   $('items-box').querySelectorAll('.ios-main').forEach((main) => { main.onkeydown = async (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (!(await confirmDiscard())) return; openItemMenu(main.dataset.itemMenu) } } })
   updateBulkBar()
 }
-function updateBulkBar() { const bar = $('bulk-bar'); if (!bar) return; bar.classList.toggle('hidden', selectedItems.size === 0); $('bulk-count').textContent = '已选择 ' + selectedItems.size + ' 个条目'; if (!selectedItems.size) { const progress = $('bulk-progress'); if (progress) progress.textContent = '' } }
+function updateBulkBar() { const bar = $('bulk-bar'); if (!bar) return; bar.classList.toggle('hidden', selectedItems.size === 0); $('bulk-count').textContent = '已选择 ' + selectedItems.size + ' 个条目'; if (!selectedItems.size) setDotsProgress($('bulk-progress'), '') }
 // null/undefined = permanent; past = expired; soon (<24h) flagged.
 function expiryLabel(expiresAt) {
   if (typeof expiresAt !== 'number' || expiresAt <= 0) return '永久'
@@ -5055,6 +5076,7 @@ function batchBarHtml() {
     + '<label class="chk"><input type="checkbox" id="batch-write"> 含写入</label>'
     + '<button class="primary" id="batch-approve" type="button">批准所选</button>'
     + '<button class="danger" id="batch-deny" type="button">拒绝所选</button>'
+    + '<span class="batch-progress" id="batch-progress" role="status" aria-live="polite"></span>'
     + '</div><div class="batch-hint" id="batch-hint">将按当前设置一次性处理所选请求：连接类共用范围/明文/写入/时长，条目类共用时长。超过 3 天未处理的请求会自动清理并保留审计。</div>'
 }
 function updateBatchCount() {
@@ -5080,6 +5102,12 @@ async function applyPendingBatch(decision) {
   }
   let ok = 0
   let failed = 0
+  const progress = $('batch-progress')
+  const report = (done) => setDotsProgress(progress, (decision === 'deny' ? '正在拒绝 ' : '正在批准 ') + done + '/' + total)
+  report(0)
+  // The loop takes one request per row; a second click would send them twice.
+  const batchButtons = [$('batch-approve'), $('batch-deny')].filter(Boolean)
+  batchButtons.forEach((button) => { button.disabled = true })
   for (const node of selected) {
     const id = node.dataset.id
     try {
@@ -5106,8 +5134,11 @@ async function applyPendingBatch(decision) {
     } catch (error) {
       failed += 1
     }
+    report(ok + failed)
   }
+  if (progress) setDotsProgress(progress, '完成 ' + (ok + failed) + '/' + total + (failed ? ' · 失败 ' + failed : ''))
   await Promise.all([loadState(), loadStats(), loadItems()])
+  batchButtons.forEach((button) => { button.disabled = false })
   toast('批量' + (decision === 'deny' ? '拒绝' : '批准') + '：成功 ' + ok + ' 条' + (failed ? '，失败 ' + failed + ' 条' : ''), failed > 0)
 }
 
@@ -6046,14 +6077,14 @@ async function bulkDelete() {
   // looked stuck. The bar now counts out loud, and every failure is named at
   // the end instead of disappearing into a silent continue.
   const progress = $('bulk-progress')
-  const report = (index) => { if (progress) progress.textContent = '已处理 ' + index + '/' + names.length + (failed.length ? ' · 失败 ' + failed.length : '') }
-  if (progress) progress.textContent = '已处理 0/' + names.length
+  const report = (index) => setDotsProgress(progress, '已处理 ' + index + '/' + names.length + (failed.length ? ' · 失败 ' + failed.length : ''))
+  report(0)
   for (let index = 0; index < names.length; index++) {
     const name = names[index]
     try { await api('/api/items/delete', { method: 'POST', body: JSON.stringify({ name }) }); deleted++ } catch { failed.push(name) }
     report(index + 1)
   }
-  if (failed.length && progress) progress.textContent = '已处理 ' + names.length + '/' + names.length + ' · 失败：' + failed.join('、')
+  if (failed.length) setDotsProgress(progress, '已处理 ' + names.length + '/' + names.length + ' · 失败：' + failed.join('、'))
   selectedItems.clear(); await Promise.all([loadItems(), loadState()])
   // The bar hides as soon as the selection clears, so the last "已处理 N/N"
   // frame would never paint. The count rides along with the final message,
