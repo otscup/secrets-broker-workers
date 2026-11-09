@@ -974,6 +974,13 @@ nav{grid-area:tabs}
 .row-state[data-tone="bad"]{color:var(--red);white-space:normal}
 .notice-approve .na-actions{flex-wrap:wrap}
 .notice-approve .na-actions .row-state{flex:1 1 100%}
+/* One input, six visual segments. Tab stays a single stop and a pasted code
+   lands whole; the dividers are decoration, not separate fields. */
+.code-input{letter-spacing:.4em;text-align:center;font-variant-numeric:tabular-nums;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background-image:repeating-linear-gradient(90deg,transparent 0,transparent calc(16.666% - 1px),color-mix(in srgb,var(--separator) 38%,transparent) calc(16.666% - 1px),color-mix(in srgb,var(--separator) 38%,transparent) 16.666%)}
+.code-input::placeholder{letter-spacing:normal}
+@keyframes code-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-5px)}40%{transform:translateX(4px)}60%{transform:translateX(-3px)}80%{transform:translateX(2px)}}
+.code-shake{animation:code-shake var(--dur-base) var(--ease)}
+@media (prefers-reduced-motion: reduce){.code-shake{animation:none}}
 </style></head><body><div class="wrap">
 <div id="db-down" class="notice-bar hidden" data-level="critical"><span class="notice-dot"></span><span class="notice-text"></span></div>
 <header><div class="brand"><img id="site-logo" src="/logo.png" alt="" style="cursor:pointer"><h1 id="site-title" style="cursor:pointer">Secrets Broker</h1><span class="badge">Cloudflare Workers</span><span class="badge" id="header-version" title="应用版本">版本未知</span></div>
@@ -1379,6 +1386,9 @@ function askCode(message, { type = 'text', inputmode = 'numeric', placeholder = 
     input.setAttribute('aria-label', label || placeholder)
     input.placeholder = placeholder
     if (maxlength) input.maxLength = maxlength
+    // Only a code gets the digit filter and the segment guides; a password
+    // prompt must keep every character the user typed.
+    if (type !== 'password') decorateCodeInput(input)
     const done = (answer) => { wrap.remove(); document.removeEventListener('keydown', onKey); if (previous && previous.focus) previous.focus(); resolve(answer) }
     const onKey = (event) => { if (event.key === 'Escape') { event.stopImmediatePropagation(); done('') } }
     wrap.querySelector('.ask__no').onclick = () => done('')
@@ -1486,6 +1496,38 @@ function collapseDecidedRow(row, delay) {
 }
 function rowFailureText(error) {
   return String((error && (error.message || error.reason)) || '未知错误').slice(0, 120)
+}
+
+// The code prompts all stay one input. That is deliberate: six boxes would make
+// Tab stop six times and a pasted code land in the first box only. One input
+// keeps the whole paste, and the CSS draws the six segments without splitting
+// focus. one-time-code stays on so the OS can offer the code from the message.
+function decorateCodeInput(input) {
+  if (!input) return input
+  if (input.dataset.codeReady !== '1') {
+    input.dataset.codeReady = '1'
+    input.classList.add('code-input')
+    input.setAttribute('inputmode', 'numeric')
+    input.setAttribute('autocomplete', 'one-time-code')
+    input.setAttribute('maxlength', '6')
+    input.setAttribute('pattern', '[0-9]*')
+    input.addEventListener('input', () => {
+      // Authenticator apps copy "123 456"; keep the digits, drop the rest.
+      const clean = String(input.value || '').replace(/\D/g, '').slice(0, 6)
+      if (clean !== input.value) input.value = clean
+      input.removeAttribute('aria-invalid')
+    })
+  }
+  return input
+}
+function shakeCode(input) {
+  if (!input) return
+  input.classList.remove('code-shake')
+  void input.offsetWidth
+  input.classList.add('code-shake')
+  input.setAttribute('aria-invalid', 'true')
+  input.focus()
+  setTimeout(() => input.classList.remove('code-shake'), 260)
 }
 
 // Sensitive actions ask once, here, regardless of the unlock tier. The server
@@ -1771,7 +1813,11 @@ $('login').onclick = async () => {
     if (error.status === 401 && error.data?.totpRequired) {
       show('totp-row', true)
       status('login-status', error.data.error || '请输入两步验证码', 'error')
-      $('totp-code').focus()
+      // Shake only when a code was actually submitted; the first reveal is a
+      // prompt, not a mistake. The password field is never cleared here.
+      const codeInput = $('totp-code')
+      if (String(codeInput.value || '').trim()) shakeCode(codeInput)
+      else codeInput.focus()
     } else {
       status('login-status', error.message, 'error')
       $('admin-password').focus()
@@ -1972,7 +2018,7 @@ $('unlock').onclick = async () => {
     // the cursor to the code field instead of the password field.
     const badCode = needsCode && /验证码/.test(error.message || '')
     status('unlock-status', badCode ? '验证码错误：请重新输入 6 位验证码（密码不用重填）' : error.message, 'error')
-    if (badCode) codeField?.focus()
+    if (badCode) shakeCode(codeField)
     else $('master-password').focus()
   } finally {
     button.disabled = false
@@ -2129,6 +2175,9 @@ $('pair-command').textContent = 'secrets-broker pair --url ' + location.origin
 // operator can see instead of recomputing it from a different source.
 $('mcp-copy').onclick = () => copyFeedback($('mcp-copy'), $('mcp-url').textContent, { toastOk: '已复制 MCP 地址' })
 $('pair-copy').onclick = () => copyFeedback($('pair-copy'), $('pair-command').textContent, { toastOk: '已复制配对命令，在本机终端运行后会给出批准链接' })
+// Login, unlock and the TOTP setup share the same six-digit treatment.
+const codeInputs = [$('totp-code'), $('unlock-totp-code'), $('totp-enable-code')]
+codeInputs.forEach(decorateCodeInput)
 $('onboarding-close').onclick = () => { try { localStorage.setItem('sb.onboarded', '1') } catch {}; $('onboarding').classList.add('hidden') }
 const v2Advanced = $('v2-advanced')
 if (v2Advanced) v2Advanced.addEventListener('toggle', () => {
@@ -6626,7 +6675,17 @@ async function loadSecurity() {
 }
 async function changePassword() { try { await api('/api/security/password', { method: 'POST', body: JSON.stringify({ currentPassword: $('current-password').value, newPassword: $('new-password').value }) }); $('current-password').value = ''; $('new-password').value = ''; status('password-status', '密码已修改', 'ok'); await loadSecurity() } catch (error) { status('password-status', error.message, 'error') } }
 async function setup2fa() { try { const data = await api('/api/2fa/setup', { method: 'POST' }); $('totp-secret').textContent = data.secret; $('totp-setup-box').classList.remove('hidden'); status('totp-message', '把密钥加入验证器后输入验证码', 'ok') } catch (error) { status('totp-message', error.message, 'error') } }
-async function enable2fa() { try { await api('/api/2fa/enable', { method: 'POST', body: JSON.stringify({ code: $('totp-enable-code').value }) }); $('totp-setup-box').classList.add('hidden'); $('totp-enable-code').value = ''; status('totp-message', '两步验证已启用', 'ok'); await loadSecurity() } catch (error) { status('totp-message', error.message, 'error') } }
+async function enable2fa() {
+  try {
+    await api('/api/2fa/enable', { method: 'POST', body: JSON.stringify({ code: $('totp-enable-code').value }) })
+    $('totp-setup-box').classList.add('hidden'); $('totp-enable-code').value = ''
+    status('totp-message', '两步验证已启用', 'ok'); await loadSecurity()
+  } catch (error) {
+    status('totp-message', error.message, 'error')
+    // A wrong code stays in place for correction instead of being cleared.
+    if (/验证码|code/i.test(error.message || '')) shakeCode($('totp-enable-code'))
+  }
+}
 async function disable2fa() {
   // prompt() is silently refused inside the desktop WebView, so 关闭两步验证 did
   // nothing there. The in-page field keeps the same one-field flow; an empty or
