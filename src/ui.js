@@ -1311,7 +1311,11 @@ const esc = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&am
 const status = (id, text, cls = '') => {
   const el = $(id)
   if (!el) return
-  el.textContent = text
+  // An error line with no text is the same defect as a blank red toast. Who
+  // called it and why is unknowable here, so name the class of failure.
+  let message = text == null ? '' : String(text)
+  if (cls === 'error' && !message.trim()) message = '操作失败：没有可读的错误信息，请重试'
+  el.textContent = message
   el.className = 'status ' + cls
   // Async results were previously silent to assistive technology.
   el.setAttribute('role', cls === 'error' ? 'alert' : 'status')
@@ -1502,8 +1506,29 @@ function collapseDecidedRow(row, delay) {
   if (delay) setTimeout(run, delay)
   else run()
 }
+// One place decides what a failed action says, and it never returns an empty
+// string. An empty message is worse than a generic one: the red toast would be
+// a blank pill with no way to tell a 403 from a 500. The server's own words win;
+// otherwise the status code names the class of failure, and a network drop gets
+// its own sentence instead of "出错了".
+function errorText(error, what = '操作') {
+  const raw = error && (error.message || error.reason)
+  const text = typeof raw === 'string' ? raw.trim() : ''
+  if (text) return text.slice(0, 300)
+  const status = Number(error && error.status) || 0
+  if (!status) return what + '失败：请求没有完成，请检查网络后重试'
+  if (status === 401) return what + '失败：登录已失效，请重新登录（HTTP 401）'
+  if (status === 403) return what + '失败：没有权限（HTTP 403）'
+  if (status === 404) return what + '失败：对象不存在，可能已被删除（HTTP 404）'
+  if (status === 409) return what + '失败：数据有冲突，请刷新后重试（HTTP 409）'
+  if (status === 423) return what + '失败：Vault 已锁定，请先解锁（HTTP 423）'
+  if (status === 428) return what + '失败：需要二次验证（HTTP 428）'
+  if (status === 429) return what + '失败：请求太频繁，请稍后再试（HTTP 429）'
+  if (status >= 500) return what + '失败：服务端内部错误（HTTP ' + status + '）'
+  return what + '失败：请求被拒绝（HTTP ' + status + '）'
+}
 function rowFailureText(error) {
-  return String((error && (error.message || error.reason)) || '未知错误').slice(0, 120)
+  return errorText(error, '审批').slice(0, 120)
 }
 
 // The code prompts all stay one input. That is deliberate: six boxes would make
@@ -1581,9 +1606,15 @@ async function sensitivePost(url, payload, reason) {
 }
 
 function toast(text, error = false) {
+  // The last line of defence: whatever the caller passed, a red toast always
+  // carries a sentence. Blank red boxes came from passing error.message straight
+  // through when the message itself was empty.
+  let message = text == null ? '' : String(text).trim()
+  if (!message) message = error ? '操作失败：没有可读的错误信息，请重试；如果持续出现请查看审计日志' : ''
+  if (!message) return
   const el = $('toast')
   if (el) {
-    el.textContent = text
+    el.textContent = message
     el.classList.toggle('error', Boolean(error))
     el.classList.add('show')
     clearTimeout(toastTimer)
@@ -1592,9 +1623,9 @@ function toast(text, error = false) {
   // Failures used to disappear into a purely visual toast; the assertive
   // region makes them audible without disturbing polite success messages.
   const live = $('live-alert')
-  if (live) live.textContent = error ? text : ''
+  if (live) live.textContent = error ? message : ''
   const statusEl = $('item-status')
-  if (statusEl && !$('view-items').classList.contains('hidden')) status(statusEl.id, text, error ? 'error' : 'ok')
+  if (statusEl && !$('view-items').classList.contains('hidden')) status(statusEl.id, message, error ? 'error' : 'ok')
 }
 
 // The version endpoint ships with the worker half, which may not be deployed
@@ -2204,7 +2235,7 @@ const v2Advanced = $('v2-advanced')
 if (v2Advanced) v2Advanced.addEventListener('toggle', () => {
   // The raw v2 listing and the legacy importer live behind this disclosure.
   // Opening it is the refresh; there is no separate button any more.
-  if (v2Advanced.open && app.v2?.unlocked) loadVault2(true).catch((error) => { $('v2-msg').textContent = error.message })
+  if (v2Advanced.open && app.v2?.unlocked) loadVault2(true).catch((error) => { $('v2-msg').textContent = errorText(error, '读取 Vault') })
 })
 $('devices-refresh').onclick = () => loadVault2(false)
 $('v2-devices').addEventListener('click', async (event) => {
@@ -2228,7 +2259,7 @@ $('v2-devices').addEventListener('click', async (event) => {
       await api('/api/v2/devices/' + encodeURIComponent(write.dataset.v2Write), { method: 'PATCH', body: JSON.stringify({ canWrite: !on }) })
       await loadVault2(false)
       $('devices-msg').textContent = on ? '已改为只读：这台设备不能再用 push 写入' : '已允许写入：这台设备可以 push 了'
-    } catch (error) { $('devices-msg').textContent = error.message; write.disabled = false }
+    } catch (error) { $('devices-msg').textContent = errorText(error, '修改设备写入'); write.disabled = false }
     return
   }
   const purge = event.target.closest('[data-v2-purge]')
@@ -2242,7 +2273,7 @@ $('v2-devices').addEventListener('click', async (event) => {
       await api('/api/v2/devices/' + encodeURIComponent(purge.dataset.v2Purge) + '?purge=1', { method: 'DELETE' })
       await loadVault2(false)
       $('devices-msg').textContent = '已删除「' + name + '」的记录'
-    } catch (error) { $('devices-msg').textContent = error.message; purge.disabled = false }
+    } catch (error) { $('devices-msg').textContent = errorText(error, '删除设备记录'); purge.disabled = false }
     return
   }
   const button = event.target.closest('[data-v2-revoke]')
@@ -2258,7 +2289,7 @@ $('v2-devices').addEventListener('click', async (event) => {
     if (local && local.deviceId === button.dataset.v2Revoke) await deviceClear()
     await loadVault2(false)
     $('devices-msg').textContent = '已撤销「' + name + '」'
-  } catch (error) { $('devices-msg').textContent = error.message; button.disabled = false }
+  } catch (error) { $('devices-msg').textContent = errorText(error, '撤销设备'); button.disabled = false }
 })
 $('v2-unlock').onclick = async () => {
   const password = $('v2-password').value
@@ -2713,7 +2744,7 @@ async function openAdmissionEditor(name, connection) {
       show('modal', false)
       await refreshAll()
       toast('准入已更新，下一次调用立即生效')
-    } catch (error) { status('adm-status', error.message, 'error') }
+    } catch (error) { status('adm-status', errorText(error, '更新准入'), 'error') }
   }
 }
 async function extendAgent(name, days) {
@@ -2727,9 +2758,10 @@ async function extendAgent(name, days) {
       ? (agent.oauth ? '服务端授权已设为不过期' + scope + '；OAuth 客户端令牌仍按 24 小时续期' : '已设为永久')
       : '已延长到 ' + new Date(result.expiresAt).toLocaleString('zh-CN', { hour12: false }) + scope)
   } catch (error) {
-    // Never leave an empty red banner: if the server sends no usable text,
-    // fall back to the status code so the operator can tell what happened.
-    const message = (error && error.message) || ('延长授权失败（HTTP ' + ((error && error.status) || '未知') + '）')
+    // Never leave an empty red banner: errorText names the failure class when
+    // the server sent no usable text, and the board repeats it next to the
+    // buttons so the reason does not vanish with the toast.
+    const message = errorText(error, '延长授权')
     const box = $('extend-error')
     if (box) { box.textContent = message; box.classList.remove('hidden') }
     toast(message, true)
@@ -2851,7 +2883,7 @@ $('grants-bulk-delete').onclick = async () => {
   try {
     const result = await api('/api/grants/batch', { method: 'POST', body: JSON.stringify({ action: 'delete', keys }) })
     selectedGrants.clear(); await refreshAll(); toast('已删除 ' + result.changed + ' 条')
-  } catch (error) { toast(error.message, true) }
+  } catch (error) { toast(errorText(error, '批量删除授权'), true) }
 }
 $('grants-bulk-restore').onclick = async () => {
   const keys = selectedGrantList()
@@ -2863,7 +2895,7 @@ $('grants-bulk-restore').onclick = async () => {
     const result = await api('/api/grants/batch', { method: 'POST', body: JSON.stringify({ action: 'restore', keys, seconds }) })
     selectedGrants.clear(); await refreshAll()
     toast('已恢复 ' + result.changed + ' 条' + (result.missing?.length ? '，' + result.missing.length + ' 条没找到' : ''))
-  } catch (error) { toast(error.message, true) }
+  } catch (error) { toast(errorText(error, '批量恢复授权'), true) }
 }
 // "修改" on a classified credential opens that item's own editor.
 $('fp-list').addEventListener('click', (event) => {
@@ -2881,7 +2913,7 @@ $('grants-box').addEventListener('click', async (event) => {
       await api('/api/legacy/regrant', { method: 'POST', body: JSON.stringify({ agent, item: name, action: 'secret.read', duration: '7d' }) })
       toast('已重新授权 ' + name + '（7 天）')
       await refreshAll()
-    } catch (error) { toast(error.message || '重新授权失败', true) }
+    } catch (error) { toast(errorText(error, '重新授权'), true) }
     return
   }
   const remove = event.target.closest('[data-legacy-delete]')
@@ -2893,7 +2925,7 @@ $('grants-box').addEventListener('click', async (event) => {
       await api('/api/grants/delete', { method: 'POST', body: JSON.stringify({ agent, name }) })
       toast('已删除')
       await refreshAll()
-    } catch (error) { toast(error.message || '删除失败', true) }
+    } catch (error) { toast(errorText(error, '删除授权'), true) }
   }
 })
 async function loadAll() {
@@ -3216,7 +3248,7 @@ async function loadOidcProviders() {
   const list = $('oidc-provider-list')
   if (!list) return
   let data = { providers: [] }
-  try { data = await api('/api/oidc/providers') } catch (error) { list.innerHTML = '<div class="hint">读取失败：' + esc(error.message) + '</div>'; return }
+  try { data = await api('/api/oidc/providers') } catch (error) { list.innerHTML = '<div class="hint">' + esc(errorText(error, '读取身份提供商')) + '</div>'; return }
   const providers = data.providers || []
   if (!providers.length) {
     list.innerHTML = '<div class="hint">还没有配置身份服务商。点下面的「添加服务商」新建一个。</div>'
@@ -4015,8 +4047,8 @@ async function loadVault2(withItems = true) {
       : '<div class="hint">还没有条目。</div>'
     box.classList.remove('hidden')
   } catch (error) {
-    msg.textContent = '读取失败：' + error.message
-    if (devicesMsg) devicesMsg.textContent = '读取失败：' + error.message
+    msg.textContent = errorText(error, '读取 Vault')
+    if (devicesMsg) devicesMsg.textContent = errorText(error, '读取设备')
   }
 }
 
@@ -4675,7 +4707,7 @@ async function decideQuickApproval(button) {
     failRowDecision(row, handle, '失败：' + rowFailureText(error))
     if (!row) { button.disabled = false; button.removeAttribute('aria-busy') }
     const stale = /not-pending|已处理|不存在|not-found/i.test((error.reason || '') + ' ' + (error.message || ''))
-    toast(stale ? '这条申请已处理或已过期，队列已刷新。' : '审批失败：' + error.message, true)
+    toast(stale ? '这条申请已处理或已过期，队列已刷新。' : errorText(error, '审批'), true)
     if (stale) setTimeout(() => { loadState().catch(() => {}) }, 460)
   }
 }
@@ -5315,11 +5347,11 @@ async function decideConnection(button, body, card, options = {}) {
       // The server could not find any unlock for the account. This is the
       // readable "unlock once, then approvals stop asking" message, not a dead
       // "vault locked" wall.
-      if (card) setConnectionStatus(card, error.message, true)
-      toast(error.message, true)
+      if (card) setConnectionStatus(card, errorText(error, '审批'), true)
+      toast(errorText(error, '审批'), true)
     } else {
-      if (card) setConnectionStatus(card, error.message, true)
-      toast('审批失败：' + error.message, true)
+      if (card) setConnectionStatus(card, errorText(error, '审批'), true)
+      toast(errorText(error, '审批'), true)
     }
   }
 }
@@ -5879,7 +5911,7 @@ async function refreshLogs(append = false) {
     logState.masked = result.masked === true
     renderLogs()
   } catch (error) {
-    if (box) box.innerHTML = '<div class="state" data-tone="error"><div class="state__title">日志读取失败</div><div class="state__body">' + esc(error.message) + '</div><div class="state__actions"><button data-logs-retry>重试</button></div></div>'
+    if (box) box.innerHTML = '<div class="state" data-tone="error"><div class="state__title">日志读取失败</div><div class="state__body">' + esc(errorText(error, '读取日志')) + '</div><div class="state__actions"><button data-logs-retry>重试</button></div></div>'
     const retry = box && box.querySelector('[data-logs-retry]')
     if (retry) retry.onclick = () => refreshLogs()
     if (count) count.textContent = ''
@@ -5910,7 +5942,7 @@ async function exportAuditCsv() {
   })
   if (!response.ok) {
     let message = '导出失败（HTTP ' + response.status + '）'
-    try { const body = await response.json(); message = body.error || body.message || message } catch {}
+    try { const body = await response.json(); message = String(body.error || body.message || '').trim() || message } catch {}
     return toast(message, true)
   }
   const disposition = response.headers.get('content-disposition') || ''
@@ -6042,7 +6074,7 @@ function openImportDialog(file) {
       show('modal', false); await Promise.all([loadItems(), loadState()])
       toast('导入完成：新增 ' + (result.created?.length || 0) + '，跳过 ' + (result.skipped?.length || 0) + (classified ? '，已分类 ' + classified : ''))
       if (result.skipped?.length) console.warn('import skipped', result.skipped)
-    } catch (error) { status('imp-status', '导入失败：' + error.message, 'error') }
+    } catch (error) { status('imp-status', errorText(error, '导入'), 'error') }
   }
 }
 function openBulkShare() {
@@ -6061,7 +6093,7 @@ function openBulkShare() {
       const result = await api('/api/grants/sync', { method: 'POST', body: JSON.stringify({ items: names, agents: agentsSelected, seconds: Number($('bulk-seconds').value), maxReads: $('bulk-reads').value || null, targetFolder: $('bulk-folder').value.trim(), revokeUnselected: $('bulk-revoke').checked, addToScope: $('bulk-scope').checked }) })
       show('modal', false); selectedItems.clear(); await Promise.all([loadState(), loadItems()])
       toast('分享 ' + (result.granted?.length || 0) + '，转移 ' + (result.queued?.length || 0) + '，取消 ' + (result.revoked?.length || 0) + (result.errors?.length ? '，失败 ' + result.errors.length : ''))
-    } catch (error) { toast(error.message, true) }
+    } catch (error) { toast(errorText(error, '批量分享'), true) }
   }
 }
 async function bulkDelete() {
@@ -6405,9 +6437,11 @@ async function openItemMenu(name) {
   // prompt itself because the button alone cannot carry it.
   if ($('mi-purge')) $('mi-purge').onclick = async () => {
     if (!await askConfirm('清除旧值备份（清除后不可恢复，也不会保留恢复窗口）')) return
-    await api('/api/items/rotate/purge', { method: 'POST', body: JSON.stringify({ itemId: item.id }) })
-    toast('旧值备份已清除')
-    openItem(decodeURIComponent(name))
+    try {
+      await api('/api/items/rotate/purge', { method: 'POST', body: JSON.stringify({ itemId: item.id }) })
+      toast('旧值备份已清除')
+      openItem(decodeURIComponent(name))
+    } catch (error) { toast(errorText(error, '清除旧值备份'), true) }
   }
   $('item-reveal').onclick = () => revealItemSecret(item)
   // 分享 / 同步 leaves the detail for another screen, so it is an exit too.
@@ -6441,7 +6475,7 @@ async function openItemMenu(name) {
       closeItemPage()
       await Promise.all([loadItems(), loadState()])
       toast('已保存')
-    } catch (error) { toast(error.message, true) }
+    } catch (error) { toast(errorText(error, '保存条目'), true) }
   }
   const restore = $('mi-restore')
   if (restore) restore.onclick = async () => {
@@ -6451,11 +6485,11 @@ async function openItemMenu(name) {
       closeItemPage()
       await Promise.all([loadItems(), loadState()])
       toast('已恢复旧值')
-    } catch (error) { toast(error.message, true) }
+    } catch (error) { toast(errorText(error, '恢复旧值'), true) }
   }
-  $('mi-delete').onclick = async () => { if (!(await askYes('删除条目「' + item.name + '」？'))) return; try { await api('/api/items/delete', { method: 'POST', body: JSON.stringify({ name: item.name }) }); closeItemPage(); await Promise.all([loadItems(), loadState()]); toast('已删除') } catch (error) { toast(error.message, true) } }
+  $('mi-delete').onclick = async () => { if (!(await askYes('删除条目「' + item.name + '」？'))) return; try { await api('/api/items/delete', { method: 'POST', body: JSON.stringify({ name: item.name }) }); closeItemPage(); await Promise.all([loadItems(), loadState()]); toast('已删除') } catch (error) { toast(errorText(error, '删除条目'), true) } }
   wireFillEditor(item)
-  $('mi-share').onclick = async () => { const agents = [...document.querySelectorAll('[data-share-agent]')].filter((box) => box.checked).map((box) => box.value); if (!agents.length) return toast('至少选择一个 Agent', true); try { const result = await api('/api/grants/share', { method: 'POST', body: JSON.stringify({ name: $('mi-name').value.trim() || item.name, agents, seconds: Number($('mi-share-seconds').value), maxReads: $('mi-share-reads').value || null, targetFolder: $('mi-share-folder').value.trim() }) }); closeItemPage(); await refreshAll(); if (result.queued?.length) toast('已加入跨账户复制队列，切回目标账户并解锁后自动复制'); else toast('已分享') } catch (error) { toast(error.message, true) } }
+  $('mi-share').onclick = async () => { const agents = [...document.querySelectorAll('[data-share-agent]')].filter((box) => box.checked).map((box) => box.value); if (!agents.length) return toast('至少选择一个 Agent', true); try { const result = await api('/api/grants/share', { method: 'POST', body: JSON.stringify({ name: $('mi-name').value.trim() || item.name, agents, seconds: Number($('mi-share-seconds').value), maxReads: $('mi-share-reads').value || null, targetFolder: $('mi-share-folder').value.trim() }) }); closeItemPage(); await refreshAll(); if (result.queued?.length) toast('已加入跨账户复制队列，切回目标账户并解锁后自动复制'); else toast('已分享') } catch (error) { toast(errorText(error, '分享条目'), true) } }
 }
 async function saveAgentFromModal(originalName) {
   try {
@@ -6613,16 +6647,16 @@ async function openAgentMenu(name) {
     openModal('OAuth Agent「' + name + '」', '<div class="hint">OAuth 动态注册产生的 Agent，绑定账户：<code>' + esc(agent.account || '-') + '</code>。可以修改名称、备注、权限和写入开关；撤销授权会删除 token。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存</button><button class="danger" id="ma-oauth-revoke">撤销 OAuth 授权</button></div>')
     $('ma-save').onclick = () => saveAgentFromModal(name)
     wireAgentActions(name)
-    $('ma-oauth-revoke').onclick = async () => { if (!(await askYes('撤销 ' + name + ' 的 OAuth token？'))) return; try { await api('/api/oauth/revoke', { method: 'POST', body: JSON.stringify({ agent: name }) }); show('modal', false); await refreshAll(); toast('已撤销') } catch (error) { toast(error.message, true) } }
+    $('ma-oauth-revoke').onclick = async () => { if (!(await askYes('撤销 ' + name + ' 的 OAuth token？'))) return; try { await api('/api/oauth/revoke', { method: 'POST', body: JSON.stringify({ agent: name }) }); show('modal', false); await refreshAll(); toast('已撤销') } catch (error) { toast(errorText(error, '撤销 OAuth 授权'), true) } }
     return
   }
   openModal('Agent「' + name + '」', '<div class="hint">绑定账户：<code>' + esc(agent.account || '未绑定（旧数据）') + '</code>。Agent 只能读取该账户；切换账户后旧 Agent 不会自动获得新账户权限。</div><label class="field">名称（标识）</label><input id="ma-realname" value="' + esc(agent.name) + '"><label class="field">显示名</label><input id="ma-alias" value="' + esc(agent.alias || '') + '"><label class="field">备注</label><input id="ma-note" value="' + esc(agent.note || '') + '">' + agentPermFields(agent) + '<label class="chk"><input type="checkbox" id="ma-allowall" ' + (agent.allowAll ? 'checked' : '') + '> 允许全部条目</label><label class="chk" style="margin-top:8px"><input type="checkbox" id="ma-write" ' + (agent.write ? 'checked' : '') + '> 允许写入（Agent 写 API /agent/items/save）</label><div class="row" style="margin-top:14px"><button class="primary" id="ma-save">保存权限</button><button id="ma-copy">复制 token</button><button id="ma-rotate">轮换 token</button><button id="ma-extend">延长授权</button><button class="danger" id="ma-delete">删除</button></div><div class="secret hidden" id="ma-token"></div>')
   $('ma-save').onclick = () => saveAgentFromModal(name)
   wireAgentActions(name)
   $('ma-extend').onclick = () => openExtendMenu(name)
-  $('ma-copy').onclick = async () => { try { const data = await api('/api/agents/token', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); toast('token 已复制') } catch (error) { toast(error.message, true) } }
-  $('ma-rotate').onclick = async () => { if (!(await askYes('轮换 ' + name + ' 的 token？旧 token 会立即失效。'))) return; try { const data = await api('/api/agents/rotate', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); await refreshAll(); toast('已轮换并复制新 token') } catch (error) { toast(error.message, true) } }
-  $('ma-delete').onclick = async () => { if (!(await askYes('删除 Agent ' + name + '？'))) return; try { await api('/api/agents/delete', { method: 'POST', body: JSON.stringify({ name }) }); show('modal', false); await refreshAll(); toast('已删除') } catch (error) { toast(error.message, true) } }
+  $('ma-copy').onclick = async () => { try { const data = await api('/api/agents/token', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); toast('token 已复制') } catch (error) { toast(errorText(error, '读取 token'), true) } }
+  $('ma-rotate').onclick = async () => { if (!(await askYes('轮换 ' + name + ' 的 token？旧 token 会立即失效。'))) return; try { const data = await api('/api/agents/rotate', { method: 'POST', body: JSON.stringify({ name }) }); $('ma-token').textContent = data.token; $('ma-token').classList.remove('hidden'); await navigator.clipboard.writeText(data.token); await refreshAll(); toast('已轮换并复制新 token') } catch (error) { toast(errorText(error, '轮换 token'), true) } }
+  $('ma-delete').onclick = async () => { if (!(await askYes('删除 Agent ' + name + '？'))) return; try { await api('/api/agents/delete', { method: 'POST', body: JSON.stringify({ name }) }); show('modal', false); await refreshAll(); toast('已删除') } catch (error) { toast(errorText(error, '删除 Agent'), true) } }
 }
 async function openGrantMenu(agent, name) {
   const grant = (app.data.grants || []).find((entry) => entry.agent === agent && entry.name === name); if (!grant) return
@@ -6635,10 +6669,10 @@ async function openGrantMenu(agent, name) {
   try { const data = await auditPage({ agent, item: name, limit: 15 }); usage = data.entries || usage } catch {}
   const usageHtml = '<div class="hint" style="margin-bottom:8px">创建：' + (grant.createdAt ? new Date(grant.createdAt).toLocaleString('zh-CN', { hour12: false }) : '-') + ' · 已读：' + (grant.reads ?? 0) + ' 次 · 到期：' + (grant.expiresAt ? new Date(grant.expiresAt).toLocaleString('zh-CN', { hour12: false }) : '永久') + '</div><div style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:12px"><b>使用记录</b>' + (usage.length ? '<table><tr><th>时间</th><th>动作</th><th>方式</th></tr>' + usage.map((entry) => '<tr><td>' + esc(entry.time ? new Date(entry.time).toLocaleString('zh-CN', { hour12: false }) : '') + '</td><td>' + esc(describeEvent(entry)) + '</td><td>' + esc(entry.mode || entry.source || '') + '</td></tr>').join('') + '</table>' : '<div class="hint">暂无记录</div>') + '</div>'
   openModal('授权「' + agent + ' → ' + name + '」', usageHtml + '<label class="field">时长</label><select id="mg-seconds"><option value="3600" ' + (nearest === 3600 ? 'selected' : '') + '>1 小时</option><option value="86400" ' + (nearest === 86400 ? 'selected' : '') + '>24 小时</option><option value="604800" ' + (nearest === 604800 ? 'selected' : '') + '>7 天</option><option value="2592000" ' + (nearest === 2592000 ? 'selected' : '') + '>30 天</option><option value="0" ' + (nearest === 0 ? 'selected' : '') + '>永久</option></select><label class="field">最多读取次数（留空不限）</label><input id="mg-max" type="number" min="1" value="' + (grant.maxReads ?? '') + '"><div class="row" style="margin-top:14px"><button class="primary" id="mg-save">保存授权</button>' + (grant.revokedAt || (grant.expiresAt && grant.expiresAt <= Date.now()) || (grant.maxReads && (grant.reads ?? 0) >= grant.maxReads) ? '<button id="mg-restore">恢复授权</button>' : '') + '<button class="danger" id="mg-revoke">撤销</button><button class="danger" id="mg-delete">删除记录</button></div>')
-  $('mg-save').onclick = async () => { try { await api('/api/grants/update', { method: 'POST', body: JSON.stringify({ agent, name, seconds: Number($('mg-seconds').value), maxReads: $('mg-max').value || null }) }); show('modal', false); await refreshAll(); toast('已更新授权') } catch (error) { toast(error.message, true) } }
-  if ($('mg-restore')) $('mg-restore').onclick = async () => { try { await api('/api/grants/restore', { method: 'POST', body: JSON.stringify({ agent, name, seconds: Number($('mg-seconds').value) }) }); show('modal', false); await refreshAll(); toast('已恢复授权') } catch (error) { toast(error.message, true) } }
-  $('mg-revoke').onclick = async () => { try { await api('/api/grants/revoke', { method: 'POST', body: JSON.stringify({ agent, name }) }); show('modal', false); await refreshAll(); toast('已撤销') } catch (error) { toast(error.message, true) } }
-  $('mg-delete').onclick = async () => { if (!(await askYes('删除这条授权记录？'))) return; try { await api('/api/grants/delete', { method: 'POST', body: JSON.stringify({ agent, name }) }); show('modal', false); await refreshAll(); toast('已删除') } catch (error) { toast(error.message, true) } }
+  $('mg-save').onclick = async () => { try { await api('/api/grants/update', { method: 'POST', body: JSON.stringify({ agent, name, seconds: Number($('mg-seconds').value), maxReads: $('mg-max').value || null }) }); show('modal', false); await refreshAll(); toast('已更新授权') } catch (error) { toast(errorText(error, '更新授权'), true) } }
+  if ($('mg-restore')) $('mg-restore').onclick = async () => { try { await api('/api/grants/restore', { method: 'POST', body: JSON.stringify({ agent, name, seconds: Number($('mg-seconds').value) }) }); show('modal', false); await refreshAll(); toast('已恢复授权') } catch (error) { toast(errorText(error, '恢复授权'), true) } }
+  $('mg-revoke').onclick = async () => { try { await api('/api/grants/revoke', { method: 'POST', body: JSON.stringify({ agent, name }) }); show('modal', false); await refreshAll(); toast('已撤销') } catch (error) { toast(errorText(error, '撤销授权'), true) } }
+  $('mg-delete').onclick = async () => { if (!(await askYes('删除这条授权记录？'))) return; try { await api('/api/grants/delete', { method: 'POST', body: JSON.stringify({ agent, name }) }); show('modal', false); await refreshAll(); toast('已删除') } catch (error) { toast(errorText(error, '删除授权记录'), true) } }
 }
 async function loadProfile() {
   try {

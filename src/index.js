@@ -32,7 +32,14 @@ const securityHeaders = {
   'content-security-policy': "default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
 }
 const htmlResponse = (body, status = 200) => new Response(body, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...securityHeaders } })
-const fail = (message, status = 400) => json({ error: message }, status)
+// A failure body must always be readable: the console renders the message in a
+// red toast, and `{error: ""}` (an Error with an empty message, or a route that
+// forwards `error.message` without a text) turns into a blank box. The client
+// has its own guard; this one keeps the API honest for every other caller.
+const fail = (message, status = 400) => {
+  const text = String(message ?? '').trim()
+  return json({ error: text || (status >= 500 ? '服务器内部错误' : '请求被拒绝（HTTP ' + status + '）') }, status)
+}
 const failBase = fail
 // A 500 must still be JSON: the console reads the body to decide what went
 // wrong, and a platform error page with no body is indistinguishable from an
